@@ -37,13 +37,24 @@ import pytest
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
 #
+# 2026-09-05 — re-recorded for the 5'-rescue writer-verdict column (ISSUE-002).
+# The change is a pure SCHEMA addition: `five_prime_rescue_refused` was added to
+# the result dict and is `''` for every row here.  Verified before re-recording
+# (dev/todo_run_20260904/S2/s2_m6_golden_check.py) that stripping the new key
+# from the observed results reproduces the previous golden 93af5e77… EXACTLY,
+# i.e. no correction semantics moved.  This invocation passes no annotation, so
+# the 3'SS rescue has no candidate junctions and none of the ISSUE-006/002/007
+# behaviour changes on this branch are exercised by it — which is why the
+# stripped hash still matches a golden recorded before them.
+#
 # 2026-08-01 — re-recorded for the ONT-cDNA strand fix (planning/541).  The
 # change is a pure SCHEMA addition: `strand_evidence` was added to the result
 # dict and is `''` for every non-ONT-cDNA row.  Verified before re-recording
 # that stripping the new key from the observed results reproduces the previous
-# golden a41ec734… exactly, i.e. no correction semantics moved.
+# golden a41ec734… exactly, i.e. no correction semantics moved.  Prior golden
+# 93af5e77…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "93af5e77671e51127d5b22dc5d8c6836cbcce90cef4a6b441e73392fd593d629"
+    "21a6a92abb6bfa3ee48f5c6b47476b916ce603b5b5a7b008ab4d7b72ad2756ea"
 )
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a

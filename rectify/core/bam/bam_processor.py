@@ -534,6 +534,9 @@ def correct_read_3prime(
 
     # Extract splice junctions from CIGAR
     junctions = extract_junctions_simple(read)
+    # Junctions the aligner itself called. The writer-verdict block below may
+    # retract a junction the RESCUE added; it must never drop one of these.
+    _cigar_junctions = set(junctions)
     # When 5' rescue fired and located a real annotated junction, the read's
     # raw CIGAR doesn't yet carry an N-op (the surgery happens later in
     # bam_writer's extend_read_5prime_for_junction_rescue). For TSV reporting
@@ -578,6 +581,62 @@ def correct_read_3prime(
     # for a clip that the rescue was supposed to eliminate.
     if _reanchor_clip_len > 0:
         five_prime_soft_clip_len = _reanchor_clip_len
+
+    # --- Writer verdict: does the rescue this row found actually reach the BAM?
+    # The corrected TSV is written a whole pipeline stage BEFORE any BAM writer
+    # runs, so a row could advertise `five_prime_rescued=1` with an exon CIGAR
+    # and a junction that the writer then refuses to draw — the ISSUE-006
+    # canonical-destination guard, the ISSUE-007 cut-N refusal, or the icp gate
+    # sending the read to a reroute that declines. A live TSV consumer (the
+    # browser) would draw a junction the BAM does not contain.
+    #
+    # Ask the writer itself, on a throwaway copy of the read, and downgrade the
+    # row when it says no. This runs the same function on the same read after the
+    # same pre-passes, so it cannot drift from the writer; and it is
+    # self-consistent, because a downgraded row makes the writer skip the surgery
+    # entirely — which is the outcome the refusal already produced.
+    #
+    # Placed after five_prime_soft_clip_len is final (the reanchor propagation
+    # above), because the writer reads that value as `five_prime_soft_clip`.
+    _five_prime_rescue_refused = ''
+    if five_prime_rescued and genome is not None:
+        from .bam_writer import predict_5prime_rescue_refusal as _predict_5p_refusal
+        _five_prime_rescue_refused = _predict_5p_refusal(
+            read,
+            {
+                'five_prime_rescued': True,
+                'five_prime_position': five_prime_position,
+                'five_prime_soft_clip': five_prime_soft_clip_len,
+                'five_prime_exon_cigar': _five_prime_exon_cigar,
+                'five_prime_upstream_trim': _five_prime_upstream_trim,
+                'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
+                'reanchor_clip_len': _reanchor_clip_len,
+                'strand': strand,
+            },
+            genome,
+        )
+        if _five_prime_rescue_refused:
+            # Always retract the JUNCTION — that is the claim the BAM does not
+            # back. Never touch a junction the aligner's own CIGAR carries.
+            # five_prime_position is deliberately KEPT: the rescue's estimate of
+            # where the 5' end lies is still the module's best answer.
+            from .bam_writer import REFUSAL_SOFTCLIP_ONLY as _REFUSAL_SC_ONLY
+            _rj_ref = _3ss_result.get('rescued_junction') if '_3ss_result' in locals() else None
+            if _rj_ref:
+                _junc_drop = (_rj_ref[1], _rj_ref[2])
+                if _junc_drop in junctions and _junc_drop not in _cigar_junctions:
+                    junctions = [_j for _j in junctions if _j != _junc_drop]
+                    junctions_str = format_junctions_string(junctions)
+            _five_prime_exon_cigar = ''
+            if _five_prime_rescue_refused != _REFUSAL_SC_ONLY:
+                # No surgery at all: clear the rest so the writer skips it, which
+                # reproduces exactly what the refusal already produced.
+                five_prime_rescued = False
+                _five_prime_intron_clip_pos = -1
+            # For softclipped_no_junction the intronic bases ARE hidden at the
+            # true acceptor, so five_prime_rescued and the icp must survive or the
+            # writer would skip that surgery and leave the bases mapped inside the
+            # intron — a worse BAM than the one this verdict describes.
 
     # Extract 3' soft-clip sequence for poly(A) model scoring.
     # Iterate the clip list rather than recomputing — seq is already present.
@@ -649,6 +708,11 @@ def correct_read_3prime(
         # reanchor did not materially modify the CIGAR. > 0 signals bam_writer
         # to apply the same reanchor before realign + 5'-rescue surgery.
         'reanchor_clip_len': _reanchor_clip_len,
+        # '' when the 5' rescue reached the corrected BAM (or none was found);
+        # otherwise the bam_writer REFUSAL_* token saying why it did not, with
+        # five_prime_rescued/exon_cigar/intron_clip_pos already downgraded and the
+        # rescued junction dropped from `junctions`.
+        'five_prime_rescue_refused': _five_prime_rescue_refused,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

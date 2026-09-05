@@ -42,6 +42,15 @@ CORRECTION_TSV_HEADER = [
     # polyA_3p / polyT_5p / gene_overlap / unassigned. Appended last so
     # existing positional consumers are unaffected.
     'strand_evidence',
+    # Why the 5' rescue this row found was NOT drawn into the corrected BAM.
+    # '' = drawn (or no rescue). One of the bam_writer REFUSAL_* tokens:
+    # extend_refused / reroute_refused / noncanonical_destination. When it is
+    # set, five_prime_rescued is 0, five_prime_exon_cigar is '',
+    # five_prime_intron_clip_pos is -1 and the rescued junction has been dropped
+    # from `junctions` — so no consumer can draw a junction the BAM lacks. The
+    # token keeps the decision auditable instead of silently dropping it.
+    # Appended last so existing positional consumers are unaffected.
+    'five_prime_rescue_refused',
 ]
 
 
@@ -89,6 +98,7 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         str(result.get('five_prime_upstream_trim', 0)),
         str(result.get('reanchor_clip_len', 0)),
         result.get('strand_evidence', '') or '',
+        result.get('five_prime_rescue_refused', '') or '',
     ]
 
 
