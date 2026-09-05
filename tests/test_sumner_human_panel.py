@@ -6,17 +6,25 @@ an N op looked correct, and yeast chromosome names are exactly the ones the
 arabic->roman fallback was written for.
 
 This module runs the Module 2H stage the way `rectify correct` runs it — contigs
-registered first, annotation, pool, refine — over the 100-read panel and asserts
-the FP/FN properties that were violated before 2026-09-05:
+registered first, annotation, pool, refine — over TWO datasets, and asserts the
+FP/FN properties that were violated before 2026-09-05:
 
   FP  no annotated canonical junction is moved off annotation;
       no non-canonical N-op is created;
       the observed junction pool holds no coordinate that exists in no read.
   FN  the beneficial corrections (novel/drifted -> annotated) still happen.
 
-The panel and its chr5 reference are git-ignored (a 184 MB FASTA and a 47 MB
-GTF), so the whole module skips when they are absent.  Point
-RECTIFY_SUMNER_PANEL_DIR at the directory to run it elsewhere.
+Every test runs once per dataset (see DATASETS): the 100-read adversarial panel
+and the 1,000-read unselected hold-out.  The hold-out is the one that earns
+trust — the panel's reads were chosen BECAUSE RECTIFY changed them, so passing
+on the panel alone shows only that the specific failures were addressed.  Both
+of the FP classes fixed in this series were caught by one dataset and invisible
+in the other, in both directions.
+
+The BAMs and the chr5 reference are git-ignored (a 184 MB FASTA and a 47 MB
+GTF), so the module skips when the reference is absent and each dataset skips
+individually when its BAM is.  Point RECTIFY_SUMNER_PANEL_DIR at the directory
+to run it elsewhere.
 
 Author: Kevin R. Roy (agent S1)
 """
@@ -35,12 +43,21 @@ PANEL_DIR = Path(os.environ.get(
     '/Users/kevinroy/work/rectify/dev/sumner_misplaced_panel_20260904',
 ))
 PANEL_BAM = PANEL_DIR / '175_panel_orig.bam'
+HOLDOUT_BAM = PANEL_DIR / 'holdout' / 'chr5_holdout1k.bam'
 REF_FA = PANEL_DIR / 'ref' / 'chr5.fa'
 REF_GTF = PANEL_DIR / 'ref' / 'gencode.v48.basic.chr5.gtf'
 
+# Two datasets, and the difference between them matters. The PANEL is
+# adversarial: 100 reads selected BECAUSE `rectify correct` changed their
+# junctions, so it over-represents every failure mode. The HOLD-OUT is 1,000
+# random primary chr5 reads with the panel reads excluded — nothing about it was
+# chosen by looking at RECTIFY's output, so it is the number that generalizes.
+# A fix that only moves the panel has not been shown to help.
+DATASETS = {'panel': PANEL_BAM, 'holdout': HOLDOUT_BAM}
+
 pytestmark = pytest.mark.skipif(
-    not (PANEL_BAM.exists() and REF_FA.exists() and REF_GTF.exists()),
-    reason=f"Sumner human panel not present under {PANEL_DIR} (git-ignored data)",
+    not (REF_FA.exists() and REF_GTF.exists()),
+    reason=f"chr5 reference not present under {PANEL_DIR} (git-ignored data)",
 )
 
 # Human canonical splice dinucleotides, read on the genomic PLUS strand: the
@@ -53,9 +70,18 @@ CANONICAL = {('GT', 'AG'), ('CT', 'AC'),
 _N = 3
 _SAM_REF_CONSUMING = {0, 2, 3, 7, 8}
 
-# Baselines recorded on 2026-09-05 with 7d571f5 + 250a608 + 21dbc57 + 26263d6.
-MAX_HARMFUL = 0
-MIN_BENEFICIAL = 5
+# Baselines recorded 2026-09-05 at d8b27e8 (the full fix series). MAX_* are
+# ceilings that must not be exceeded; MIN_* are floors that must not be lost.
+# Raising a ceiling or lowering a floor is a policy change and needs a reason in
+# the commit message — that is the whole point of writing them down.
+# `max_phantom` is the MEASURED residual, not a round number with headroom: both
+# datasets sit at the D-abutting-N count exactly (panel 4 of 13 observed-only
+# pool junctions, hold-out 5 of 46), so any new phantom coordinate fails here.
+BASELINE = {
+    #            harmful       beneficial          phantom pool junctions
+    'panel':   {'max_harmful': 0, 'min_beneficial': 5,  'max_phantom': 4},
+    'holdout': {'max_harmful': 0, 'min_beneficial': 12, 'max_phantom': 5},
+}
 
 
 def _n_ops(read):
@@ -73,9 +99,13 @@ def _motif(seq, s, e):
     return (seq[s:s + 2].upper(), seq[e - 2:e].upper())
 
 
-@pytest.fixture(scope="module")
-def refined(tmp_path_factory):
-    """Run Module 2H over the panel; return everything the assertions need."""
+@pytest.fixture(scope="module", params=sorted(DATASETS))
+def refined(request, tmp_path_factory):
+    """Run Module 2H over one dataset; return everything the assertions need."""
+    dataset = request.param
+    bam_path = DATASETS[dataset]
+    if not bam_path.exists():
+        pytest.skip(f"{dataset} BAM not present: {bam_path} (git-ignored data)")
     import pysam
     from rectify.utils.genome import load_genome, register_genome_contigs_from_fasta
     from rectify.core.consensus.consensus import load_annotated_junctions
@@ -87,7 +117,7 @@ def refined(tmp_path_factory):
     # Ordering is part of what is under test (ISSUE-001): contigs first.
     register_genome_contigs_from_fasta(str(REF_FA))
     annot = load_annotated_junctions(str(REF_GTF))
-    pool, annot_set = build_junction_pool([str(PANEL_BAM)], annot)
+    pool, annot_set = build_junction_pool([str(bam_path)], annot)
     genome = load_genome(str(REF_FA))
     # The same tables `rectify correct --organism homo_sapiens` now selects
     # (ISSUE-005) — the empirical HP costs are what put a 1 nt acceptor slide
@@ -95,17 +125,17 @@ def refined(tmp_path_factory):
     jpt, spt = select_penalty_tables({'organism': 'homo_sapiens'})
     assert jpt is not None, "bundled human DRS penalty table should be found"
 
-    out_bam = str(tmp_path_factory.mktemp("panel") / "refined.bam")
+    out_bam = str(tmp_path_factory.mktemp(dataset) / "refined.bam")
     refine_bam_junctions(
-        input_bam=str(PANEL_BAM), output_bam=out_bam,
-        aligner_bams=[str(PANEL_BAM)], annotated_junctions=annot, genome=genome,
+        input_bam=str(bam_path), output_bam=out_bam,
+        aligner_bams=[str(bam_path)], annotated_junctions=annot, genome=genome,
         prebuilt_junction_pool=pool, prebuilt_annotated_set=annot_set,
         penalty_table_path=jpt, str_penalty_table_path=spt,
         sort_and_index=True, n_workers=1,
     )
 
     before, after, observed = {}, {}, set()
-    with pysam.AlignmentFile(str(PANEL_BAM)) as bam:
+    with pysam.AlignmentFile(str(bam_path)) as bam:
         for r in bam:
             if r.is_unmapped or r.is_secondary or r.is_supplementary:
                 continue
@@ -119,6 +149,7 @@ def refined(tmp_path_factory):
 
     annot3 = {(str(j[0]), int(j[1]), int(j[2])) for j in annot if len(j) >= 3}
     return {
+        'dataset': dataset, 'baseline': BASELINE[dataset],
         'before': before, 'after': after, 'observed': observed,
         'annot3': annot3, 'pool': pool, 'seq': genome['chr5'],
     }
@@ -160,7 +191,8 @@ def test_pool_holds_no_junction_that_exists_in_no_read(refined):
     """
     observed_only = {j for j in refined['pool'] if j not in refined['annot3']}
     phantom = observed_only - refined['observed']
-    assert len(phantom) <= 5, sorted(phantom)[:10]
+    assert len(phantom) <= refined['baseline']['max_phantom'], \
+        (refined['dataset'], len(phantom), sorted(phantom)[:10])
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +205,8 @@ def test_no_annotated_junction_is_moved_off_annotation(refined):
         if (chrom,) + old in refined['annot3']
         and (chrom,) + new not in refined['annot3']
     ]
-    assert len(harmful) <= MAX_HARMFUL, harmful
+    assert len(harmful) <= refined['baseline']['max_harmful'], \
+        (refined['dataset'], harmful)
 
 
 def test_module_2h_creates_no_non_canonical_junction(refined):
@@ -182,7 +215,7 @@ def test_module_2h_creates_no_non_canonical_junction(refined):
         (name, old, new, _motif(seq, *new)) for name, _c, old, new in _moves(refined)
         if _motif(seq, *new) not in CANONICAL and _motif(seq, *old) in CANONICAL
     ]
-    assert created == []
+    assert created == [], refined['dataset']
 
 
 def test_read_count_is_preserved(refined):
@@ -199,4 +232,5 @@ def test_drifted_junctions_are_still_pulled_onto_annotation(refined):
         if (chrom,) + old not in refined['annot3']
         and (chrom,) + new in refined['annot3']
     ]
-    assert len(beneficial) >= MIN_BENEFICIAL, beneficial
+    assert len(beneficial) >= refined['baseline']['min_beneficial'], \
+        (refined['dataset'], len(beneficial), beneficial)
