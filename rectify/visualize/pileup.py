@@ -63,6 +63,10 @@ from .tracks import Transcript, _apply_xlim, _as_region, arc
 __all__ = [
     "Read", "merged_reads", "ribbon", "SplicedAxis", "chain_clusters", "Chain", "isoform_rows",
     "junction_counts", "junction_arcs",
+    # space economy (Chanfreau planning/880)
+    "Cluster", "BandPlan", "PanelPlan", "BandScale", "cluster_by_three_prime", "union_clusters",
+    "solve_band_scale", "select_bands", "effective_counts", "plan_read_panel",
+    "read_panel", "read_stack", "stack_height_mm",
 ]
 
 Interval = Tuple[int, int]
@@ -727,3 +731,602 @@ def junction_arcs(ax, counts: Dict[Interval, int], *, y: float = 0.0, height: Op
             out += arc(ax, X(s), X(e), y=y, height=height, lw=TOK.stroke()["hairline"], direction=direction,
                        alpha=0.8)
     return out
+
+
+# ============================================================================
+# SPACE ECONOMY -- a stack of sample read panels on an mm budget
+#
+# Kevin, 2026-09-05: "I like showing the raw reads as stacked alignments in
+# merged/ribbon views but I think we need to consider space economy."
+#
+# The rules and their measurements are Chanfreau ``planning/880_read_view_space
+# _economy.md``; the mechanisms are ported from rbrowse's figure path (cited by
+# file:line below, no code copied):
+#
+#  * a panel has NO content height -- it gets a BUDGET and the drawing fits into
+#    it (rbrowse.js:10298-10317, the adaptive `need` sum);
+#  * band height is proportional to the cluster's read count on ONE scale shared
+#    across every panel, solved by bisection (rbrowse.js:5169, :13805-13867,
+#    `bandScale:'shared'` :305), with a hard floor so a real minor cluster is
+#    never a hairline (`RIBBON_MIN_PX` :4588, here `band_floor_mm`);
+#  * keep-top k with everything else pooled into one VISIBLE `other` band
+#    (:205, :8771 -- "an orphan beyond every capped reach falls to 'other',
+#    which is visible; a window silently spanning read-free space is not");
+#  * a shaved band declares its cut with a dashed rule over its own extent
+#    (:5229, :17577);
+#  * ONE letter strip for the whole stack instead of a label per band
+#    (:17255-17282, superseding per-band badges :17461) -- letters, never hues;
+#  * merged vs squished chosen from what the budget can show at a legible pitch
+#    (`DENSITY` :5706, `AUTO_DENSITY` :5742).
+#
+# EVERY height in this section is in MILLIMETRES ON THE PAGE. A panel's axes is
+# given ``ylim = (0, budget_mm)``, so one data unit is one millimetre and the
+# arithmetic below is the geometry, not a proxy for it.
+# ============================================================================
+
+MM_PER_IN = 25.4
+
+
+@dataclass
+class Cluster:
+    """One 3'-end cluster inside one sample."""
+    anchor: int
+    reads: List[Read] = field(default_factory=list)
+    letter: Optional[str] = None
+    pooled: bool = False          # the `other` band
+
+    @property
+    def n(self) -> int:
+        return len(self.reads)
+
+
+@dataclass
+class BandPlan:
+    """One drawn band, in mm on the page."""
+    letter: Optional[str]
+    anchor: Optional[int]
+    n: int
+    h_mm: float
+    reads: List[Read] = field(default_factory=list)
+    pooled: bool = False
+    capped: bool = False          # shaved to fit; draws the dashed cut mark
+    minor: bool = False
+
+
+@dataclass
+class PanelPlan:
+    """The arithmetic for ONE sample panel. Pure geometry -- no matplotlib."""
+    name: str
+    budget_mm: float
+    merged_mm: float
+    merged_gap_mm: float
+    bands_mm: float               # the region the bands may use
+    band_gap_mm: float
+    bands: List[BandPlan] = field(default_factory=list)
+    mode: str = "merged"          # "merged" | "squished"
+    pitch_mm: float = 0.0         # squished only
+    lw_pt: float = 0.0            # squished only
+    n_rows: int = 0               # squished only
+    n_reads: int = 0
+    n_pooled: int = 0             # reads that fell into `other`
+    k_used: int = 0
+    shaved_mm: float = 0.0
+
+    @property
+    def used_mm(self) -> float:
+        """Height the panel actually draws into: the merged row plus either the bands and
+        their gaps, or (squished) the per-read rows."""
+        if self.mode == "squished":
+            content = self.n_rows * self.pitch_mm
+        else:
+            nb = len(self.bands)
+            content = sum(b.h_mm for b in self.bands) + max(0, nb - 1) * self.band_gap_mm
+        return content + (self.merged_mm + self.merged_gap_mm if self.merged_mm > 0 else 0.0)
+
+    @property
+    def slack_mm(self) -> float:
+        return self.budget_mm - self.used_mm
+
+
+@dataclass
+class BandScale:
+    """mm of band height per read -- ONE scale for every panel in a stack, so a
+    band's height means the same thing in every sample (rbrowse `bandScale:
+    'shared'`). ``floor_mm`` is the hard minimum a kept band may have."""
+    mm_per_read: float
+    floor_mm: float
+
+    def height_mm(self, n: int) -> float:
+        return 0.0 if n <= 0 else max(self.floor_mm, self.mm_per_read * n)
+
+
+# ---------------------------------------------------------------------------
+# clustering by 3' end
+# ---------------------------------------------------------------------------
+def cluster_by_three_prime(reads: Sequence[Read], *, win: int = 32) -> List[Cluster]:
+    """Group reads whose 3' ends fall within ``win`` bp, largest cluster first.
+
+    ``win`` defaults to rbrowse's shipped ``clusterWin`` (32 bp, rbrowse.js:505-515):
+    wide enough that a quantification window is a rectangle rather than a hairline.
+    The anchor is the MODAL 3' end of the cluster -- the one coordinate the members
+    share -- not the mean, which would sit where no read ends.
+    """
+    if not reads:
+        return []
+    ends = sorted(((r.three_prime, r) for r in reads), key=lambda t: t[0])
+    groups: List[List[Read]] = []
+    cur = [ends[0][1]]
+    last = ends[0][0]
+    for pos, r in ends[1:]:
+        if pos - last <= win:
+            cur.append(r)
+        else:
+            groups.append(cur); cur = [r]
+        last = pos
+    groups.append(cur)
+    out = []
+    for g in groups:
+        counts: Dict[int, int] = {}
+        for r in g:
+            counts[r.three_prime] = counts.get(r.three_prime, 0) + 1
+        anchor = max(counts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        out.append(Cluster(anchor=anchor, reads=list(g)))
+    out.sort(key=lambda c: (-c.n, c.anchor))
+    return out
+
+
+def union_clusters(samples: Sequence[dict], *, win: int = 32, k: int = 4,
+                   letters: str = "ABCDEFGHIJ") -> List[Cluster]:
+    """The cross-panel cluster ranking: pool every sample's reads, cluster once, keep
+    the top ``k`` by POOLED count and letter them A, B, C... in that order.
+
+    One ranking for the whole stack is what makes a letter mean the same 3' end in
+    every panel -- rbrowse's ``assignCrossPanelRanks`` (rbrowse.js:13803) and the
+    reason its letter strip can be a single row (:17255). Deriving the letters twice
+    is how two panels drift apart.
+    """
+    pooled: List[Read] = []
+    for s in samples:
+        pooled.extend(s.get("reads", ()))
+    cl = cluster_by_three_prime(pooled, win=win)[:max(0, k)]
+    for i, c in enumerate(cl):
+        c.letter = letters[i] if i < len(letters) else str(i)
+    return cl
+
+
+def _panel_bands(reads: Sequence[Read], keep: Sequence[Cluster], *, win: int) -> Tuple[List[Cluster], Cluster]:
+    """Split one sample's reads over the stack's kept clusters plus one `other`."""
+    assigned: List[Cluster] = [Cluster(anchor=c.anchor, letter=c.letter) for c in keep]
+    other = Cluster(anchor=None, letter=None, pooled=True)
+    for r in reads:
+        tp = r.three_prime
+        best, bestd = None, None
+        for slot, c in zip(assigned, keep):
+            d = abs(tp - c.anchor)
+            if d <= win and (bestd is None or d < bestd):
+                best, bestd = slot, d
+        (best or other).reads.append(r)
+    return assigned, other
+
+
+# ---------------------------------------------------------------------------
+# the budget arithmetic -- this is what the tests pin
+# ---------------------------------------------------------------------------
+def _band_room(nb: int, bands_mm: float, band_gap_mm: float) -> float:
+    """mm available to the band FILLS once the inter-band gaps are paid."""
+    return bands_mm - max(0, nb - 1) * band_gap_mm
+
+
+def _fits(counts: Sequence[int], scale: BandScale, bands_mm: float, band_gap_mm: float) -> bool:
+    live = [n for n in counts if n > 0]
+    if not live:
+        return True
+    return sum(scale.height_mm(n) for n in live) <= _band_room(len(live), bands_mm, band_gap_mm) + 1e-9
+
+
+def _reduce_k(counts: Sequence[int], *, floor_mm: float, bands_mm: float, band_gap_mm: float,
+              pooled_n: int) -> int:
+    """The largest number of bands whose FLOORS fit the budget. Everything dropped rolls
+    into `other`, which stays visible -- rbrowse's rule that a pooled remainder is drawn
+    and a silently-absent one is not (rbrowse.js:8771)."""
+    live = sum(1 for n in counts if n > 0) + (1 if pooled_n > 0 else 0)
+    while live > 0 and live * floor_mm > _band_room(live, bands_mm, band_gap_mm) + 1e-9:
+        live -= 1
+    return live
+
+
+def solve_band_scale(panel_counts: Sequence[Sequence[int]], bands_mm: float, *,
+                     floor_mm: float, band_gap_mm: float, cap_mm_per_read: float = 1.0,
+                     iters: int = 40) -> BandScale:
+    """The largest mm-per-read at which EVERY panel's bands fit ``bands_mm``.
+
+    Bisection, like rbrowse's ~22-probe search (rbrowse.js:13840-13866), but without
+    the warm start: a figure is rendered once, not at 60 fps. The upper bound is seeded
+    from the largest single cluster so the search resolves the real answer instead of
+    collapsing every panel to its floor -- the failure rbrowse's at-scale smoke found.
+    """
+    biggest = max((max(c) for c in panel_counts if c), default=1)
+    biggest = max(1, biggest)
+    hi = min(cap_mm_per_read, max(1e-6, 1.5 * bands_mm / biggest))
+    lo = 0.0
+
+    def ok(s: float) -> bool:
+        sc = BandScale(s, floor_mm)
+        return all(_fits(c, sc, bands_mm, band_gap_mm) for c in panel_counts)
+
+    if ok(hi):
+        return BandScale(hi, floor_mm)
+    for _ in range(iters):
+        mid = 0.5 * (lo + hi)
+        if ok(mid):
+            lo = mid
+        else:
+            hi = mid
+    return BandScale(lo, floor_mm)
+
+
+def select_bands(reads: Sequence[Read], keep: Sequence[Cluster], *, bands_mm: float,
+                 floor_mm: float, band_gap_mm: float, win: int = 32
+                 ) -> Tuple[List[Cluster], Optional[Cluster]]:
+    """Which bands a panel will actually draw, and what falls into `other`.
+
+    Depends only on the FLOOR and the budget -- never on the band scale -- so the scale
+    solver and the planner agree by construction. (They did not in the first version: the
+    solver ignored the pooled band, the planner drew it, and the panel came out shaved.)
+    """
+    assigned, other = _panel_bands(reads, keep, win=win)
+    counts = [c.n for c in assigned]
+    live = _reduce_k(counts, floor_mm=floor_mm, bands_mm=bands_mm, band_gap_mm=band_gap_mm,
+                     pooled_n=other.n)
+    order = [i for i in sorted(range(len(assigned)), key=lambda j: (-counts[j], j)) if counts[i] > 0]
+    room_for_other = 1 if other.n > 0 else 0
+    n_keep = max(0, live - room_for_other)
+    keep_idx, drop_idx = order[:n_keep], order[n_keep:]
+    for i in drop_idx:
+        other.reads.extend(assigned[i].reads)
+    kept = [assigned[i] for i in keep_idx]
+    pooled = other if (other.n > 0 and live > len(kept)) else None
+    return kept, pooled
+
+
+def effective_counts(reads: Sequence[Read], keep: Sequence[Cluster], *, bands_mm: float,
+                     floor_mm: float, band_gap_mm: float, win: int = 32) -> List[int]:
+    """The band counts a panel will draw -- what :func:`solve_band_scale` must be fed."""
+    kept, pooled = select_bands(reads, keep, bands_mm=bands_mm, floor_mm=floor_mm,
+                                band_gap_mm=band_gap_mm, win=win)
+    return [c.n for c in kept] + ([pooled.n] if pooled is not None else [])
+
+
+def plan_read_panel(name: str, reads: Sequence[Read], keep: Sequence[Cluster], *,
+                    budget_mm: float, scale: BandScale, merged_mm: float = 2.5,
+                    merged_gap_mm: float = 0.8, band_gap_mm: float = 0.4,
+                    win: int = 32, mode: str = "auto",
+                    pitch_floor_mm: Optional[float] = None,
+                    max_lw_pt: float = 4.0) -> PanelPlan:
+    """Lay ONE sample out inside ``budget_mm``. Pure arithmetic; draws nothing.
+
+    Invariants (pinned by ``tests/test_visualize_pileup.py``):
+
+    1. ``plan.used_mm <= plan.budget_mm`` -- a panel never exceeds its budget;
+    2. every band in ``plan.bands`` has ``h_mm >= scale.floor_mm`` -- a kept band is
+       never below the floor (bands that cannot clear it are POOLED, not shrunk);
+    3. in squished mode ``pitch_mm >= pitch_floor_mm`` and
+       ``n_rows * pitch_mm <= bands_mm`` -- the drawn ink never leaves the strip.
+    """
+    G = TOK.track_geometry()
+    if pitch_floor_mm is None:
+        pitch_floor_mm = G.get("pitch_floor_mm", 0.423)
+    merged_block = (merged_mm + merged_gap_mm) if merged_mm > 0 else 0.0
+    bands_mm = max(0.0, budget_mm - merged_block)
+    plan = PanelPlan(name=name, budget_mm=budget_mm, merged_mm=merged_mm,
+                     merged_gap_mm=merged_gap_mm, bands_mm=bands_mm, band_gap_mm=band_gap_mm,
+                     n_reads=len(reads))
+
+    # -- mode: squished only when the budget can show every read at a legible pitch
+    want_squished = mode == "squished"
+    if mode == "auto" and reads:
+        want_squished = len(reads) * pitch_floor_mm <= bands_mm
+    if want_squished and reads and len(reads) * pitch_floor_mm <= bands_mm:
+        plan.mode = "squished"
+        plan.n_rows = len(reads)
+        plan.pitch_mm = bands_mm / plan.n_rows
+        pitch_pt = plan.pitch_mm / MM_PER_IN * 72.0
+        floor_pt = TOK.load()["geometry"].get("stroke_min_pt", 0.6)
+        plan.lw_pt = max(floor_pt, min(max_lw_pt, pitch_pt - floor_pt))
+        return plan
+    if want_squished and mode == "squished":
+        # asked for per-read rows the budget cannot honour: say so by falling back
+        plan.mode = "merged"
+
+    # -- merged + bands
+    kept_cl, pooled_band = select_bands(reads, keep, bands_mm=bands_mm, floor_mm=scale.floor_mm,
+                                        band_gap_mm=band_gap_mm, win=win)
+    plan.k_used = len(kept_cl)
+    plan.n_pooled = pooled_band.n if pooled_band is not None else 0
+
+    bands: List[BandPlan] = []
+    for c in kept_cl:
+        bands.append(BandPlan(letter=c.letter, anchor=c.anchor, n=c.n, reads=c.reads,
+                              h_mm=scale.height_mm(c.n)))
+    if pooled_band is not None:
+        bands.append(BandPlan(letter=None, anchor=None, n=pooled_band.n, reads=pooled_band.reads,
+                              h_mm=scale.height_mm(pooled_band.n), pooled=True, minor=True))
+
+    # -- shave, only when a caller PINS a scale that does not fit (rbrowse `capped`)
+    room = _band_room(len(bands), bands_mm, band_gap_mm)
+    total = sum(b.h_mm for b in bands)
+    if bands and total > room + 1e-9:
+        excess = total - room
+        plan.shaved_mm = excess
+        headroom = [max(0.0, b.h_mm - scale.floor_mm) for b in bands]
+        tot_head = sum(headroom)
+        for b, hd in zip(bands, headroom):
+            if tot_head <= 0:
+                break
+            cut = excess * hd / tot_head
+            if cut > 1e-9:
+                b.h_mm = max(scale.floor_mm, b.h_mm - cut)
+                b.capped = True
+    plan.bands = bands
+    return plan
+
+
+# ---------------------------------------------------------------------------
+# drawing: one panel
+# ---------------------------------------------------------------------------
+def _squished_rows(ax, reads: Sequence[Read], plan: PanelPlan, *, role, region, xform, zorder):
+    """Per-read rows at a pitch the budget can honour, with the LINE WIDTH DERIVED FROM
+    THE PITCH. ``tracks.reads``'s fixed 4.0 pt overdraws 2.2x at 40 reads and 22x at 400
+    in a 1 in strip (Chanfreau planning/880 checkpoint 1b) -- the same class of defect
+    rbrowse fixed on its raster (HANDOFF.md:1961)."""
+    S = TOK.stroke()
+    X = xform or (lambda p: p)
+    col = _body_color(role)
+    tail_col = TOK.color("polya")
+    order = sorted(reads, key=lambda r: (r.three_prime, r.five_prime))
+    for i, r in enumerate(order):
+        y = plan.bands_mm - (i + 0.5) * plan.pitch_mm
+        for bs, bl in r.blocks:
+            ax.plot([X(bs), X(bs + bl)], [y, y], color=col, lw=plan.lw_pt, solid_capstyle="butt",
+                    zorder=zorder)
+        prev = None
+        for bs, bl in r.blocks:
+            if prev is not None:
+                ax.plot([X(prev), X(bs)], [y, y], color=TOK.color("hairline"), lw=S["hairline"],
+                        zorder=zorder - 1)
+            prev = bs + bl
+        if r.tail > 0:
+            t0 = r.end if r.strand == "+" else r.start - r.tail
+            ax.plot([X(t0), X(t0 + r.tail)], [y, y], color=tail_col, lw=plan.lw_pt,
+                    solid_capstyle="butt", zorder=zorder + 1)
+
+
+def read_panel(ax, reads: Sequence[Read], keep: Sequence[Cluster] = (), *,
+               budget_mm: float, scale: Optional[BandScale] = None, name: str = "",
+               role: Optional[str] = None, region=None, xform: XForm = None,
+               merged_mm: float = 2.5, merged_gap_mm: float = 0.8, band_gap_mm: float = 0.4,
+               win: int = 32, mode: str = "auto", plan: Optional[PanelPlan] = None,
+               guides: bool = True, zorder: int = 3) -> PanelPlan:
+    """ONE sample inside ``budget_mm`` of page: a merged raster row over up to k ribbon
+    bands (or per-read rows when the budget can show them at a legible pitch).
+
+    The axes is given ``ylim = (0, budget_mm)``, so **one data unit is one millimetre**.
+    Pass ``plan`` to reuse a plan computed by :func:`read_stack` (the shared band scale);
+    otherwise the scale is solved for this panel alone and heights are NOT comparable
+    across panels -- rbrowse says so out loud in that case (rbrowse.js:16648) and so
+    should any caller.
+
+    Returns the :class:`PanelPlan` actually drawn.
+    """
+    G = TOK.track_geometry()
+    if plan is None:
+        if scale is None:
+            bm = max(0.0, budget_mm - merged_mm - merged_gap_mm)
+            fl = G.get("band_floor_mm", 0.8)
+            scale = solve_band_scale([effective_counts(reads, keep, bands_mm=bm, floor_mm=fl,
+                                                       band_gap_mm=band_gap_mm, win=win)],
+                                     bm, floor_mm=fl, band_gap_mm=band_gap_mm)
+        plan = plan_read_panel(name, reads, keep, budget_mm=budget_mm, scale=scale,
+                               merged_mm=merged_mm, merged_gap_mm=merged_gap_mm,
+                               band_gap_mm=band_gap_mm, win=win, mode=mode)
+    _apply_xlim(ax, region)
+    ax.set_ylim(0.0, budget_mm)
+    ax.set_yticks([])
+    for side in ("left", "right", "top"):
+        ax.spines[side].set_visible(False)
+
+    if plan.mode == "squished":
+        _squished_rows(ax, reads, plan, role=role, region=region, xform=xform, zorder=zorder)
+    else:
+        y = plan.bands_mm
+        for b in plan.bands:
+            y -= b.h_mm
+            ribbon(ax, b.reads, y=y, h=b.h_mm, anchor=b.anchor, role=role, minor=b.minor,
+                   capped=b.capped, region=region, xform=xform, letter=None, zorder=zorder)
+            y -= plan.band_gap_mm
+    if plan.merged_mm > 0 and reads:
+        merged_reads(ax, reads, y=plan.bands_mm + plan.merged_gap_mm, h=plan.merged_mm,
+                     role=role, region=region, xform=xform, zorder=zorder)
+    if guides:
+        _panel_guides(ax, keep, xform=xform, top=budget_mm)
+    return plan
+
+
+def _panel_guides(ax, keep: Sequence[Cluster], *, xform: XForm, top: float):
+    """The faint vertical registration line at each kept cluster's anchor, run down through
+    the panel. rbrowse.js:17262: 'one line at cluster D's anchor lets the reader see D in
+    all four genotypes at once, which IS the comparison the figure exists for.' Grey and
+    faint by design -- it is a registration mark, never a data channel (:17293)."""
+    X = xform or (lambda p: p)
+    S = TOK.stroke()
+    for c in keep:
+        if c.anchor is None:
+            continue
+        ax.plot([X(c.anchor), X(c.anchor)], [0, top], color=TOK.color("mute"), lw=S["hairline"],
+                alpha=0.55, zorder=1, clip_on=True)
+
+
+# ---------------------------------------------------------------------------
+# drawing: N samples under ONE model
+# ---------------------------------------------------------------------------
+def stack_height_mm(n_samples: int, *, panel_mm: float, panel_gap_mm: float,
+                    model_mm: float = 0.0, model_gap_mm: float = 0.0,
+                    axis_mm: float = 0.0, top_mm: float = 0.0,
+                    reserved_mm: float = 0.0) -> float:
+    """The page height an N-sample read stack needs -- computed BEFORE anything is drawn.
+
+    rbrowse.js:10298: a banded panel has no content height; it takes a budget. So the
+    figure height is the sum of the budgets plus the declared chrome, never a function of
+    the read count. ``reserved_mm`` is the caller's legend + footer block, which is NOT
+    part of the stack (`figstyle.concise_legend` only knows its height after layout).
+    """
+    n = max(0, int(n_samples))
+    body = n * panel_mm + max(0, n - 1) * panel_gap_mm
+    return top_mm + model_mm + model_gap_mm + body + axis_mm + reserved_mm
+
+
+def read_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: XForm = None,
+               panel_mm: float = 12.0, panel_gap_mm: float = 2.5, model_mm: float = 7.0,
+               model_gap_mm: float = 2.0, axis_mm: float = 8.0, top_mm: float = 3.0,
+               reserved_mm: float = 0.0, left_mm: float = 4.0, label_mm: float = 20.0,
+               right_mm: float = 3.0, k: int = 4, win: int = 32, mode: str = "auto",
+               letters: str = "ABCDEFGHIJ", band_gap_mm: float = 0.4,
+               merged_mm: float = 2.5, merged_gap_mm: float = 0.8,
+               size_figure: bool = True, axis_label: Optional[str] = None,
+               origin_mm: Optional[float] = None) -> dict:
+    """N sample read panels under ONE gene model, ONE letter key and ONE axis.
+
+    ``samples`` is ``[{"name": str, "reads": [Read, ...], "role": Optional[str]}, ...]``.
+
+    The economy rules (Chanfreau planning/880):
+
+    (a) the model is drawn ONCE above the stack -- it is annotation, identical in every
+        sample, and N copies cost N x 19.1 mm for one model's worth of content;
+    (b) each panel's height is ``panel_mm``, a budget, not a function of its read count;
+    (c) band heights come from ONE ``BandScale`` solved across every panel, floored at
+        ``tokens.geometry.track.band_floor_mm``, minor clusters pooled into `other`;
+    (d) the isoform letters ride the MODEL's 3' marks and a faint guide runs down the
+        stack -- no per-band labels;
+    (e) one ``name / n=`` chip per panel in the left gutter, nothing else in words inside;
+    (f) ``mode="auto"`` gives per-read rows only when
+        ``n_reads * pitch_floor_mm <= panel band budget``, else the merged raster.
+
+    With ``size_figure`` the figure is RESIZED to ``stack_height_mm(...)`` at its current
+    width; pass ``False`` to lay the stack into a figure you sized yourself, and
+    ``origin_mm`` (the stack's TOP edge, in mm from the figure bottom) to place it in a band
+    of a taller page. A sample dict may carry ``"note"``, appended to its chip -- use it when
+    the panel draws fewer reads than the sample has (rbrowse's rule: the legend reports the
+    number actually DRAWN, HANDOFF.md:1961).
+
+    Returns ``{"height_mm", "panels": [...], "model_ax", "axis_ax", "scale", "keep",
+    "plans", "used_mm"}``.
+    """
+    G = TOK.track_geometry()
+    T = TOK.typography()
+    n = len(samples)
+    has_model = model is not None
+    m_mm = model_mm if has_model else 0.0
+    m_gap = model_gap_mm if has_model else 0.0
+    H_mm = stack_height_mm(n, panel_mm=panel_mm, panel_gap_mm=panel_gap_mm, model_mm=m_mm,
+                           model_gap_mm=m_gap, axis_mm=axis_mm, top_mm=top_mm,
+                           reserved_mm=reserved_mm)
+    W_in = fig.get_figwidth()
+    if size_figure:
+        fig.set_size_inches(W_in, H_mm / MM_PER_IN)
+    W_mm = W_in * MM_PER_IN
+    Hf_mm = fig.get_figheight() * MM_PER_IN
+
+    x0 = (left_mm + label_mm) / W_mm
+    x1 = 1.0 - right_mm / W_mm
+    wf = x1 - x0
+
+    def rect(bottom_mm, h_mm):
+        return [x0, bottom_mm / Hf_mm, wf, h_mm / Hf_mm]
+
+    keep = union_clusters(samples, win=win, k=k, letters=letters)
+
+    # -- one shared band scale across every panel (rbrowse bandScale:'shared')
+    bands_mm = max(0.0, panel_mm - (merged_mm + merged_gap_mm if merged_mm > 0 else 0.0))
+    floor_mm = G.get("band_floor_mm", 0.8)
+    panel_counts = [effective_counts(s.get("reads", ()), keep, bands_mm=bands_mm,
+                                     floor_mm=floor_mm, band_gap_mm=band_gap_mm, win=win)
+                    for s in samples]
+    scale = solve_band_scale(panel_counts, bands_mm, floor_mm=floor_mm, band_gap_mm=band_gap_mm)
+
+    # the stack occupies the band [axis_mm + reserved_mm, origin]
+    y = (Hf_mm - top_mm) if origin_mm is None else origin_mm
+    out: dict = {"height_mm": H_mm, "panels": [], "plans": [], "scale": scale, "keep": keep,
+                 "model_ax": None, "axis_ax": None}
+
+    if has_model:
+        y -= m_mm
+        axm = fig.add_axes(rect(y, m_mm))
+        _draw_stack_model(axm, model, keep, region=region, xform=xform, height_mm=m_mm)
+        out["model_ax"] = axm
+        y -= m_gap
+
+    used = 0.0
+    for i, s in enumerate(samples):
+        y -= panel_mm
+        ax = fig.add_axes(rect(y, panel_mm))
+        plan = plan_read_panel(s.get("name", f"s{i}"), s.get("reads", ()), keep,
+                               budget_mm=panel_mm, scale=scale, merged_mm=merged_mm,
+                               merged_gap_mm=merged_gap_mm, band_gap_mm=band_gap_mm,
+                               win=win, mode=mode)
+        read_panel(ax, s.get("reads", ()), keep, budget_mm=panel_mm, plan=plan,
+                   role=s.get("role"), region=region, xform=xform, guides=True)
+        ax.tick_params(labelbottom=False, bottom=False)
+        ax.spines["bottom"].set_visible(False)
+        # (e) ONE chip per panel, in the left gutter -- reserved width, never an overhang
+        chip = f"{s.get('name', '')}\nn={plan.n_reads:,}"
+        if plan.n_pooled:
+            chip += f" · other {plan.n_pooled:,}"
+        if plan.mode == "squished":
+            chip += f"\n{plan.pitch_mm:.2f} mm/read"
+        if s.get("note"):
+            chip += f"\n{s['note']}"
+        fig.text(left_mm / W_mm, (y + panel_mm / 2) / Hf_mm, chip, ha="left", va="center",
+                 fontsize=T["annotation"], color=TOK.color("ink"), linespacing=1.35)
+        out["panels"].append(ax); out["plans"].append(plan)
+        used = max(used, plan.used_mm)
+        if i < len(samples) - 1:
+            y -= panel_gap_mm
+
+    if axis_mm > 0:
+        # the axis axes is a HAIRLINE strip at the TOP of its band, so its tick labels and
+        # xlabel hang DOWN into the band that was budgeted for them -- placing a full-height
+        # axes at the bottom of the band puts the labels off the page (found in the smoke).
+        rule_mm, rule_gap_mm = 0.4, 2.0
+        axa = fig.add_axes(rect(y - rule_mm - rule_gap_mm, rule_mm))
+        axa.set_ylim(0, 1); axa.set_yticks([])
+        for side in ("left", "right", "top"):
+            axa.spines[side].set_visible(False)
+        _apply_xlim(axa, region)
+        if xform is None and region is not None:
+            from .tracks import region_axis
+            region_axis(axa, region, label=False)
+        if axis_label:
+            axa.set_xlabel(axis_label, fontsize=T["axis_label"])
+        out["axis_ax"] = axa
+    out["used_mm"] = used
+    return out
+
+
+def _draw_stack_model(ax, model, keep: Sequence[Cluster], *, region, xform, height_mm: float):
+    """The one gene model above the stack, with the isoform LETTERS riding its ``polya``
+    marks -- rule (d): the letter key and the model's 3' marks are the same object, so the
+    strip costs no row of its own."""
+    from .tracks import gene_model, mark
+    T = TOK.typography()
+    ax.set_ylim(-1.0, 1.6)
+    ax.set_yticks([])
+    for side in ("left", "right", "top", "bottom"):
+        ax.spines[side].set_visible(False)
+    ax.tick_params(labelbottom=False, bottom=False)
+    _apply_xlim(ax, region)
+    gene_model(ax, model, y=0.0, height=0.55, region=region, xform=xform, tss=True,
+               label_pos="left")
+    for c in keep:
+        if c.anchor is None:
+            continue
+        mark(ax, c.anchor, "polya", y=0.0, height=0.55, label=c.letter, xform=xform)

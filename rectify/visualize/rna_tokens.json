@@ -417,7 +417,9 @@
    "merged_alpha_floor": 0.2,
    "spliced_gap_bp": 60,
    "spliced_seg_cap_bp": 500,
-   "tail_rule_alpha": 0.5
+   "tail_rule_alpha": 0.5,
+   "band_floor_mm": 0.8,
+   "pitch_floor_mm": 0.423
   },
   "callout": {
    "style": "dashed",
@@ -427,7 +429,7 @@
    ],
    "stroke": "hairline"
   },
-  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP)."
+  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880."
  },
  "principles": {
   "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",

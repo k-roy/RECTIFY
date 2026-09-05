@@ -213,3 +213,298 @@ def test_junction_counts_and_arcs(ax):
     assert len(patches) == 3      # two supported junctions + one unsupported annotated arc
     cols = {_hex(p.get_edgecolor()) for p in patches}
     assert TOK.color("focal").upper() in cols and TOK.color("splice").upper() in cols
+
+
+# ============================================================================
+# SPACE ECONOMY -- the mm-budget arithmetic (Chanfreau planning/880)
+#
+# These pin the three claims the layout makes on the page, so a refactor that
+# silently overflows a panel fails here instead of on a proof:
+#   1. a panel never exceeds its mm budget;
+#   2. a kept band is never below the mm floor;
+#   3. a stack's height is the sum of its budgets plus the declared chrome.
+# `test_budget_checker_can_fail` plants a violation of each and asserts the
+# checker rejects it -- a checker that cannot fail is not a checker.
+# ============================================================================
+MM = 25.4
+
+
+def _reads_at(n, anchor, *, start=1000, tail=12, tag="x"):
+    """n reads sharing a 3' end at ``anchor``, with staggered 5' ends."""
+    out = []
+    for i in range(n):
+        s = start + (i % 7) * 40
+        out.append(P.Read(f"{tag}{anchor}_{i}", "+", s, anchor, [(s, anchor - s)],
+                          tail=tail, clip3=tail + 2))
+    return out
+
+
+def check_panel_budget(plan, *, floor_mm):
+    """The invariants, as assertions. Raises AssertionError on a violation."""
+    assert plan.used_mm <= plan.budget_mm + 1e-6, (
+        f"{plan.name}: used {plan.used_mm:.4f} mm > budget {plan.budget_mm:.4f} mm")
+    for b in plan.bands:
+        assert b.h_mm >= floor_mm - 1e-9, (
+            f"{plan.name}: band {b.letter or 'other'} is {b.h_mm:.4f} mm, below the "
+            f"{floor_mm} mm floor")
+    if plan.mode == "squished":
+        pf = TOK.track_geometry()["pitch_floor_mm"]
+        assert plan.pitch_mm >= pf - 1e-9, f"{plan.name}: pitch {plan.pitch_mm} < floor {pf}"
+        assert plan.n_rows * plan.pitch_mm <= plan.bands_mm + 1e-6, (
+            f"{plan.name}: {plan.n_rows} rows x {plan.pitch_mm:.4f} mm leaves the "
+            f"{plan.bands_mm:.4f} mm strip")
+        drawn_mm = plan.n_rows * plan.lw_pt / 72.0 * MM
+        assert drawn_mm <= plan.bands_mm + 1e-6, (
+            f"{plan.name}: {drawn_mm:.2f} mm of drawn ink in a {plan.bands_mm:.2f} mm strip")
+    return True
+
+
+@pytest.fixture
+def stack_samples():
+    """Four synthetic samples over five 3'-end clusters, seeded."""
+    rng = np.random.default_rng(880)
+    anchors = [4000, 3700, 3400, 3100, 2800]
+    out = []
+    for si, (name, w) in enumerate([("WT", [60, 30, 12, 6, 3]), ("mutA", [20, 70, 15, 5, 2]),
+                                    ("mutB", [40, 40, 20, 10, 5]), ("mutC", [90, 8, 4, 2, 1])]):
+        reads = []
+        for a, n in zip(anchors, w):
+            reads.extend(_reads_at(n, a + int(rng.integers(-4, 5)), tag=f"s{si}"))
+        out.append({"name": name, "reads": reads, "role": None})
+    return out
+
+
+def test_cluster_by_three_prime_groups_within_window():
+    reads = _reads_at(5, 4000) + _reads_at(3, 4010) + _reads_at(4, 3000)
+    cl = P.cluster_by_three_prime(reads, win=32)
+    assert [c.n for c in cl] == [8, 4]                 # 4000/4010 fuse; 3000 apart
+    assert cl[0].anchor in (4000, 4010) and cl[1].anchor == 3000
+
+
+def test_union_clusters_rank_and_letter_across_samples(stack_samples):
+    keep = P.union_clusters(stack_samples, k=4)
+    assert [c.letter for c in keep] == ["A", "B", "C", "D"]
+    counts = [c.n for c in keep]
+    assert counts == sorted(counts, reverse=True)      # A is the biggest POOLED cluster
+
+
+def test_panel_never_exceeds_its_budget(stack_samples):
+    floor = TOK.track_geometry()["band_floor_mm"]
+    keep = P.union_clusters(stack_samples, k=4)
+    for budget in (8.0, 10.0, 12.0, 18.0, 25.0):
+        bands_mm = budget - (2.5 + 0.8)
+        counts = [P.effective_counts(s["reads"], keep, bands_mm=bands_mm, floor_mm=floor,
+                                     band_gap_mm=0.4) for s in stack_samples]
+        scale = P.solve_band_scale(counts, bands_mm, floor_mm=floor, band_gap_mm=0.4)
+        for s in stack_samples:
+            plan = P.plan_read_panel(s["name"], s["reads"], keep, budget_mm=budget, scale=scale)
+            check_panel_budget(plan, floor_mm=floor)
+
+
+def test_band_floor_holds_and_k_is_reduced_when_it_cannot(stack_samples):
+    """A budget too small for k+1 floors POOLS clusters; it never shrinks a band."""
+    floor = TOK.track_geometry()["band_floor_mm"]
+    keep = P.union_clusters(stack_samples, k=4)
+    scale = P.BandScale(0.0, floor)                   # every band at the floor
+    s = stack_samples[0]
+    wide = P.plan_read_panel("wide", s["reads"], keep, budget_mm=20.0, scale=scale)
+    tight = P.plan_read_panel("tight", s["reads"], keep, budget_mm=6.0, scale=scale)
+    assert len(tight.bands) < len(wide.bands)
+    assert tight.n_pooled > wide.n_pooled             # what was dropped is VISIBLE as `other`
+    for plan in (wide, tight):
+        check_panel_budget(plan, floor_mm=floor)
+        assert sum(b.n for b in plan.bands) == plan.n_reads   # no read is lost
+
+
+def test_shared_scale_makes_heights_comparable(stack_samples):
+    """Equal counts in two different samples get equal band heights -- the point of one
+    scale across the stack (rbrowse `bandScale: 'shared'`)."""
+    floor = TOK.track_geometry()["band_floor_mm"]
+    keep = P.union_clusters(stack_samples, k=4)
+    counts = [P.effective_counts(s["reads"], keep, bands_mm=8.7, floor_mm=floor,
+                                 band_gap_mm=0.4) for s in stack_samples]
+    scale = P.solve_band_scale(counts, 8.7, floor_mm=floor, band_gap_mm=0.4)
+    plans = [P.plan_read_panel(s["name"], s["reads"], keep, budget_mm=12.0, scale=scale)
+             for s in stack_samples]
+    by_n = {}
+    for pl in plans:
+        for b in pl.bands:
+            by_n.setdefault(b.n, set()).add(round(b.h_mm, 9))
+    for n, hs in by_n.items():
+        assert len(hs) == 1, f"count {n} drew {hs} -- the scale is not shared"
+    # and the scale is the LARGEST that fits: nudging it up overflows some panel
+    bigger = P.BandScale(scale.mm_per_read * 1.25, floor)
+    assert not all(P._fits(c, bigger, 8.7, 0.4) for c in counts)
+
+
+def test_squished_only_under_the_pitch_floor():
+    floor = TOK.track_geometry()["band_floor_mm"]
+    pf = TOK.track_geometry()["pitch_floor_mm"]
+    scale = P.BandScale(0.02, floor)
+    budget = 25.4 + 2.5 + 0.8                          # a 1.0 in band strip
+    keep = []
+    few = P.plan_read_panel("few", _reads_at(40, 4000), keep, budget_mm=budget, scale=scale)
+    many = P.plan_read_panel("many", _reads_at(400, 4000), keep, budget_mm=budget, scale=scale)
+    assert few.mode == "squished" and many.mode == "merged"
+    assert few.pitch_mm >= pf
+    check_panel_budget(few, floor_mm=floor)
+    check_panel_budget(many, floor_mm=floor)
+    # the drawn line width is DERIVED from the pitch -- the fixed 4.0 pt of tracks.reads
+    # would need 40 * 1.411 = 56.4 mm of ink in a 25.4 mm strip
+    assert few.lw_pt < 4.0
+    assert few.n_rows * few.lw_pt / 72.0 * MM <= few.bands_mm + 1e-6
+    # exactly at the threshold: 25.4 / 0.423 = 60 reads
+    edge = P.plan_read_panel("edge", _reads_at(60, 4000), keep, budget_mm=budget, scale=scale)
+    assert edge.mode == "squished"
+    over = P.plan_read_panel("over", _reads_at(61, 4000), keep, budget_mm=budget, scale=scale)
+    assert over.mode == "merged"
+
+
+def test_pinned_scale_shaves_and_declares_the_cut(stack_samples):
+    """A caller may PIN a scale (one shared with another figure). When it does not fit, the
+    plan shaves proportionally, keeps the floor, stays inside the budget, and flags the
+    bands `capped` so `ribbon` draws the dashed cut mark (rbrowse.js:17577)."""
+    floor = TOK.track_geometry()["band_floor_mm"]
+    keep = P.union_clusters(stack_samples, k=4)
+    plan = P.plan_read_panel("pinned", stack_samples[0]["reads"], keep, budget_mm=12.0,
+                             scale=P.BandScale(0.5, floor))     # far too generous
+    assert plan.shaved_mm > 0
+    assert any(b.capped for b in plan.bands)
+    check_panel_budget(plan, floor_mm=floor)
+
+
+def test_stack_height_is_the_sum_of_the_budgets(stack_samples):
+    h = P.stack_height_mm(4, panel_mm=12.0, panel_gap_mm=2.5, model_mm=7.0, model_gap_mm=2.0,
+                          axis_mm=8.0, top_mm=3.0, reserved_mm=30.0)
+    assert h == pytest.approx(3.0 + 7.0 + 2.0 + 4 * 12.0 + 3 * 2.5 + 8.0 + 30.0)
+    # and it is LINEAR in the sample count: one more sample costs exactly one pitch
+    h5 = P.stack_height_mm(5, panel_mm=12.0, panel_gap_mm=2.5, model_mm=7.0, model_gap_mm=2.0,
+                           axis_mm=8.0, top_mm=3.0, reserved_mm=30.0)
+    assert h5 - h == pytest.approx(12.0 + 2.5)
+
+
+def test_read_stack_renders_at_the_budgeted_geometry(stack_samples):
+    """The rendered artists, not the intent: every panel axes is exactly `panel_mm` tall and
+    the figure is exactly `stack_height_mm` tall."""
+    tx = T.Transcript("GENE1", "chrI", "+", exons=[(1000, 1300), (1800, 2000), (3400, 4100)])
+    reg = T.Region("chrI", 900, 4200)
+    fig = plt.figure(figsize=(7.2, 3.0), layout="none")
+    try:
+        res = P.read_stack(fig, stack_samples, tx, region=reg, panel_mm=12.0, panel_gap_mm=2.5,
+                           model_mm=7.0, axis_mm=8.0, top_mm=3.0, reserved_mm=0.0)
+        H_mm = fig.get_figheight() * MM
+        assert H_mm == pytest.approx(res["height_mm"], abs=1e-6)
+        for ax in res["panels"]:
+            h = ax.get_position().height * H_mm
+            assert h == pytest.approx(12.0, abs=1e-6)
+        assert res["model_ax"].get_position().height * H_mm == pytest.approx(7.0, abs=1e-6)
+        floor = TOK.track_geometry()["band_floor_mm"]
+        for plan in res["plans"]:
+            check_panel_budget(plan, floor_mm=floor)
+        # one model, one axis, N panels -- and nothing else
+        assert len(fig.axes) == len(stack_samples) + 2
+    finally:
+        plt.close(fig)
+
+
+def test_budget_checker_can_fail(stack_samples):
+    """PLANT each violation and prove the checker rejects it."""
+    floor = TOK.track_geometry()["band_floor_mm"]
+    keep = P.union_clusters(stack_samples, k=4)
+    counts = [P.effective_counts(s["reads"], keep, bands_mm=8.7, floor_mm=floor,
+                                 band_gap_mm=0.4) for s in stack_samples]
+    scale = P.solve_band_scale(counts, 8.7, floor_mm=floor, band_gap_mm=0.4)
+    base = P.plan_read_panel("plant", stack_samples[0]["reads"], keep, budget_mm=12.0, scale=scale)
+    check_panel_budget(base, floor_mm=floor)                      # clean first
+
+    over = P.plan_read_panel("over", stack_samples[0]["reads"], keep, budget_mm=12.0, scale=scale)
+    over.bands[0].h_mm += 5.0                                     # 1. blow the budget
+    with pytest.raises(AssertionError, match="> budget"):
+        check_panel_budget(over, floor_mm=floor)
+
+    under = P.plan_read_panel("under", stack_samples[0]["reads"], keep, budget_mm=12.0, scale=scale)
+    under.bands[-1].h_mm = floor / 2                               # 2. break the floor
+    with pytest.raises(AssertionError, match="below the"):
+        check_panel_budget(under, floor_mm=floor)
+
+    sq = P.plan_read_panel("sq", _reads_at(40, 4000), (), budget_mm=28.7,
+                           scale=P.BandScale(0.02, floor))
+    assert sq.mode == "squished"
+    sq.lw_pt = 4.0                                                 # 3. the tracks.reads defect
+    with pytest.raises(AssertionError, match="drawn ink"):
+        check_panel_budget(sq, floor_mm=floor)
+    sq.lw_pt = 0.6
+    sq.pitch_mm = 0.1                                              # 4. below the pitch floor
+    with pytest.raises(AssertionError, match="pitch"):
+        check_panel_budget(sq, floor_mm=floor)
+
+
+def check_stack_height(fig, res, *, n, panel_mm, panel_gap_mm, **chrome):
+    """Invariant 3: the rendered page height IS the sum of the panel budgets plus the
+    declared chrome -- and every panel axes is exactly its budget."""
+    H_mm = fig.get_figheight() * MM
+    want = P.stack_height_mm(n, panel_mm=panel_mm, panel_gap_mm=panel_gap_mm, **chrome)
+    assert H_mm == pytest.approx(want, abs=1e-6), (
+        f"page is {H_mm:.4f} mm, the budgets sum to {want:.4f} mm")
+    # PER PANEL, not the sum: a sum is blind to two panels swapping heights, or to one
+    # shrinking by exactly what another grows -- both of which are broken layouts.
+    for i, ax in enumerate(res["panels"]):
+        h = ax.get_position().height * H_mm
+        assert h == pytest.approx(panel_mm, abs=1e-6), (
+            f"panel {i} is {h:.4f} mm, its budget is {panel_mm:.4f} mm")
+    return True
+
+
+def test_stack_height_checker_can_fail(stack_samples):
+    """PLANT a violation of the height invariant and prove the checker rejects it."""
+    tx = T.Transcript("GENE1", "chrI", "+", exons=[(1000, 1300), (1800, 2000), (3400, 4100)])
+    reg = T.Region("chrI", 900, 4200)
+    chrome = dict(model_mm=7.0, model_gap_mm=2.0, axis_mm=8.0, top_mm=3.0, reserved_mm=0.0)
+    fig = plt.figure(figsize=(7.2, 3.0), layout="none")
+    try:
+        res = P.read_stack(fig, stack_samples, tx, region=reg, panel_mm=12.0, panel_gap_mm=2.5,
+                           **chrome)
+        check_stack_height(fig, res, n=4, panel_mm=12.0, panel_gap_mm=2.5, **chrome)  # clean
+
+        # 1. the page is no longer the sum of the budgets
+        fig.set_size_inches(7.2, fig.get_figheight() + 0.5)
+        with pytest.raises(AssertionError, match="the budgets sum to"):
+            check_stack_height(fig, res, n=4, panel_mm=12.0, panel_gap_mm=2.5, **chrome)
+
+        # 2. a COMPENSATING pair: one panel grows by exactly what another loses, so the
+        #    total is untouched. A sum-of-heights check would pass this; the per-panel one
+        #    must not.
+        fig.set_size_inches(7.2, fig.get_figheight() - 0.5)
+        H_mm = fig.get_figheight() * MM
+        d = 2.0 / H_mm
+        for k, sign in ((0, +1), (1, -1)):
+            pos = res["panels"][k].get_position()
+            res["panels"][k].set_position([pos.x0, pos.y0, pos.width, pos.height + sign * d])
+        total = sum(a.get_position().height * H_mm for a in res["panels"])
+        assert total == pytest.approx(4 * 12.0, abs=1e-6)      # the SUM is still clean
+        with pytest.raises(AssertionError, match="its budget is"):
+            check_stack_height(fig, res, n=4, panel_mm=12.0, panel_gap_mm=2.5, **chrome)
+    finally:
+        plt.close(fig)
+
+
+def test_shave_cannot_overflow_when_the_floors_exactly_fill_the_budget(stack_samples):
+    """The tightest case for the shave path: `_reduce_k` leaves the maximum number of bands,
+    whose floors fill the band region EXACTLY, and the caller pins a scale far too generous.
+
+    The shave distributes the excess over each band's headroom above the floor, so it can only
+    fail if `excess > total_headroom`, i.e. `nb * floor > room` -- which `_reduce_k` rules out
+    by construction (it reduces `nb` until `nb * floor <= room`). This test is the proof made
+    executable, because the failure mode would be a silent overflow at render time.
+    """
+    floor, gap = TOK.track_geometry()["band_floor_mm"], 0.4
+    bands_mm = 4 * floor + 3 * gap                 # exactly four bands at the floor
+    budget = bands_mm + 2.5 + 0.8
+    keep = P.union_clusters(stack_samples, k=4)
+    plan = P.plan_read_panel("tightest", stack_samples[0]["reads"], keep, budget_mm=budget,
+                             scale=P.BandScale(0.5, floor), band_gap_mm=gap)
+    assert len(plan.bands) == 4
+    assert all(b.h_mm == pytest.approx(floor) for b in plan.bands)
+    assert all(b.capped for b in plan.bands)       # the cut is DECLARED, not silent
+    assert plan.used_mm == pytest.approx(budget, abs=1e-9)
+    check_panel_budget(plan, floor_mm=floor)
