@@ -1211,9 +1211,11 @@ def run(args):
                     )
                     bam_to_process = _refined_bam
                     logger.info(
-                        "  Junction refinement: %d reads with N-ops, %d refined, %d unchanged",
+                        "  Junction refinement: %d reads with N-ops, %d refined, "
+                        "%d unchanged, %d noncanon_destination_refused",
                         _refine_stats['n_op_reads'], _refine_stats['refined'],
                         _refine_stats['unchanged'],
+                        _refine_stats.get('noncanon_destination_refused', 0),
                     )
                     logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
             except Exception as _exc:

@@ -165,6 +165,7 @@ from .junction_scoring import (  # noqa: F401
     _NUMBA_AVAILABLE,
     _score_hp_anchored,
 )
+from .overhang_informativeness import max_search_window_bp
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,60 @@ logger = logging.getLogger(__name__)
 # non-canonical junction).
 _ANNOTATED_CANONICAL_HOLD: float = float(
     os.environ.get("RECTIFY_ANNOT_CANON_HOLD", "1.0")
+)
+
+
+# ---------------------------------------------------------------------------
+# Non-canonical-destination preponderance gate (ISSUE-018, arbiter RULING 3 (b))
+# ---------------------------------------------------------------------------
+# A junction whose CURRENT placement is canonical-class (GT/GC..AG, or the paired
+# AT-AC class: tier <= _CANONICAL_TIER_MAX) may be moved onto an UNANNOTATED
+# non-canonical-class site only on a preponderance of read evidence.
+#
+# Measured on the 16-library Sumner cohort (269ebe7, 74 to_noncanon rows): 47
+# moves went OFF an annotated/canonical junction ONTO a non-canonical site, and all
+# 47 carried one signature — the surgery folded a stock D abutting the N into the
+# N (acceptor +2/+3/+5) or planted a compensating I/D beside the new N, so the exon
+# SEQUENCE never moved while the coordinate did; the deletion cost that vanished
+# (1.07–1.41 units with the human tables) is what cleared the annotated-canonical
+# hold.  The D/N-twin rule does not see them because the pool is built through
+# _merge_del_into_intron: read A's merged form is read B's "alternative" (9691a87c
+# `72M1D1307N2D194M` has twin (ns-1, ne+2); 502397be's twin (ns, ne+2) is a
+# different candidate for it).  Replayed read by read in
+# dev/todo_run_20260905/issue018_replay/ before this gate was written.
+#
+# Preponderance = ALL of:
+#   (iv) no annotated or canonical-class alternative within delta of the
+#        destination (delta = 1 bp, or 2 when that boundary sits inside a
+#        homopolymer run >= 3) — a near-miss of a proper site is not evidence;
+#   (ii) no I/D op abutting the new N on EITHER side (anchor 0 is the signature);
+#   (v)  the move does not raise the read's indel burden (rule (a) of the ruling,
+#        applied to single-boundary moves in THIS class only — a canonical ->
+#        canonical/annotated drift fix keeps the exemption written into
+#        _apply_junction_replacement);
+#   (i)  both exonic anchors (the M-run abutting the new N) reach the informative
+#        floor: >= min_informative_clip_bp() bases (10 at the defaults) AND enough
+#        information to distinguish the moved boundary at its shift distance
+#        (max_search_window_bp of the genomic flank >= |shift|).
+# Under today's re-label-only surgery (ii) can be met only by a pure microhomology
+# slide (the fast path): a compensating indel is by construction unsupported by the
+# read's bases.  This is written as a preponderance test rather than a ban so that a
+# re-aligning surgery would inherit the criterion.
+# RECTIFY_2H_NONCANON_PREPONDERANCE=0 restores the pre-fix behaviour (A/B).
+_NONCANON_PREPONDERANCE: bool = (
+    os.environ.get("RECTIFY_2H_NONCANON_PREPONDERANCE", "1").strip().lower()
+    not in ("0", "false", "no", "off")
+)
+_NONCANON_ANCHOR_ASSESS_BP = 30   # bases of each anchor whose information is assessed
+_NONCANON_DELTA = 1               # alternative-site radius (bp)
+_NONCANON_DELTA_HP = 2            # ... when the boundary is inside a homopolymer run
+_NONCANON_HP_RUN = 3              # ... of at least this length
+NONCANON_REFUSALS = (
+    'alternative_within_delta',
+    'adjacent_indel',
+    'indel_burden',
+    'anchor_below_floor',
+    'anchor_uninformative',
 )
 
 
@@ -688,6 +743,128 @@ def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: i
     return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_mov)
 
 
+def _n_op_index_at(
+    cigartuples: List[Tuple[int, int]], ref_start: int, ns: int, ne: int,
+) -> int:
+    """Index of the N op spanning exactly ``[ns, ne)``, or -1."""
+    pos = ref_start
+    for i, (op, length) in enumerate(cigartuples):
+        if op == _N and pos == ns and pos + length == ne:
+            return i
+        if op in _REF_CONSUMING_POS:
+            pos += length
+    return -1
+
+
+def _anchor_run(
+    cigartuples: List[Tuple[int, int]], k: int, step: int,
+) -> Tuple[Optional[int], int]:
+    """``(abutting_op, aligned_run)`` walking from op *k* in direction *step*.
+
+    ``abutting_op`` is the op that touches the N on that side (None past the
+    CIGAR end); ``aligned_run`` is the length of the contiguous M/=/X run there
+    (0 when the abutting op is not an aligned-match op)."""
+    j = k + step
+    if not (0 <= j < len(cigartuples)):
+        return None, 0
+    abutting = cigartuples[j][0]
+    run = 0
+    while 0 <= j < len(cigartuples) and cigartuples[j][0] in (_M, _EQ, _X):
+        run += cigartuples[j][1]
+        j += step
+    return abutting, run
+
+
+def _alternative_within_delta(
+    chrom: str, js: int, je: int, genome_seq: str, strand: str,
+    annotated_set: Set[Junction],
+) -> bool:
+    """True when an annotated or canonical-class junction other than ``(js, je)``
+    lies in the delta box around it.  The per-boundary delta widens from
+    ``_NONCANON_DELTA`` to ``_NONCANON_DELTA_HP`` when that boundary sits inside a
+    homopolymer run of >= ``_NONCANON_HP_RUN`` (ONT undercalls make a slide within
+    a run indistinguishable)."""
+    ds = (_NONCANON_DELTA_HP if _hp_run_across(genome_seq, js, _NONCANON_HP_RUN)
+          else _NONCANON_DELTA)
+    de = (_NONCANON_DELTA_HP if _hp_run_across(genome_seq, je, _NONCANON_HP_RUN)
+          else _NONCANON_DELTA)
+    for a in range(-ds, ds + 1):
+        for b in range(-de, de + 1):
+            if a == 0 and b == 0:
+                continue
+            s, e = js + a, je + b
+            if e <= s:
+                continue
+            if (chrom, s, e) in annotated_set:
+                return True
+            if _canonical_tier(s, e, genome_seq, strand) <= _CANONICAL_TIER_MAX:
+                return True
+    return False
+
+
+def _noncanon_destination_refusal(
+    read: pysam.AlignedSegment,
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+    new_js: int,
+    new_je: int,
+    genome_seq: str,
+    strand: str,
+    chrom: str,
+    annotated_set: Set[Junction],
+    hp_pen: float,
+    W: int,
+) -> str:
+    """'' when a canonical-class -> unannotated non-canonical move carries a
+    preponderance of evidence, else the refusal token (see NONCANON_REFUSALS and
+    the module comment above _NONCANON_PREPONDERANCE).
+
+    The post-move anchors are read from a DRY RUN of the real surgery on a copy of
+    the read, so the test sees exactly the CIGAR that would be written.  A move the
+    surgery itself refuses (span mismatch, shift guard, both-boundary invariant)
+    returns '' — that refusal is not this gate's to count."""
+    if _alternative_within_delta(chrom, new_js, new_je, genome_seq, strand, annotated_set):
+        return 'alternative_within_delta'
+    try:
+        trial = read.__copy__()
+        applied = _apply_junction_replacement(
+            trial, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand, hp_pen, W,
+        )
+    except Exception:
+        applied = False
+    if not applied:
+        return ''
+    new_cigar = list(trial.cigartuples)
+    k = _n_op_index_at(new_cigar, trial.reference_start, new_js, new_je)
+    if k < 0:
+        return 'anchor_below_floor'          # no locatable N: no anchor to speak of
+    left_op, left_run = _anchor_run(new_cigar, k, -1)
+    right_op, right_run = _anchor_run(new_cigar, k, +1)
+    if left_op in (_I, _D) or right_op in (_I, _D):
+        return 'adjacent_indel'
+    old_indel = sum(l for op, l in read.cigartuples if op in (_I, _D))
+    new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
+    if new_indel > old_indel:
+        return 'indel_burden'
+    # Lazy: splice_aware_5prime imports this module.
+    from .splice_aware_5prime import min_informative_clip_bp
+    floor = min_informative_clip_bp()
+    if left_run < floor or right_run < floor:
+        return 'anchor_below_floor'
+    gs = len(genome_seq)
+    left_len = min(left_run, _NONCANON_ANCHOR_ASSESS_BP)
+    right_len = min(right_run, _NONCANON_ANCHOR_ASSESS_BP)
+    left_seq = genome_seq[max(0, new_js - left_len):new_js]
+    right_seq = genome_seq[new_je:min(gs, new_je + right_len)]
+    need_left = max(1, abs(new_js - ns))
+    need_right = max(1, abs(new_je - ne))
+    if (max_search_window_bp(left_seq, max_window=_NONCANON_ANCHOR_ASSESS_BP) < need_left
+            or max_search_window_bp(right_seq, max_window=_NONCANON_ANCHOR_ASSESS_BP) < need_right):
+        return 'anchor_uninformative'
+    return ''
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -712,11 +889,16 @@ def refine_read_junctions(
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
     drift_positional_gate: float = 0.0,
+    counters: Optional[Counter] = None,
 ) -> List[Tuple[int, int, int, int, int]]:
     """Find improved junctions for all N-ops in a read.
 
     Args:
         read:                 pysam AlignedSegment (not modified).
+        counters:             Optional ``collections.Counter`` the driver owns;
+                              refusal tokens that must reach the run's stats
+                              line (``noncanon_destination_refused``) are
+                              counted here whether or not a profile is on.
         all_junctions_idx:    Output of _build_junction_index.
         annotated_set:        Set of (chrom, js, je) for annotated junctions.
         genome_seq:           Full chromosome sequence.
@@ -1077,6 +1259,36 @@ def refine_read_junctions(
                     moves = False
                     if profile is not None:
                         profile.inc('annotated_canonical_holds')
+
+        # --- Non-canonical-destination preponderance gate (ISSUE-018) ---------
+        # The R1 hold above is a SCORE margin, and a stock D folded into the N
+        # hands the candidate exactly that margin for free.  This gate asks the
+        # structural question instead: does the read anchor the new site cleanly
+        # on both sides?  Scope is deliberately the one class the cohort showed —
+        # canonical-class incumbent, unannotated non-canonical-class winner; a
+        # move whose destination is annotated (the 27 "onto a GENCODE intron whose
+        # own motif is non-canonical") or canonical-class (every drift fix) is not
+        # touched.  Disabled under motif_blind, like the hold.
+        if (
+            moves
+            and _NONCANON_PREPONDERANCE
+            and not motif_blind
+            and current_tier <= _CANONICAL_TIER_MAX
+            and (chrom, new_js, new_je) not in annotated_set
+            and _canonical_tier(new_js, new_je, genome_seq, strand) > _CANONICAL_TIER_MAX
+        ):
+            _reason = _noncanon_destination_refusal(
+                read, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand,
+                chrom, annotated_set, hp_pen, W,
+            )
+            if _reason:
+                moves = False
+                if profile is not None:
+                    profile.inc('noncanon_destination_refused')
+                    profile.inc(f'noncanon_destination_refused_{_reason}')
+                if counters is not None:
+                    counters['noncanon_destination_refused'] += 1
+                    counters[f'noncanon_destination_refused_{_reason}'] += 1
 
         # Only emit a replacement if the junction actually changes.
         if moves:
@@ -1548,6 +1760,7 @@ def _run_sequential(
 ) -> None:
     """Single-threaded sequential junction refinement (original code path)."""
     sample_rate = profile.sample_rate if profile is not None else 1
+    counters: Counter = Counter()
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
          pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
 
@@ -1598,6 +1811,7 @@ def _run_sequential(
                     microhom_threshold=microhom_threshold,
                     drift_near_tie_cap=drift_near_tie_cap,
                     drift_positional_gate=drift_positional_gate,
+                    counters=counters,
                 )
             except Exception as exc:
                 logger.debug("refine_read_junctions failed for %s: %s", read.query_name, exc)
@@ -1618,6 +1832,8 @@ def _run_sequential(
                 stats['refined'] += 1
             else:
                 stats['unchanged'] += 1
+    for key, n in counters.items():
+        stats[key] = stats.get(key, 0) + int(n)
 
 
 def _run_parallel(
@@ -1724,6 +1940,8 @@ def _run_parallel(
                 all_results.extend(batch_results.get('results', []))
                 if profile is not None:
                     profile.merge(batch_results.get('profile'))
+                for key, n in (batch_results.get('counters') or {}).items():
+                    stats[key] = stats.get(key, 0) + int(n)
             else:
                 all_results.extend(batch_results)
     _profile_time(profile, 'parallel_worker_scoring', _t_workers)
@@ -1810,6 +2028,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
     profile_enabled = bool(state.get('profile_enabled', False))
     profile_sample_rate = max(1, int(state.get('profile_sample_rate', 1) or 1))
     profile = JunctionRefineProfile(profile_sample_rate) if profile_enabled else None
+    counters: Counter = Counter()
 
     results: List[Tuple[str, List]] = []
     for i, sam_str in enumerate(sam_strings):
@@ -1830,16 +2049,19 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
             if profile is not None and (i % profile_sample_rate == 0):
                 eff_kw = {**eff_kw, 'profile': profile}
             replacements = refine_read_junctions(
-                read, junctions_idx, annotated_set, genome_seq, strand, **eff_kw
+                read, junctions_idx, annotated_set, genome_seq, strand,
+                counters=counters, **eff_kw
             )
             results.append((sam_str, replacements))
         except Exception:
             results.append((sam_str, []))
             if profile is not None:
                 profile.inc('worker_errors')
-    if profile is not None:
-        return {'results': results, 'profile': profile.to_raw_dict()}
-    return results
+    return {
+        'results': results,
+        'profile': profile.to_raw_dict() if profile is not None else None,
+        'counters': dict(counters),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1938,7 +2160,8 @@ def refine_bam_junctions(
                 penalty_table_path, exc,
             )
         _profile_time(profile, 'penalty_table_load', _t_penalty)
-    stats = dict(total=0, n_op_reads=0, refined=0, unchanged=0, errors=0)
+    stats = dict(total=0, n_op_reads=0, refined=0, unchanged=0, errors=0,
+                 noncanon_destination_refused=0)
 
     # Build junction pool and index.
     # When prebuilt_junction_pool is provided (from `rectify prescan`), use it
@@ -2023,9 +2246,10 @@ def refine_bam_junctions(
             ) from exc
 
     logger.info(
-        "refine_bam_junctions done: %d total, %d with N-ops, %d refined, %d unchanged, %d errors",
+        "refine_bam_junctions done: %d total, %d with N-ops, %d refined, %d unchanged, "
+        "%d errors, %d noncanon_destination_refused",
         stats['total'], stats['n_op_reads'], stats['refined'],
-        stats['unchanged'], stats['errors'],
+        stats['unchanged'], stats['errors'], stats['noncanon_destination_refused'],
     )
     if profile is not None:
         profile.counts.update({f"final_stats_{k}": int(v) for k, v in stats.items()})
