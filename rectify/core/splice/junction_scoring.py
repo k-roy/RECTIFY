@@ -1117,12 +1117,11 @@ def _score_junction(
         The second element is the SLIDE this scorer applied.  It is always 0
         because ``max_slide`` is API-compatibility only in this implementation
         (see the arg list) — the scorer never slides a boundary, it scores the
-        candidate as given.  ``refine_read_junctions`` still carries it as the
-        ``abs_delta`` tie-breaker, where it is therefore a constant and cannot
-        separate anything; ties fall through to ``(js, je)``, i.e. to the lower
-        genomic coordinate.  That is a real gap (ISSUE-005) but closing it means
-        DEFINING a new tie-break signal, not restoring a lost one — do not
-        quietly repurpose this slot.
+        candidate as given, and ``tests/test_junction_refiner.py`` pins that.
+        It used to double as ``refine_read_junctions``' ``abs_delta`` tie-break,
+        where a structural 0 made the slot inert; that tie-break is now computed
+        from coordinates in the caller (``move_dist``, ISSUE-005) and no longer
+        reads this value.  Do not repurpose this slot: it means "slide applied".
     """
     if profile is not None:
         profile.inc('score_junction_calls')

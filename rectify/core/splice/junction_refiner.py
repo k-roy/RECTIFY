@@ -806,7 +806,7 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
@@ -843,6 +843,9 @@ def refine_read_junctions(
 
             # Tie-breakers (only matter when score is identical or within noise floor):
             is_alt   = 0 if (js == ns and je == ne) else 1  # current junction preferred
+            # L1 distance from the aligner's own placement. Zero for the
+            # incumbent, so it is consistent with is_alt by construction.
+            move_dist = abs(js - ns) + abs(je - ne)
             _t_tiebreak = time.perf_counter() if profile is not None else 0.0
             tier     = _canonical_tier(js, je, genome_seq, strand)
             is_novel = 0 if (chrom, js, je) in annotated_set else 1
@@ -866,29 +869,38 @@ def refine_read_junctions(
             #   2. tier / is_alt (order depends on current_tier — see above)
             #   3. is_alt / tier (the other one)
             #   4. is_novel  — annotated preferred over novel
-            #   5. abs_delta — prefer minimal rescue split (final tiebreaker only).
-            #      INERT: `_score_junction` returns delta=0 for every candidate
-            #      (it never slides — `max_slide` is API-compat only), so this
-            #      slot is a constant and ties fall through to (js, je), i.e. to
-            #      the lower genomic coordinate. Closing that gap means DEFINING
-            #      a new tie-break signal, not restoring a lost one (ISSUE-005).
+            #   5. move_dist — at a genuine tie, take the SMALLER move
+            #      (ISSUE-005(b)). This slot used to hold `abs(delta)` from the
+            #      scorer, which is the applied SLIDE and is structurally 0 for
+            #      every candidate (`max_slide` is API-compatibility only —
+            #      `tests/test_junction_refiner.py` pins that contract). The slot
+            #      was therefore a constant, and equal-scoring candidates were
+            #      separated by nothing but (js, je) — the LOWER GENOMIC
+            #      COORDINATE, an arbitrary leftward bias that has nothing to do
+            #      with the read. The distance is now derived from coordinates
+            #      instead: among candidates the read cannot distinguish, the one
+            #      closest to where the aligner put it is the smaller claim.
+            #      It is the FIFTH key and can never override score, tier, is_alt
+            #      or annotation — all four still decide first.
             # Motif-blind drops the canonical-tier and annotation priors from the
             # tie-break (they collapse to constants), leaving score → is_alt → shift.
             tier_key = 0 if motif_blind else tier
             novel_key = 0 if motif_blind else is_novel
             if tier_beats_alt:
                 # Current junction is non-canonical: prefer canonical alternatives
-                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, tier_key, is_alt, novel_key, move_dist, js, je, delta)
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
-                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, abs(delta), js, je, delta)
+                candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
             if best_tuple is None or candidate_tuple < best_tuple:
                 best_tuple = candidate_tuple
 
         if best_tuple is None:
             continue
 
-        # best_tuple = (score, pri2, pri3, is_novel, abs_delta, js, je, delta)
+        # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
+        # (the trailing `delta` is the scorer's applied slide, structurally 0;
+        #  kept so the tuple shape still mirrors _score_junction's contract.)
         best_score_cmp = best_tuple[0]
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
