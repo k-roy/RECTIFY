@@ -606,7 +606,12 @@ def correct_read_3prime(
     # Placed after five_prime_soft_clip_len is final (the reanchor propagation
     # above), because the writer reads that value as `five_prime_soft_clip`.
     _five_prime_rescue_refused = ''
-    if (not five_prime_rescued and '_3ss_result' in locals()
+    if not five_prime_rescued and '_3ss_result' in locals() and _3ss_result.get('clip_refused'):
+        # Admission refusal (ISSUE-015): the clip could not fit on the contig, or
+        # exceeded MAX_RESCUABLE_CLIP_BP. Recorded in the same column as the
+        # writer verdicts so one field answers "why is this read not rescued".
+        _five_prime_rescue_refused = _3ss_result['clip_refused']
+    elif (not five_prime_rescued and '_3ss_result' in locals()
             and _3ss_result.get('displaced_canonical_refused')):
         # Not a writer verdict: the RESCUE declined every candidate that would
         # have destroyed a canonical junction the aligner already called

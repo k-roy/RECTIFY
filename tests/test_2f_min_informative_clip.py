@@ -565,3 +565,174 @@ class TestNoDisplacementOfAlignerCanonicalJunction:
             self._read(False), genome,
             {('chrD', 1000, 3000), ('chrD', 2500, 3200)}, strand='-')
         assert COUNTERS.get('candidate_would_displace_canonical', 0) == 0
+
+    def test_plus_strand_mirror(self):
+        """Same displacement, opposite strand. 34625d8e is minus-strand and the
+        first reproduction attempt reasoned plus-strand-first, which put the
+        moved boundary ~1,900 nt from the 5' edge instead of 475 — so both
+        orientations are pinned."""
+        import rectify.core.splice.splice_aware_5prime as s5
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+
+        genome = self._genome()
+        hdr = pysam.AlignmentHeader.from_dict(
+            {'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrD', 'LN': 3600}]})
+        r = pysam.AlignedSegment(hdr)
+        r.query_name = 'displace_plus'
+        r.reference_name = 'chrD'
+        r.is_reverse = False
+        r.is_unmapped = r.is_secondary = r.is_supplementary = False
+        r.mapping_quality = 60
+        # 5' end (reference_start) just below intron A, which the read spans.
+        r.reference_start = 995
+        r.cigartuples = [(4, 12), (0, 5), (3, 2000), (0, 100)]
+        r.query_sequence = 'A' * 117
+        COUNTERS['candidate_would_displace_canonical'] = 0
+        res = s5.rescue_3ss_truncation(
+            r, genome, {('chrD', 1000, 3000), ('chrD', 900, 2500)}, strand='+')
+        assert COUNTERS.get('candidate_would_displace_canonical', 0) >= 1
+        assert res.get('rescued_junction') != ('chrD', 900, 2500)
+
+    def test_the_pool_arm_supplies_strandless_candidates(self):
+        """Why the first hand-back was wrong. `load_annotated_junctions` yields
+        4-tuples carrying the junction's strand, and the per-candidate filter
+        drops a '+'-annotated junction for a minus-strand read — which is why
+        34625d8e looked unreachable. `bam_processor` adds POOL junctions as
+        3-tuples with no strand, so the filter cannot exclude them and the
+        junction IS a candidate on a real run. The rule must therefore hold for
+        a strand-less candidate."""
+        import rectify.core.splice.splice_aware_5prime as s5
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+
+        genome = self._genome()
+        COUNTERS['candidate_would_displace_canonical'] = 0
+        s5.rescue_3ss_truncation(
+            self._read(True), genome,
+            {('chrD', 1000, 3000), ('chrD', 2500, 3200)},   # 3-tuples: no strand
+            strand='-')
+        assert COUNTERS.get('candidate_would_displace_canonical', 0) >= 1
+
+
+def _pseudo_random_seq(n, seed=1729):
+    """Deterministic aperiodic ACGT string (no numpy, no test-order coupling)."""
+    out = []
+    x = seed
+    for _ in range(n):
+        x = (1103515245 * x + 12345) & 0x7FFFFFFF
+        out.append('ACGT'[(x >> 16) & 3])
+    return ''.join(out)
+
+
+class TestOffContigRescueRefused:
+    """ISSUE-015: 2F rescued an 8,134-nt 5' soft clip on the 16,569-nt chrM into
+    an 8,835 M "exon" at reference_start -5843. `pysam.index` then refused the
+    BAM ("pos=-5843 cannot be indexed") and a 1.5 h `correct` exited 1 with the
+    corrected BAM unindexed. One record in 145,000 killed the run.
+    """
+
+    CHROM_LEN = 16_569
+
+    @staticmethod
+    def _genome(n):
+        # Keyed by the STANDARDIZED name: rescue_3ss_truncation looks the contig
+        # up as standardize_chrom_name(read.reference_name), and 'chrM' maps to
+        # yeast's 'chrMito' (ISSUE-001's collision, agent S1). Without this the
+        # rescue returns at the "no genome sequence" guard and the contig-bounds
+        # rule under test is never reached.
+        from rectify.utils.genome import standardize_chrom_name
+        return {standardize_chrom_name('chrM'): _pseudo_random_seq(n, seed=7)}
+
+    def _read(self, clip, start, strand='+'):
+        hdr = pysam.AlignmentHeader.from_dict(
+            {'HD': {'VN': '1.6'}, 'SQ': [{'SN': 'chrM', 'LN': self.CHROM_LEN}]})
+        r = pysam.AlignedSegment(hdr)
+        r.query_name = 'b06afeb3'
+        r.reference_name = 'chrM'
+        r.reference_start = start
+        r.is_reverse = (strand == '-')
+        r.is_unmapped = r.is_secondary = r.is_supplementary = False
+        r.mapping_quality = 60
+        r.cigartuples = ([(4, clip), (0, 296)] if strand == '+'
+                         else [(0, 296), (4, clip)])
+        # Genuinely aperiodic: a homopolymer clip is refused earlier by the
+        # complexity short-circuit, and so is a tandem repeat of any period
+        # <= 32 -- neither would exercise the contig-bounds rule at all.
+        r.query_sequence = _pseudo_random_seq(clip + 296)
+        return r
+
+    def test_the_issue_015_record_shape_is_refused(self):
+        """Stock `chrM:4561 8134S296M…`: the exon would start at 4561 - 8134 =
+        -3573, before the contig. Refused at ADMISSION, with a token."""
+        import rectify.core.splice.splice_aware_5prime as s5
+        from rectify.core.splice.overhang_informativeness import COUNTERS
+
+        genome = self._genome(self.CHROM_LEN)
+        read = self._read(8134, 4561)
+        before_cigar, before_start = read.cigartuples, read.reference_start
+        COUNTERS['clip_exceeds_contig'] = 0
+        res = s5.rescue_3ss_truncation(
+            read, genome, {('chrM', 2990, 5270)}, strand='+')
+        assert res['rescued'] is False
+        assert res.get('clip_refused') == 'clip_exceeds_contig'
+        assert COUNTERS.get('clip_exceeds_contig', 0) == 1
+        # the BAM record itself is untouched
+        assert read.cigartuples == before_cigar
+        assert read.reference_start == before_start
+
+    def test_minus_strand_mirror_off_the_high_edge(self):
+        import rectify.core.splice.splice_aware_5prime as s5
+
+        genome = self._genome(self.CHROM_LEN)
+        read = self._read(8134, self.CHROM_LEN - 400, strand='-')
+        res = s5.rescue_3ss_truncation(
+            read, genome, {('chrM', 2990, 5270)}, strand='-')
+        assert res.get('clip_refused') == 'clip_exceeds_contig'
+
+    def test_a_long_but_in_bounds_clip_is_still_assessed(self):
+        """The rule is geometric, not a length ban: GENCODE chr5 first exons run
+        to 12,358 nt, so a multi-kb clip that FITS must still reach the rescue."""
+        import rectify.core.splice.splice_aware_5prime as s5
+
+        genome = self._genome(self.CHROM_LEN)
+        read = self._read(8134, 12_000)          # 12000 - 8134 = 3866 >= 0
+        res = s5.rescue_3ss_truncation(
+            read, genome, {('chrM', 2990, 5270)}, strand='+')
+        assert res.get('clip_refused') is None
+
+    def test_absurd_clip_length_is_capped(self):
+        import rectify.core.splice.splice_aware_5prime as s5
+
+        genome = self._genome(200_000)
+        read = self._read(s5.MAX_RESCUABLE_CLIP_BP + 1, 150_000)
+        res = s5.rescue_3ss_truncation(
+            read, genome, {('chrM', 100_000, 120_000)}, strand='+')
+        assert res.get('clip_refused') == 'clip_too_long'
+
+    def test_writer_never_emits_a_negative_position(self):
+        """The invariant behind the admission rule: whichever helper ran, a
+        surgery that placed the read off the contig is reverted. The ISSUE-015
+        read reached `reroute`, not `extend`, which is why 17d1c35's off-edge
+        refusal (inside extend) did not cover it."""
+        from rectify.core.bam.bam_writer import (
+            REFUSAL_OFF_CONTIG, apply_5prime_rescue_surgery,
+        )
+
+        genome = self._genome(self.CHROM_LEN)
+        read = self._read(8134, 4561)
+        before_cigar, before_start = read.cigartuples, read.reference_start
+        corr = {
+            'five_prime_rescued': True,
+            'five_prime_position': 2990,
+            'five_prime_soft_clip': 8134,
+            'five_prime_exon_cigar': '8835M',
+            'five_prime_upstream_trim': 0,
+            'five_prime_intron_clip_pos': 5270,
+            'reanchor_clip_len': 0,
+            'strand': '+',
+        }
+        modified, refusal = apply_5prime_rescue_surgery(read, corr, genome)
+        assert read.reference_start >= 0
+        if refusal == REFUSAL_OFF_CONTIG:
+            assert modified is False
+            assert read.cigartuples == before_cigar
+            assert read.reference_start == before_start
