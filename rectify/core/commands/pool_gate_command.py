@@ -72,6 +72,28 @@ def run_pool_gate(args: argparse.Namespace) -> int:
               "dev/STATIONC_REPEAT_FLAG_644I_20260811.md to build one)")
     if background_sv:
         print(f"  background-SV track: {background_sv}")
+
+    # A dead demotion term must never be mistaken for a clean result. Three of
+    # the four are unavailable on human input (no bundled self-homology /
+    # background-SV BED, no REPEAT_FEATURE_TYPES equivalent in a GENCODE GTF),
+    # and the table used to look identical to a fully-gated yeast run.
+    unavailable = summary.get('tracks_unavailable') or []
+    if unavailable:
+        print(f"  WARNING: {len(unavailable)} of 3 flag tracks UNAVAILABLE for "
+              f"this genome ({', '.join(unavailable)}) — those columns read "
+              f"'track_unavailable', NOT a clean result. Junctions here are "
+              f"gated on canonical_in_class x q_max x support (+ the length "
+              f"pre-gate) only.", file=sys.stderr)
+    if summary.get('n_annotated_introns_parsed') == 0:
+        print(f"  WARNING: 0 annotated introns parsed from {args.annotation} — "
+              f"every annotated junction is being reported as a discovery "
+              f"candidate. Check the annotation has 'intron' features or exons "
+              f"with Parent=/transcript_id attributes.", file=sys.stderr)
+    n_adj = summary.get('n_junctions_with_adjacent_indel')
+    if n_adj:
+        print(f"  {n_adj} censused junction(s) carry a boundary-adjacent indel "
+              f"(adj_indel_l/adj_indel_r columns) — the CIGAR signature of a "
+              f"refiner-moved boundary")
     print(f"  table: {tsv}\n  summary: {js}")
     return 0
 
