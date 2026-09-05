@@ -49,6 +49,15 @@ CORRECTION_TSV_HEADER = [
     'consensus_confidence',
     'consensus_n_agree',
     'consensus_tied',
+    # Why the 5' rescue this row found was NOT drawn into the corrected BAM.
+    # '' = drawn (or no rescue). One of the bam_writer REFUSAL_* tokens:
+    # extend_refused / reroute_refused / noncanonical_destination. When it is
+    # set, five_prime_rescued is 0, five_prime_exon_cigar is '',
+    # five_prime_intron_clip_pos is -1 and the rescued junction has been dropped
+    # from `junctions` — so no consumer can draw a junction the BAM lacks. The
+    # token keeps the decision auditable instead of silently dropping it.
+    # Appended last (the codebase convention: newest column last, every existing column keeps its absolute index).
+    'five_prime_rescue_refused',
 ]
 
 
@@ -168,6 +177,7 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         _consensus_cell(result, 'consensus_confidence'),
         _consensus_cell(result, 'consensus_n_agree'),
         _consensus_cell(result, 'consensus_tied'),
+        result.get('five_prime_rescue_refused', '') or '',
     ]
 
 

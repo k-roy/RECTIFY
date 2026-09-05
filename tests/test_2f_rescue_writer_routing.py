@@ -19,8 +19,14 @@ import pysam
 import pytest
 
 from rectify.core.bam.bam_writer import (
+    REFUSAL_EXTEND,
+    REFUSAL_NONCANONICAL,
+    REFUSAL_REROUTE,
+    REFUSAL_SOFTCLIP_ONLY,
     _n_op_intervals,
+    apply_5prime_rescue_surgery,
     apply_corrected_edits_to_read,
+    predict_5prime_rescue_refusal,
 )
 from rectify.core.bam.read_edits import (
     extend_read_5prime_for_junction_rescue,
@@ -396,3 +402,116 @@ class TestSumnerPanelTsvBamAgreement:
                 offenders.append((row['read_id'][:12], row['strand'], n,
                                   row['icp'], row['before'], row['after']))
         assert not offenders, offenders
+
+
+# ---------------------------------------------------------------------------
+# The writer verdict reaches the TSV (ISSUE-002, orchestrator follow-up)
+# ---------------------------------------------------------------------------
+
+class TestRefusalIsReportedNotSwallowed:
+    """The corrected TSV is written a pipeline stage BEFORE any BAM writer runs,
+    so a refused surgery would leave the row claiming a rescue the BAM does not
+    carry — and a live TSV consumer would draw a junction that is not there."""
+
+    def test_a_drawn_rescue_reports_no_refusal(self):
+        read = _make_read(200, [(4, 12), (0, 100)], '+',
+                          GENOME_SEQ[88:100] + GENOME_SEQ[200:300])
+        corr = _correction(five_prime_intron_clip_pos=200,
+                           five_prime_exon_cigar='12M', corrected_3prime=299)
+        modified, refusal = apply_5prime_rescue_surgery(read, corr, GENOME)
+        assert modified is True and refusal == ''
+        assert _n_op_intervals(read) == ((100, 200),)
+
+    def test_a_surgery_that_draws_nothing_reports_a_token(self):
+        """Whichever guard stops it, the row must never be left silently
+        claiming a rescue."""
+        read = _intronic_5prime_read()
+        corr = _correction(five_prime_intron_clip_pos=-1,
+                           five_prime_exon_cigar='7M')   # wrong query span, no icp
+        modified, refusal = apply_5prime_rescue_surgery(read, corr, GENOME)
+        assert refusal in (REFUSAL_REROUTE, REFUSAL_EXTEND, REFUSAL_NONCANONICAL)
+        assert modified is False
+
+    def test_noncanonical_destination_is_reported(self):
+        """A canonical-guard revert must surface as its own token, not as silence."""
+        genome = {'chrR': 'A' * 100 + 'TT' + 'C' * 96 + 'TT' + 'G' * 100}
+        read = _make_read(200, [(4, 12), (0, 100)], '+', 'A' * 112)
+        corr = _correction(five_prime_intron_clip_pos=200,
+                           five_prime_exon_cigar='12M', corrected_3prime=299)
+        modified, refusal = apply_5prime_rescue_surgery(read, corr, genome)
+        assert refusal == REFUSAL_NONCANONICAL
+        assert modified is False
+        assert _n_op_intervals(read) == ()
+
+    def test_softclip_fallback_is_a_partial_refusal(self):
+        """`softclip_intronic_tail_5prime` succeeds by HIDING the intronic bases;
+        no junction is drawn, so the junction claim must still be retracted even
+        though the read was modified."""
+        read = _intronic_5prime_read()
+        corr = _correction(five_prime_intron_clip_pos=200,
+                           five_prime_exon_cigar='')     # no exon CIGAR -> softclip path
+        modified, refusal = apply_5prime_rescue_surgery(read, corr, GENOME)
+        assert modified is True
+        assert refusal == REFUSAL_SOFTCLIP_ONLY
+        assert not [n for n in _n_op_intervals(read) if n == (100, 200)]
+
+    def test_prediction_matches_the_surgery_and_leaves_the_read_alone(self):
+        for corr, expect_token in (
+            (_correction(five_prime_intron_clip_pos=200,
+                         five_prime_exon_cigar='62M'), ''),
+            (_correction(five_prime_intron_clip_pos=-1,
+                         five_prime_exon_cigar='7M'), True),
+        ):
+            probe = _intronic_5prime_read()
+            before_cigar, before_start = probe.cigartuples, probe.reference_start
+            predicted = predict_5prime_rescue_refusal(probe, corr, GENOME)
+            # The prediction must not mutate the caller's read.
+            assert probe.cigartuples == before_cigar
+            assert probe.reference_start == before_start
+            # ...and must equal what the surgery actually produces.
+            actual_read = _intronic_5prime_read()
+            _, actual = apply_5prime_rescue_surgery(actual_read, corr, GENOME)
+            assert predicted == actual
+            if expect_token is True:
+                assert predicted != ''
+            else:
+                assert predicted == expect_token
+
+    def test_prediction_is_empty_for_an_unrescued_row(self):
+        read = _intronic_5prime_read()
+        assert predict_5prime_rescue_refusal(
+            read, _correction(five_prime_rescued=False), GENOME) == ''
+
+    def test_tsv_header_carries_the_column_last(self):
+        from rectify.core.bam.output import (
+            CORRECTION_TSV_HEADER, correction_result_to_tsv_row,
+        )
+        assert CORRECTION_TSV_HEADER[-1] == 'five_prime_rescue_refused'
+        row = correction_result_to_tsv_row({
+            'read_id': 'r', 'chrom': 'chrR', 'strand': '+',
+            'original_3prime': 1, 'corrected_3prime': 1,
+            'ambiguity_min': 0, 'ambiguity_max': 0, 'ambiguity_range': 0,
+            'correction_applied': [], 'confidence': 'high', 'qc_flags': [],
+            'five_prime_rescue_refused': REFUSAL_REROUTE,
+        })
+        assert len(row) == len(CORRECTION_TSV_HEADER)
+        assert row[-1] == REFUSAL_REROUTE
+
+    def test_all_three_writers_share_one_implementation(self):
+        """write_corrected_bam / write_softclipped_bam / write_dual_bam used to
+        carry copy-pasted 5' blocks, and the ISSUE-002 fix first landed in only
+        one of them. Assert the duplication is gone."""
+        import inspect
+
+        from rectify.core.bam import bam_writer as bw
+
+        src = inspect.getsource(bw)
+        # The icp gate must be CALLED exactly once, inside the shared helper.
+        assert src.count('projected_5prime_rescue_intron_edge(') == 1, (
+            'the icp gate should have exactly one call site '
+            '(apply_5prime_rescue_surgery); more means a writer grew its own copy')
+        assert src.count('apply_5prime_rescue_surgery(read, correction, genome)') == 3, (
+            'all three writers must delegate to the shared helper')
+        for fn in (bw.write_corrected_bam, bw.write_softclipped_bam, bw.write_dual_bam):
+            body = inspect.getsource(fn)
+            assert 'extend_read_5prime_for_junction_rescue(' not in body, fn.__name__

@@ -21,6 +21,7 @@ Date: 2026-03-09
 """
 
 from typing import Dict, Optional, Tuple
+import copy
 import logging
 import pysam
 
@@ -255,6 +256,67 @@ def _n_op_intervals(read: pysam.AlignedSegment) -> Tuple[Tuple[int, int], ...]:
     return tuple(out)
 
 
+# A 5' rescue whose N-op overshoots the acceptor by a base or two is the read
+# MISSING those bases at the exon-2 start, not an invented junction: `extend`
+# ends its N-op at the read's own alignment start, so every exon-2 base the
+# basecaller dropped is swallowed into the intron. Pulling the acceptor back onto
+# the canonical position and representing the dropped bases as D recovers the
+# real junction. Bounded deliberately: beyond a few bases the disagreement is
+# about placement, not about lost terminal bases, and the junction should be
+# refused rather than massaged.
+_MAX_ACCEPTOR_REPAIR_BP = 3
+
+
+def _repair_acceptor_overshoot(
+    read: pysam.AlignedSegment,
+    chrom_seq: str,
+    n_index: int,
+    start: int,
+    end: int,
+) -> bool:
+    """Pull a non-canonical rescued N-op back onto the nearest canonical acceptor.
+
+    ``n_index`` is the position of the N op in ``read.cigartuples``. The recovered
+    reference bases become a D op on the BODY side of the N — which is the side
+    the acceptor abuts on either strand: for a plus-strand rescue the CIGAR is
+    ``[exon..., N, body...]`` and the acceptor is the N's HIGH edge, for a minus-
+    strand rescue it is ``[body..., N, exon...]`` and the acceptor is the LOW
+    edge. Returns True when a repair was applied.
+
+    The smallest qualifying shift wins, so a nearer canonical position is never
+    passed over for a farther one (on the bundled upf1d cat3_plus_2 read both
+    delta=2 — the annotated GT-AG — and delta=4 are canonical).
+    """
+    cigar = list(read.cigartuples or [])
+    if not (0 <= n_index < len(cigar)) or cigar[n_index][0] != 3:
+        return False
+    length = cigar[n_index][1]
+    # Which edge abuts the read body? The exon ops the rescue wrote sit on the
+    # other side of the N.
+    body_is_after = any(op in (0, 7, 8) for op, _l in cigar[n_index + 1:])
+    for delta in range(1, _MAX_ACCEPTOR_REPAIR_BP + 1):
+        if length - delta <= 0:
+            break
+        cand = (start, end - delta) if body_is_after else (start + delta, end)
+        if not is_canonical_junction(chrom_seq, cand[0], cand[1], atac=True):
+            continue
+        new_cigar = list(cigar)
+        new_cigar[n_index] = (3, length - delta)
+        if body_is_after:
+            new_cigar.insert(n_index + 1, (2, delta))
+        else:
+            new_cigar.insert(n_index, (2, delta))
+            # reference_start is unchanged: the D consumes reference that the N
+            # used to cover, on the body side.
+        read.cigartuples = new_cigar
+        logger.debug(
+            "5' rescue acceptor repaired for %s: N %d-%d -> %d-%d (+%dD)",
+            read.query_name, start, end, cand[0], cand[1], delta,
+        )
+        return True
+    return False
+
+
 def _revert_selfinflicted_noncanonical_n(
     read: pysam.AlignedSegment,
     genome: Optional[Dict[str, str]],
@@ -303,17 +365,199 @@ def _revert_selfinflicted_noncanonical_n(
         )
         return False
     for start, end in new_nops:
-        if not is_canonical_junction(chrom_seq, start, end, atac=True):
-            logger.debug(
-                "5' rescue reverted for %s: writer-created N-op %d-%d is "
-                "non-canonical (%s..%s)",
-                read.query_name, start, end,
-                chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper(),
-            )
-            read.cigartuples = pre_cigar
-            read.reference_start = pre_start
-            return True
+        if is_canonical_junction(chrom_seq, start, end, atac=True):
+            continue
+        # A near miss is the read MISSING a base or two at the exon-2 start, not
+        # an invented junction. Try to pull the acceptor back onto the canonical
+        # position first; only a junction that cannot be recovered that way is
+        # reverted. (Bundled upf1d cat3_plus_2: extend drew GT-TC 148194-148284
+        # because the read lacks the 2 exon-2 bases TC, and shrinking by 2
+        # recovers the ANNOTATED GT-AG 148194-148282. Reverting instead cost that
+        # read its rescue and, through merge_corrected_tsvs' HP-edit-distance
+        # scoring of the corrected reads, handed the merged row to a different
+        # aligner with the wrong 5' position.)
+        _idx = None
+        _pos = read.reference_start
+        for _i, (_op, _l) in enumerate(read.cigartuples or []):
+            if _op == 3 and _pos == start:
+                _idx = _i
+                break
+            if _op in (0, 2, 3, 7, 8):
+                _pos += _l
+        if _idx is not None and _repair_acceptor_overshoot(
+                read, chrom_seq, _idx, start, end):
+            continue
+        logger.debug(
+            "5' rescue reverted for %s: writer-created N-op %d-%d is "
+            "non-canonical (%s..%s) and not recoverable within %d bp",
+            read.query_name, start, end,
+            chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper(),
+            _MAX_ACCEPTOR_REPAIR_BP,
+        )
+        read.cigartuples = pre_cigar
+        read.reference_start = pre_start
+        return True
     return False
+
+
+# Refusal reason tokens emitted into the corrected-TSV `five_prime_rescue_refused`
+# column. '' means the rescue was drawn into the BAM. Keep these stable — they are
+# a user-visible audit trail, not log text.
+REFUSAL_EXTEND = 'extend_refused'          # extend declined (no 5' clip, contig edge)
+REFUSAL_REROUTE = 'reroute_refused'        # icp gate sent it to reroute/softclip; both declined
+REFUSAL_NONCANONICAL = 'noncanonical_destination'   # the writer's own N-op was not GT-AG/GC-AG/AT-AC
+# The intronic bases WERE hidden as a soft clip at the true acceptor, but no
+# junction was drawn. The 5' position correction stands; only the junction claim
+# is retracted. Unlike the three above this is a PARTIAL downgrade — see
+# bam_processor, which must keep `five_prime_rescued` set or the writer would
+# skip the soft-clip surgery this token is reporting.
+REFUSAL_SOFTCLIP_ONLY = 'softclipped_no_junction'
+
+
+def apply_5prime_rescue_surgery(
+    read: pysam.AlignedSegment,
+    correction: Dict,
+    genome: Optional[Dict[str, str]] = None,
+) -> Tuple[bool, str]:
+    """Draw the 5' junction rescue into *read*. Returns ``(modified, refusal)``.
+
+    THE single implementation of the 5' surgery. It used to be copy-pasted into
+    ``apply_corrected_edits_to_read``, ``write_softclipped_bam`` and
+    ``write_dual_bam``; the ISSUE-002 fix initially landed in only the first, so
+    two writers kept fabricating junctions. One function, three call sites.
+
+    Exactly ONE of the three helpers may run — they are alternative geometries
+    for the same rescue, not stages of one.
+
+    ISSUE-002: ``extend_read_5prime_for_junction_rescue`` derives its intron
+    length from the LIVE alignment edge and never reads
+    ``five_prime_intron_clip_pos``. That is correct only when the edge it will
+    use IS the icp (or when the rescue published no icp at all). Otherwise it
+    fabricates an N-op running to the read's OLD 5' edge: 22 of the 26 F1+F2 rows
+    on the Sumner human panel, 15 of them replacing the annotated GT-AG the TSV
+    names with a novel non-canonical junction.
+
+    The gate is NOT ``icp < 0``: two panel rows (cea5e842, 7d297145) have
+    icp >= 0 and reach the correct annotated junction through extend plus
+    ``five_prime_upstream_trim``, a geometry reroute cannot express. Ask extend's
+    own projection where its N-op would land instead.
+
+    ``refusal`` is '' when a surgery stuck (or when the row claims no rescue),
+    else one of the ``REFUSAL_*`` tokens. ``bam_processor`` consults it through
+    :func:`predict_5prime_rescue_refusal` so the corrected TSV never advertises a
+    rescue the corrected BAM does not carry.
+    """
+    # Snapshot BEFORE the surgery so _revert_selfinflicted_noncanonical_n can
+    # tell an N-op this writer invented from one the aligner already had.
+    _pre_nops = _n_op_intervals(read)
+    _pre_cigar = read.cigartuples
+    _pre_start = read.reference_start
+
+    _icp = correction.get('five_prime_intron_clip_pos', -1)
+    _exon_cig = correction.get('five_prime_exon_cigar', '')
+    _rescued_flag = bool(correction.get('five_prime_rescued'))
+    _rescued = _rescued_flag and correction.get('five_prime_position') is not None
+
+    _extend_ok = True
+    if _rescued and _icp >= 0:
+        _edge = projected_5prime_rescue_intron_edge(
+            read,
+            correction['five_prime_soft_clip'],
+            correction['strand'],
+            correction.get('five_prime_upstream_trim', 0),
+        )
+        _extend_ok = (_edge is not None and _edge == _icp)
+
+    modified = False
+    refusal = ''
+    if _rescued and _extend_ok:
+        modified = extend_read_5prime_for_junction_rescue(
+            read,
+            correction['five_prime_position'],
+            correction['five_prime_soft_clip'],
+            correction['strand'],
+            exon_cigar_str=_exon_cig,
+            upstream_trim=correction.get('five_prime_upstream_trim', 0),
+        )
+        if not modified:
+            refusal = REFUSAL_EXTEND
+    elif _rescued:
+        # The N-op has to end at _icp and extend cannot express that. Reroute
+        # draws it there; if reroute refuses, hide the intronic bases as a soft
+        # clip at the true acceptor rather than fabricating a junction.
+        if _exon_cig:
+            modified = reroute_intronic_tail_5prime_via_junction(
+                read,
+                clip_boundary=_icp,
+                five_prime_position=correction['five_prime_position'],
+                exon_cigar_str=_exon_cig,
+                strand=correction['strand'],
+            )
+        if not modified and _icp >= 0:
+            modified = softclip_intronic_tail_5prime(
+                read,
+                clip_boundary=_icp,
+                strand=correction['strand'],
+            )
+        if not modified:
+            refusal = REFUSAL_REROUTE
+    elif _rescued_flag and _icp >= 0 and not _exon_cig:
+        modified = softclip_intronic_tail_5prime(
+            read,
+            clip_boundary=_icp,
+            strand=correction['strand'],
+        )
+
+    if _revert_selfinflicted_noncanonical_n(
+            read, genome, _pre_nops, _pre_cigar, _pre_start):
+        modified = False
+        refusal = REFUSAL_NONCANONICAL
+
+    # The rescue's claim is a JUNCTION, so "did the surgery stick" is not the
+    # right question — `softclip_intronic_tail_5prime` succeeds by hiding the
+    # intronic bases without drawing one. Report that separately rather than
+    # letting the row keep advertising a junction the BAM does not contain.
+    if _rescued and not refusal and modified:
+        if not any(n not in _pre_nops for n in _n_op_intervals(read)):
+            refusal = REFUSAL_SOFTCLIP_ONLY
+
+    return modified, refusal
+
+
+def predict_5prime_rescue_refusal(
+    read: pysam.AlignedSegment,
+    correction: Dict,
+    genome: Optional[Dict[str, str]] = None,
+) -> str:
+    """Refusal token :func:`apply_5prime_rescue_surgery` will produce for *read*,
+    computed on a throwaway copy so the caller's read is untouched.
+
+    ``bam_processor`` calls this while assembling the corrected-TSV row, because
+    the TSV is written a whole pipeline stage BEFORE any BAM writer runs. Without
+    it a refused surgery leaves the row still claiming `five_prime_rescued=1`
+    with an exon CIGAR and a junction — and a live TSV consumer (the browser)
+    draws a junction the BAM does not contain.
+
+    This is a prediction only in the scheduling sense: it runs the SAME function
+    on the SAME read after the SAME two pre-passes, so it cannot drift from what
+    the writer does. It is self-consistent in the other direction too — a row
+    whose fields this causes to be cleared makes the writer skip the surgery
+    entirely, which is the outcome the refusal already produced.
+    """
+    if correction is None or not correction.get('five_prime_rescued'):
+        return ''
+    probe = copy.deepcopy(read)
+    # Mirror apply_corrected_edits_to_read's pre-passes exactly (order matters:
+    # both mutate the CIGAR the surgery then measures).
+    if genome is not None:
+        _decode_eq_seq_inplace(probe, genome)
+    _rcl = correction.get('reanchor_clip_len', 0)
+    if _rcl > 0:
+        _apply_reanchor_from_clip_len(probe, _rcl)
+    if genome is not None:
+        realign_exon_blocks(probe, genome)
+    _, refusal = apply_5prime_rescue_surgery(probe, correction, genome)
+    return refusal
 
 
 def apply_corrected_edits_to_read(
@@ -357,84 +601,8 @@ def apply_corrected_edits_to_read(
     if genome is not None:
         modified |= realign_exon_blocks(read, genome)
 
-    # --- 5' junction-rescue surgery (Cat3 / Cases 1/2/2b/4) -----------------
-    # Snapshot BEFORE the surgery so _revert_selfinflicted_noncanonical_n below
-    # can tell an N-op this writer invented from one the aligner already had.
-    _pre_nops = _n_op_intervals(read)
-    _pre_cigar = read.cigartuples
-    _pre_start = read.reference_start
-    _pre_modified = modified
-
-    # 5' junction rescue (Cat3 / Cases 1/2/2b/4). Exactly ONE of the three
-    # helpers below may run — they are alternative geometries for the same
-    # rescue, not stages of one.
-    #
-    # ISSUE-002: `extend_read_5prime_for_junction_rescue` derives its intron
-    # length from the LIVE alignment edge and never reads
-    # `five_prime_intron_clip_pos`. That is correct only when the edge it will
-    # use IS the icp (or when the rescue published no icp at all). Otherwise it
-    # fabricates an N-op running to the read's OLD 5' edge: 22 of the 26 F1+F2
-    # rows on the Sumner human panel, 15 of them replacing the annotated GT-AG
-    # the TSV names with a novel non-canonical junction.
-    #
-    # The gate is NOT `icp < 0`: two panel rows (cea5e842, 7d297145) have
-    # icp >= 0 and reach the correct annotated junction through extend plus
-    # `five_prime_upstream_trim`, a geometry reroute cannot express. Ask
-    # extend's own projection where its N-op would land instead.
-    _icp = correction.get('five_prime_intron_clip_pos', -1)
-    _exon_cig = correction.get('five_prime_exon_cigar', '')
-    _rescued_flag = bool(correction.get('five_prime_rescued'))
-    _rescued = _rescued_flag and correction['five_prime_position'] is not None
-
-    _extend_ok = True
-    if _rescued and _icp >= 0:
-        _edge = projected_5prime_rescue_intron_edge(
-            read,
-            correction['five_prime_soft_clip'],
-            correction['strand'],
-            correction.get('five_prime_upstream_trim', 0),
-        )
-        _extend_ok = (_edge is not None and _edge == _icp)
-
-    if _rescued and _extend_ok:
-        modified |= extend_read_5prime_for_junction_rescue(
-            read,
-            correction['five_prime_position'],
-            correction['five_prime_soft_clip'],
-            correction['strand'],
-            exon_cigar_str=_exon_cig,
-            upstream_trim=correction.get('five_prime_upstream_trim', 0),
-        )
-    elif _rescued:
-        # The N-op has to end at _icp and extend cannot express that. Reroute
-        # draws it there; if reroute refuses, hide the intronic bases as a soft
-        # clip at the true acceptor rather than fabricating a junction.
-        _done = False
-        if _exon_cig:
-            _done = reroute_intronic_tail_5prime_via_junction(
-                read,
-                clip_boundary=_icp,
-                five_prime_position=correction['five_prime_position'],
-                exon_cigar_str=_exon_cig,
-                strand=correction['strand'],
-            )
-        if not _done and _icp >= 0:
-            _done = softclip_intronic_tail_5prime(
-                read,
-                clip_boundary=_icp,
-                strand=correction['strand'],
-            )
-        modified |= _done
-    elif _rescued_flag and _icp >= 0 and not _exon_cig:
-        modified |= softclip_intronic_tail_5prime(
-            read,
-            clip_boundary=_icp,
-            strand=correction['strand'],
-        )
-
-    if _revert_selfinflicted_noncanonical_n(
-            read, genome, _pre_nops, _pre_cigar, _pre_start):
-        modified = _pre_modified
+    _5p_modified, _ = apply_5prime_rescue_surgery(read, correction, genome)
+    modified |= _5p_modified
 
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):
@@ -588,35 +756,11 @@ def write_softclipped_bam(
             if genome is not None:
                 modified |= realign_exon_blocks(read, genome)
 
-            # 5' junction rescue: extend into upstream exon (Cat3).
-            if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
-                modified |= extend_read_5prime_for_junction_rescue(
-                    read,
-                    correction['five_prime_position'],
-                    correction['five_prime_soft_clip'],
-                    correction['strand'],
-                    exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
-                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
-                )
-
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
-            _icp = correction.get('five_prime_intron_clip_pos', -1)
-            _exon_cig = correction.get('five_prime_exon_cigar', '')
-            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
-                    and correction['five_prime_position'] is not None):
-                modified |= reroute_intronic_tail_5prime_via_junction(
-                    read,
-                    clip_boundary=_icp,
-                    five_prime_position=correction['five_prime_position'],
-                    exon_cigar_str=_exon_cig,
-                    strand=correction['strand'],
-                )
-            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
-                modified |= softclip_intronic_tail_5prime(
-                    read,
-                    clip_boundary=_icp,
-                    strand=correction['strand'],
-                )
+            # 5' junction rescue (Cat3 / Cases 1/2/2b/4) — the SAME routing and
+            # canonical-destination guard the hard-clip writer uses. This block
+            # used to be a copy of it and silently missed the ISSUE-002 fix.
+            _5p_mod, _ = apply_5prime_rescue_surgery(read, correction, genome)
+            modified |= _5p_mod
 
             # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
             if correction.get('sc_rescued_seq'):
@@ -747,35 +891,12 @@ def write_dual_bam(
             if genome is not None:
                 shared_modified |= realign_exon_blocks(read, genome)
 
-            # 5' rescue (Cat3) — identical for both BAMs.
-            if correction['five_prime_rescued'] and correction['five_prime_position'] is not None:
-                shared_modified |= extend_read_5prime_for_junction_rescue(
-                    read,
-                    correction['five_prime_position'],
-                    correction['five_prime_soft_clip'],
-                    correction['strand'],
-                    exon_cigar_str=correction.get('five_prime_exon_cigar', ''),
-                    upstream_trim=correction.get('five_prime_upstream_trim', 0),
-                )
-
-            # 5' junction rescue: reroute intronic M ops to exon 1 (Cases 1/2/2b/4).
-            _icp = correction.get('five_prime_intron_clip_pos', -1)
-            _exon_cig = correction.get('five_prime_exon_cigar', '')
-            if (_icp >= 0 and _exon_cig and correction.get('five_prime_rescued')
-                    and correction['five_prime_position'] is not None):
-                shared_modified |= reroute_intronic_tail_5prime_via_junction(
-                    read,
-                    clip_boundary=_icp,
-                    five_prime_position=correction['five_prime_position'],
-                    exon_cigar_str=_exon_cig,
-                    strand=correction['strand'],
-                )
-            elif _icp >= 0 and not _exon_cig and correction.get('five_prime_rescued'):
-                shared_modified |= softclip_intronic_tail_5prime(
-                    read,
-                    clip_boundary=_icp,
-                    strand=correction['strand'],
-                )
+            # 5' rescue (Cat3 / Cases 1/2/2b/4) — identical for both BAMs, and
+            # the SAME routing + canonical-destination guard the hard-clip writer
+            # uses. This block used to be a copy of it and silently missed the
+            # ISSUE-002 fix.
+            _5p_mod, _ = apply_5prime_rescue_surgery(read, correction, genome)
+            shared_modified |= _5p_mod
 
             # Save state at the divergence point (after shared ops, before 3' ops).
             # Only cigar, seq, quals, and reference_start are mutated by any path.

@@ -37,6 +37,10 @@ import pytest
 # Capture/refresh via:
 #     RECTIFY_RECORD_GOLDEN=1 pytest tests/test_bam_parallel_state.py -s
 #
+# 2026-09-05 (integration) — re-recorded ONCE for the UNION of the two 2026-09-05 schema
+# additions below (five_prime_rescue_refused from ISSUE-002, then the consensus_* quartet from
+# ledger D3 — the quartet stays the header's tail, a pinned contract); each branch had re-recorded for its own addition alone. Header is 44 columns.
+#
 # 2026-09-05 — re-recorded for the consensus-tag columns (ledger D3).  The
 # change is a pure SCHEMA addition: `consensus_aligner`, `consensus_confidence`,
 # `consensus_n_agree` and `consensus_tied` were added to the result dict
@@ -45,14 +49,24 @@ import pytest
 # rows carry four empty strings.  Verified before re-recording that stripping
 # the four new keys from the observed results reproduces the previous golden
 # 93af5e77… exactly, i.e. no correction semantics moved.
+# 2026-09-05 — re-recorded for the 5'-rescue writer-verdict column (ISSUE-002).
+# The change is a pure SCHEMA addition: `five_prime_rescue_refused` was added to
+# the result dict and is `''` for every row here.  Verified before re-recording
+# (dev/todo_run_20260904/S2/s2_m6_golden_check.py) that stripping the new key
+# from the observed results reproduces the previous golden 93af5e77… EXACTLY,
+# i.e. no correction semantics moved.  This invocation passes no annotation, so
+# the 3'SS rescue has no candidate junctions and none of the ISSUE-006/002/007
+# behaviour changes on this branch are exercised by it — which is why the
+# stripped hash still matches a golden recorded before them.
 #
 # 2026-08-01 — re-recorded for the ONT-cDNA strand fix (planning/541).  The
 # change is a pure SCHEMA addition: `strand_evidence` was added to the result
 # dict and is `''` for every non-ONT-cDNA row.  Verified before re-recording
 # that stripping the new key from the observed results reproduces the previous
-# golden a41ec734… exactly, i.e. no correction semantics moved.
+# golden a41ec734… exactly, i.e. no correction semantics moved.  Prior golden
+# 93af5e77…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "957be21ebc6d9802899b1bbcec2501d407fb9219d375f3553571c4cf1b1869d7"
+    "5195e1c04c3124b8ada003dd561e55a1c6cb6a36d01796463f1f2b371d56a265"
 )
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a

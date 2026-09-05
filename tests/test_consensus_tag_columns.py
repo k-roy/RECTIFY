@@ -83,16 +83,21 @@ class TestSchema:
             "consensus_tied",
         )
 
-    def test_columns_are_the_tail_of_the_header(self):
-        """Appended LAST — every pre-existing column keeps its index."""
-        assert tuple(CORRECTION_TSV_HEADER[-4:]) == CONSENSUS_TAG_COLUMNS
+    def test_columns_are_a_contiguous_block_after_strand_evidence(self):
+        """Appended as one block right after the last pre-D3 column, so every
+        pre-existing column keeps its index. (Integration 2026-09-05: a later
+        schema addition — ISSUE-002's ``five_prime_rescue_refused`` — now sits
+        AFTER this block; the pin is the block's position, not the header's tail.)"""
+        i = CORRECTION_TSV_HEADER.index("strand_evidence")
+        assert tuple(CORRECTION_TSV_HEADER[i + 1:i + 5]) == CONSENSUS_TAG_COLUMNS
 
     def test_header_has_no_duplicates(self):
         assert len(set(CORRECTION_TSV_HEADER)) == len(CORRECTION_TSV_HEADER)
 
     def test_strand_evidence_kept_its_index(self):
-        """The column that used to be last must not have moved."""
-        assert CORRECTION_TSV_HEADER[-5] == "strand_evidence"
+        """The column that used to be last must not have moved — pinned by its
+        ABSOLUTE index (38), which is what positional consumers depend on."""
+        assert CORRECTION_TSV_HEADER[38] == "strand_evidence"
 
 
 # ---------------------------------------------------------------------------
