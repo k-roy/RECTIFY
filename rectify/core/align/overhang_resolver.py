@@ -57,6 +57,21 @@ search stands: extending further would change both the candidate space and
 the false-discovery budget (``alpha`` is calibrated against the candidate
 density), so it is a design change, not a flag.
 
+**AT-AC introns (2026-09-04, opt-in, PAIRED):** ``ResolverConfig(atac=True)`` /
+``--resolver-atac`` adds a second clip-enumeration pass over the index's
+``don_at_*`` / ``acc_ac_*`` arrays with the pair enforced (AT donor ↔ AC
+acceptor only), ranks such placements below GT..AG and GC..AG at equal ED,
+and teaches the arbiter's canonical-class tests to accept AT..AC so a real
+one is not grammar-snapped onto a chance GT..AG. Motivation: yeast splices
+AT-AC through its major spliceosome (Talkish et al. 2019 PLoS Genet
+15:e1008249 — an AT-AC junction in SUT635), and human AT-AC introns are the
+U12-type class. Because the pair is enforced this is NOT the motif-free
+extension refuted in planning/722; it adds one dinucleotide pair, not a
+spectrum. The arbiter's two-boundary discovery paths (Case B D-op snap and
+the mismatch-flagged linear rescue) still enumerate GT/GC..AG only; the
+clip resolver (Station A's job) and the class-preserving boundary shifts
+are wired.
+
 Per terminal soft clip:
 
 1. **Assess** the clip with the shared informativeness gate
@@ -143,6 +158,13 @@ class ResolverConfig:
     # arb_grammar=False (the canonical-preference snap works against exactly
     # these junctions).
     acceptor_classes: str = 'canonical'
+    # AT-AC introns — opt-in, PAIRED class (module docstring). True runs a
+    # second clip-enumeration pass over don_at_*/acc_ac_* with the pair
+    # enforced (never AT..AG / GT..AC), ranks AT-AC placements after GT..AG
+    # and GC..AG at equal ED, and makes the arbiter's canonical-class tests
+    # accept AT..AC. Default False = the planning/720-measured candidate
+    # space, byte-identical.
+    atac: bool = False
     min_intron: int = 40         # matches BBMap intronlen=40 D->N semantics
     min_clip: int = 8            # clips shorter than this are never assessed
     max_clip_match: int = 200    # junction-proximal bases used for matching
@@ -261,7 +283,7 @@ class _Placement:
     intron_end: int
     lead: int            # exon bases between the near site and the aligned edge
     m: int               # exon bases matched beyond the far site
-    canonical_rank: int  # 0 = GT/AG-class donor, 1 = GC-class
+    canonical_rank: int  # 0 = GT/AG-class donor, 1 = GC-class, 2 = AT-AC (paired, opt-in)
     k_inside: int = 0    # aligned bases re-assigned across the junction
                          # (inside-edge near site; planning/644 T4c)
 
@@ -294,9 +316,41 @@ def _site_kinds(side: str, strand: str,
     return (_acc_kind(near, acceptor_classes), _acc_kind(far, acceptor_classes))
 
 
+def _site_kinds_atac(side: str, strand: str) -> Tuple[str, str]:
+    """(near_kind, far_kind) for the PAIRED AT-AC class (ResolverConfig.atac).
+
+    Same geometry as :func:`_site_kinds` with the four AT-AC arrays
+    substituted; the pair is enforced because the two kinds are only ever
+    queried together."""
+    if side == _LEFT:
+        return (('acc_ac_plus', 'don_at_plus') if strand == '+'
+                else ('don_at_minus', 'acc_ac_minus'))
+    return (('don_at_plus', 'acc_ac_plus') if strand == '+'
+            else ('acc_ac_minus', 'don_at_minus'))
+
+
+def _boundary_kinds_atac(strand: str) -> Tuple[str, str]:
+    """(left_kind, right_kind) of an AT-AC intron's genomic boundaries."""
+    return (('don_at_plus', 'acc_ac_plus') if strand == '+'
+            else ('acc_ac_minus', 'don_at_minus'))
+
+
+def _is_atac(chrom_seq: str, strand: str, intron_start: int, intron_end: int) -> bool:
+    """True iff the WRITTEN junction is an AT-AC intron on ``strand``."""
+    if intron_start < 0 or intron_end > len(chrom_seq):
+        return False
+    pair = (chrom_seq[intron_start:intron_start + 2].upper(),
+            chrom_seq[intron_end - 2:intron_end].upper())
+    return pair == (('AT', 'AC') if strand == '+' else ('GT', 'AT'))
+
+
 def _donor_rank(chrom_seq: str, side: str, strand: str,
                 intron_start: int, intron_end: int) -> int:
-    """0 for the canonical GT-class donor, 1 for GC-class."""
+    """0 for the canonical GT-class donor, 1 for GC-class, 2 for a (paired)
+    AT-AC intron. AT-AC is only ever enumerated under ``ResolverConfig.atac``,
+    so the default ranking is unchanged."""
+    if _is_atac(chrom_seq, strand, intron_start, intron_end):
+        return 2
     if strand == '+':
         dinuc = chrom_seq[intron_start:intron_start + 2].upper()
         return 0 if dinuc == 'GT' else 1
@@ -384,7 +438,12 @@ def resolve_clip(
         return None
     w = assessment.w_max_bp
 
-    near_kind, far_kind = _site_kinds(side, strand, cfg.acceptor_classes)
+    # One (near, far) kind pair per enabled class. The AT-AC pair is a
+    # separate pass, never a union, so the pair constraint holds by
+    # construction (ResolverConfig.atac).
+    kind_pairs = [_site_kinds(side, strand, cfg.acceptor_classes)]
+    if cfg.atac:
+        kind_pairs.append(_site_kinds_atac(side, strand))
 
     # --- Candidate lookup (binary search, bounded by W) --------------------
     placements: List[_Placement] = []
@@ -408,82 +467,83 @@ def resolve_clip(
         # every candidate; values AT the bound are still computed exactly
         # (the DP prunes on > only).
         return min(best_ed, cfg.max_edit_frac * (lc + k_cap)) + cfg.min_margin
-    if side == _LEFT:
-        # near site e in [edge - slop, edge + k_cap]; far f in [e - w, e - min_intron]
-        near_sites = index.sites_in(chrom_key, near_kind,
-                                    edge - cfg.edge_slop, edge + k_cap + 1)
-        for e in near_sites:
-            e = int(e)
-            if e <= edge:
-                lead, k = edge - e, 0
-                cmp_seq = clip_used
-            else:
-                lead, k = 0, e - edge
-                cmp_seq = clip_used + inside_seq[:k]
-            m = len(cmp_seq) - lead
-            if m < cfg.min_far_match:
-                continue
-            far_lo = max(0, e - w)
-            far_hi = e - cfg.min_intron + 1
-            for f in index.sites_in(chrom_key, far_kind, far_lo, far_hi):
-                f = int(f)
-                if f - m < 0:
-                    continue
-                ref = chrom_seq[f - m:f] + (chrom_seq[e:edge] if k == 0 else '')
-                stats.candidates_evaluated += 1
-                COUNTERS['candidates_evaluated'] += 1
-                n_cand += 1
-                if n_cand > cfg.max_candidates_per_clip:
-                    stats.refused_candidate_blowup += 1
-                    _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
-                    return None
-                _c = _cutoff()
-                ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
-                if ed <= _c:
-                    placements.append(_Placement(
-                        ed=ed, intron_start=f, intron_end=e, lead=lead, m=m,
-                        canonical_rank=_donor_rank(chrom_seq, side, strand, f, e),
-                        k_inside=k,
-                    ))
-                    best_ed = min(best_ed, ed)
-    else:
-        # near site d in [edge - k_cap, edge + slop]; far e in [d + min_intron, d + w]
-        near_sites = index.sites_in(chrom_key, near_kind,
-                                    edge - k_cap, edge + cfg.edge_slop + 1)
-        for d in near_sites:
-            d = int(d)
-            if d >= edge:
-                lead, k = d - edge, 0
-                cmp_seq = clip_used
-            else:
-                lead, k = 0, edge - d
-                cmp_seq = inside_seq[len(inside_seq) - k:] + clip_used
-            m = len(cmp_seq) - lead
-            if m < cfg.min_far_match:
-                continue
-            far_lo = d + cfg.min_intron
-            far_hi = d + w + 1
-            for e in index.sites_in(chrom_key, far_kind, far_lo, far_hi):
+    for near_kind, far_kind in kind_pairs:
+        if side == _LEFT:
+            # near site e in [edge - slop, edge + k_cap]; far f in [e - w, e - min_intron]
+            near_sites = index.sites_in(chrom_key, near_kind,
+                                        edge - cfg.edge_slop, edge + k_cap + 1)
+            for e in near_sites:
                 e = int(e)
-                if e + m > len(chrom_seq):
+                if e <= edge:
+                    lead, k = edge - e, 0
+                    cmp_seq = clip_used
+                else:
+                    lead, k = 0, e - edge
+                    cmp_seq = clip_used + inside_seq[:k]
+                m = len(cmp_seq) - lead
+                if m < cfg.min_far_match:
                     continue
-                ref = (chrom_seq[edge:d] if k == 0 else '') + chrom_seq[e:e + m]
-                stats.candidates_evaluated += 1
-                COUNTERS['candidates_evaluated'] += 1
-                n_cand += 1
-                if n_cand > cfg.max_candidates_per_clip:
-                    stats.refused_candidate_blowup += 1
-                    _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
-                    return None
-                _c = _cutoff()
-                ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
-                if ed <= _c:
-                    placements.append(_Placement(
-                        ed=ed, intron_start=d, intron_end=e, lead=lead, m=m,
-                        canonical_rank=_donor_rank(chrom_seq, side, strand, d, e),
-                        k_inside=k,
-                    ))
-                    best_ed = min(best_ed, ed)
+                far_lo = max(0, e - w)
+                far_hi = e - cfg.min_intron + 1
+                for f in index.sites_in(chrom_key, far_kind, far_lo, far_hi):
+                    f = int(f)
+                    if f - m < 0:
+                        continue
+                    ref = chrom_seq[f - m:f] + (chrom_seq[e:edge] if k == 0 else '')
+                    stats.candidates_evaluated += 1
+                    COUNTERS['candidates_evaluated'] += 1
+                    n_cand += 1
+                    if n_cand > cfg.max_candidates_per_clip:
+                        stats.refused_candidate_blowup += 1
+                        _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                        return None
+                    _c = _cutoff()
+                    ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
+                    if ed <= _c:
+                        placements.append(_Placement(
+                            ed=ed, intron_start=f, intron_end=e, lead=lead, m=m,
+                            canonical_rank=_donor_rank(chrom_seq, side, strand, f, e),
+                            k_inside=k,
+                        ))
+                        best_ed = min(best_ed, ed)
+        else:
+            # near site d in [edge - k_cap, edge + slop]; far e in [d + min_intron, d + w]
+            near_sites = index.sites_in(chrom_key, near_kind,
+                                        edge - k_cap, edge + cfg.edge_slop + 1)
+            for d in near_sites:
+                d = int(d)
+                if d >= edge:
+                    lead, k = d - edge, 0
+                    cmp_seq = clip_used
+                else:
+                    lead, k = 0, edge - d
+                    cmp_seq = inside_seq[len(inside_seq) - k:] + clip_used
+                m = len(cmp_seq) - lead
+                if m < cfg.min_far_match:
+                    continue
+                far_lo = d + cfg.min_intron
+                far_hi = d + w + 1
+                for e in index.sites_in(chrom_key, far_kind, far_lo, far_hi):
+                    e = int(e)
+                    if e + m > len(chrom_seq):
+                        continue
+                    ref = (chrom_seq[edge:d] if k == 0 else '') + chrom_seq[e:e + m]
+                    stats.candidates_evaluated += 1
+                    COUNTERS['candidates_evaluated'] += 1
+                    n_cand += 1
+                    if n_cand > cfg.max_candidates_per_clip:
+                        stats.refused_candidate_blowup += 1
+                        _warn_blowup(chrom_key, cfg.max_candidates_per_clip)
+                        return None
+                    _c = _cutoff()
+                    ed = hp_edit_distance_bounded(cmp_seq, ref, cutoff=_c)
+                    if ed <= _c:
+                        placements.append(_Placement(
+                            ed=ed, intron_start=d, intron_end=e, lead=lead, m=m,
+                            canonical_rank=_donor_rank(chrom_seq, side, strand, d, e),
+                            k_inside=k,
+                        ))
+                        best_ed = min(best_ed, ed)
 
     if not placements:
         stats.no_candidates += 1
@@ -646,7 +706,7 @@ def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None, ed_cur=None)
     grammar tiebreak (it did not clear the margin bound)."""
     if ed_cur is None:
         ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
-    cur_canon = (canonical_in_class(chrom_seq, *cur_junc)
+    cur_canon = (canonical_in_class(chrom_seq, *cur_junc, atac=cfg.atac)
                  if cur_junc is not None else True)
     bound = ed_cur - cfg.arb_margin
     grammar_bound = ed_cur if (cfg.arb_grammar and not cur_canon) else -1.0
@@ -660,7 +720,7 @@ def _score_alts(qwin, cur_ref, alts, chrom_seq, cfg, cur_junc=None, ed_cur=None)
             continue
         if ed <= bound or (
                 ed <= grammar_bound
-                and canonical_in_class(chrom_seq, d_alt, e_alt)):
+                and canonical_in_class(chrom_seq, d_alt, e_alt, atac=cfg.atac)):
             scored.append((ed, d_alt, e_alt))
     if not scored:
         return ed_cur, None, False
@@ -719,7 +779,7 @@ def _rearbitrate_read(
             if i >= 1 and ct[i - 1][0] == 2:
                 dl = ct[i - 1][1]
                 if (e - (d - dl)) <= cfg.max_intron and \
-                        canonical_in_class(chrom_seq, d - dl, e):
+                        canonical_in_class(chrom_seq, d - dl, e, atac=cfg.atac):
                     ct = ct[:i - 1] + [(3, nlen + dl)] + ct[i + 1:]
                     _bump(stats, 'arb_dmerge')
                     merged = True
@@ -728,7 +788,7 @@ def _rearbitrate_read(
             if i + 1 < len(ct) and ct[i + 1][0] == 2:
                 dl = ct[i + 1][1]
                 if ((e + dl) - d) <= cfg.max_intron and \
-                        canonical_in_class(chrom_seq, d, e + dl):
+                        canonical_in_class(chrom_seq, d, e + dl, atac=cfg.atac):
                     ct = ct[:i] + [(3, nlen + dl)] + ct[i + 2:]
                     _bump(stats, 'arb_dmerge')
                     merged = True
@@ -762,6 +822,13 @@ def _rearbitrate_read(
         _, nlen, n_rs, _ = walk[i]
         d = read.reference_start + n_rs
         e = d + nlen
+        # AT-AC (opt-in): boundary shifts preserve the junction's CLASS — an
+        # AT..AC intron's alternatives are other AT/AC sites, never GT/AG
+        # (which would let a chance GT..AG displace a real AT-AC site).
+        if cfg.atac and _is_atac(chrom_seq, strand, d, e):
+            lk, rk = _boundary_kinds_atac(strand)
+        else:
+            lk, rk = left_kind, right_kind
         # M flank lengths gate only the left/diagonal REWRITE bookkeeping;
         # SCORING windows come from the decoded query itself, so ONT indel
         # fragmentation at a mis-assigned boundary (planning/644c: the very
@@ -803,7 +870,7 @@ def _rearbitrate_read(
         # This is most junctions, and most of Case A's cost.
         cur_ref = chrom_seq[d - L1:d] + chrom_seq[e:e + L2]
         ed_cur = hp_edit_distance_bounded(qwin, cur_ref)
-        if ed_cur < cfg.arb_margin and canonical_in_class(chrom_seq, d, e):
+        if ed_cur < cfg.arb_margin and canonical_in_class(chrom_seq, d, e, atac=cfg.atac):
             _bump(stats, 'arb_clean_skip')
             continue
         a = assess_overhang(qwin, alpha=cfg.alpha, max_window=cfg.arb_window)
@@ -814,7 +881,7 @@ def _rearbitrate_read(
         alts = []
         # right-boundary shifts (last N only): N length changes, nothing else
         if which == 'both':
-            for e_alt in index.sites_in(chrom_key, right_kind, e - W, e + W + 1):
+            for e_alt in index.sites_in(chrom_key, rk, e - W, e + W + 1):
                 e_alt = int(e_alt)
                 if e_alt == e or not (cfg.min_intron <= e_alt - d <= cfg.max_intron):
                     continue
@@ -825,7 +892,7 @@ def _rearbitrate_read(
         # left-boundary shifts: query swaps between the flanking Ms (both
         # flanks must BE Ms — flank_m; see the frame-safety note above)
         if which in ('left_only', 'both') and flank_m:
-            for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
+            for d_alt in index.sites_in(chrom_key, lk, d - W, d + W + 1):
                 d_alt = int(d_alt)
                 delta = d_alt - d
                 if delta == 0 or not (cfg.min_intron <= e - d_alt <= cfg.max_intron):
@@ -843,13 +910,13 @@ def _rearbitrate_read(
         # dispute). Needs the same M-flank swap as the left family.
         if which == 'both' and flank_m:
             span = e - d
-            for d_alt in index.sites_in(chrom_key, left_kind, d - W, d + W + 1):
+            for d_alt in index.sites_in(chrom_key, lk, d - W, d + W + 1):
                 d_alt = int(d_alt)
                 delta = d_alt - d
                 if delta == 0:
                     continue
                 e_alt = d_alt + span
-                if index.sites_in(chrom_key, right_kind, e_alt, e_alt + 1).size == 0:
+                if index.sites_in(chrom_key, rk, e_alt, e_alt + 1).size == 0:
                     continue
                 if m_l + delta < 1 or m_r - delta < 1 or d_alt - L1 < 0 \
                         or e_alt + L2 > len(chrom_seq):
@@ -1253,6 +1320,7 @@ def run_overhang_resolver(
     max_intron: int = 5000,
     alpha: float = 0.01,
     acceptor_classes: str = 'canonical',
+    atac: bool = False,
     config: Optional[ResolverConfig] = None,
 ) -> str:
     """Stream the (name-sorted) minimap2 arm BAM through the resolver.
@@ -1281,7 +1349,7 @@ def run_overhang_resolver(
             threads,
         )
     cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron,
-                                   acceptor_classes=acceptor_classes)
+                                   acceptor_classes=acceptor_classes, atac=atac)
     if not cfg.skip_regions:
         cfg.skip_regions = skip_regions_from_env()
     genome = load_genome(Path(genome_path))

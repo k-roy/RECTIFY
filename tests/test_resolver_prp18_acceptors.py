@@ -111,8 +111,11 @@ class TestIndexExtension:
 
     def test_kind_vocabulary_is_exactly_the_prp18_set(self, index):
         kinds = {k.split('|', 1)[1] for k in index._arrays}
+        # 2026-09-04: fired, as designed, when the paired AT-AC class landed
+        # (format v3, ResolverConfig.atac — see test_resolver_atac_introns.py).
         assert kinds == {'don_gt_plus', 'don_gc_plus', 'acc_plus', 'don_minus',
-                         'acc_minus', 'acc_plus_ext', 'acc_minus_ext'}, (
+                         'acc_minus', 'acc_plus_ext', 'acc_minus_ext',
+                         'don_at_plus', 'acc_ac_plus', 'don_at_minus', 'acc_ac_minus'}, (
             'the splice-site kind vocabulary changed — planning/722b pricing '
             'and the alpha calibration need review')
 

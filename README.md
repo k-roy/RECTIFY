@@ -65,7 +65,7 @@ The panel's fourth arm is RECTIFY's own **overhang resolver** — a native re-al
 
 - the search window for each overhang is **bounded by its information content** — an explicit false-discovery budget instead of a fixed genomic window;
 - low-information overhangs (poly(A) tails, repeat expansions, short or low-complexity clips) are **refused rather than force-placed** — refusal is a counted, first-class outcome;
-- candidate sites come from a **precomputed splice-site index** (binary-search range query, never a scan), with configurable acceptor classes for alternative-3'SS studies (`--resolver-acceptor-classes prp18`);
+- candidate sites come from a **precomputed splice-site index** (binary-search range query, never a scan), with configurable acceptor classes for alternative-3'SS studies (`--resolver-acceptor-classes prp18`) and an opt-in paired AT-AC intron class (`--resolver-atac`; yeast splices AT-AC through its major spliceosome, and in human it is the U12-type class);
 - placements are scored with RECTIFY's **chemistry-calibrated homopolymer-aware penalties**, and accepted only when the winner is unambiguous after junction-ambiguity canonicalization — competitors within the score margin must be the *same* junction, not merely a nearby coordinate.
 
 Additional arms (mapPacBio, gapmm2, GMAP, winnowmap2, minisplice) remain available via `--aligners` / `--junction-aligners`. mapPacBio in particular is retained as a discovery scout for non-canonical splicing studies: its motif-free placement can find junctions the index-driven resolver cannot enumerate, and Station C (below) is the gate that adjudicates such candidates.

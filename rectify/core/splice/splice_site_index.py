@@ -41,6 +41,27 @@ Measured price (planning/722b): acceptor density 5.83 %/bp -> 22.3 %/bp
 (x4.82); measured benefit on the published junction set: enumerable
 utilized alt-3'SS 47 % -> 88 % in prp18, 62 % -> 85 % in upf1Δ-only.
 
+**AT-AC introns (paired class, opt-in via ``ResolverConfig.atac``)** — yeast
+splices AT-AC junctions through its MAJOR spliceosome (Talkish et al. 2019,
+PLoS Genet 15:e1008249, "Rapidly evolving protointrons in *Saccharomyces*
+genomes revealed by a hungry spliceosome": an AT-AC junction in *SUT635*),
+and in human AT-AC is the signature class of the U12-type minor spliceosome.
+Unlike the Prp18 acceptor extension this is a PAIR: the resolver queries the
+donor and acceptor arrays together and never combines an AT donor with an AG
+acceptor (or a GT donor with an AC acceptor) — that would re-open the
+planning/722 flat-spectrum false-discovery problem. Format v3 adds:
+
+===================  ===========================================  ============
+``don_at_plus``      AT at [p, p+2)                               p = intron
+                                                                  START
+``acc_ac_plus``      AC at [e-2, e)                               e = intron
+                                                                  END (excl.)
+``don_at_minus``     AT at [e-2, e)   (rc of transcript AT)       e = intron
+                                                                  END (excl.)
+``acc_ac_minus``     GT at [s, s+2)   (rc of transcript AC)       s = intron
+                                                                  START
+===================  ===========================================  ============
+
 The index is cached beside the genome as ``<genome>.splice_sites.npz`` with a
 provenance fingerprint (realpath + size + mtime_ns + format version); a
 mismatch triggers a silent rebuild. Yeast builds in <1 s; large genomes load
@@ -59,10 +80,11 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_FORMAT_VERSION = 2  # v2: + acc_plus_ext / acc_minus_ext (Prp18 classes)
+_FORMAT_VERSION = 3  # v3: + the paired AT-AC arrays (don_at_* / acc_ac_*)
 
 _KINDS = ('don_gt_plus', 'don_gc_plus', 'acc_plus', 'don_minus', 'acc_minus',
-          'acc_plus_ext', 'acc_minus_ext')
+          'acc_plus_ext', 'acc_minus_ext',
+          'don_at_plus', 'acc_ac_plus', 'don_at_minus', 'acc_ac_minus')
 
 
 def _dinuc_positions(seq_u8: np.ndarray, a: str, b: str) -> np.ndarray:
@@ -116,6 +138,16 @@ class SpliceSiteIndex:
             cc = _dinuc_positions(u8, 'C', 'C')
             acc_ext_m = np.sort(np.concatenate([ca, cg, cc, at])).astype(np.uint32)
             arrays[f'{chrom}|acc_minus_ext'] = acc_ext_m
+            # AT-AC introns (module docstring) — a PAIRED class: an AT donor is
+            # only ever combined with an AC acceptor, so these four arrays are
+            # queried together by the resolver's opt-in `atac` pass and are
+            # never unioned into the GT/GC..AG kinds.
+            arrays[f'{chrom}|don_at_plus'] = at.astype(np.uint32)          # AT at intron START
+            arrays[f'{chrom}|acc_ac_plus'] = (ac + 2).astype(np.uint32)    # AC at intron END
+            # Minus strand: transcript AT..AC reads, on the forward genome,
+            # GT at the intron START (rc of AC) ... AT at the intron END (rc of AT).
+            arrays[f'{chrom}|don_at_minus'] = (at + 2).astype(np.uint32)
+            arrays[f'{chrom}|acc_ac_minus'] = gt.astype(np.uint32)
         return cls(arrays, fingerprint=fingerprint)
 
     @staticmethod
@@ -170,7 +202,8 @@ class SpliceSiteIndex:
         """Sorted positions of ``kind`` in ``[lo, hi)`` on ``chrom``.
 
         ``kind`` is one of don_gt_plus / don_gc_plus / acc_plus / don_minus /
-        acc_minus / acc_plus_ext / acc_minus_ext, or a convenience union:
+        acc_minus / acc_plus_ext / acc_minus_ext / don_at_plus / acc_ac_plus /
+        don_at_minus / acc_ac_minus, or a convenience union:
         ``don_plus`` (GT+GC), ``acc_plus_all`` / ``acc_minus_all``
         (canonical AG-class + the Prp18 extended classes).
         """

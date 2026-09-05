@@ -750,6 +750,21 @@ def create_run_parser(subparsers):
     )
 
     run_parser.add_argument(
+        '--resolver-atac',
+        dest='resolver_atac',
+        action='store_true',
+        default=False,
+        help=(
+            "Also enumerate AT-AC introns in the overhang_resolver, as a PAIRED "
+            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC). Yeast "
+            "splices AT-AC through its major spliceosome (Talkish et al. 2019 "
+            "PLoS Genet 15:e1008249, SUT635); in human, AT-AC is the U12-type "
+            "minor-spliceosome class. Ranked below GT..AG / GC..AG at equal "
+            "score. Default off = the planning/720-measured candidate space."
+        )
+    )
+
+    run_parser.add_argument(
         '--max-intron',
         type=int,
         default=None,

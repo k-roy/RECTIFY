@@ -380,7 +380,11 @@ The resolver rebuilds it around several deliberate improvements:
   `--resolver-acceptor-classes prp18` opts in the alternative-3'SS classes
   measured in Roy et al. 2023 NAR (BG: TG/CG/GG + non-G: AT) for
   alternative-splicing missions (~×4.8 acceptor candidate density, hence
-  opt-in).
+  opt-in). `--resolver-atac` adds AT-AC introns as a **paired** class (AT
+  donor ↔ AC acceptor only, never AT..AG / GT..AC): yeast splices AT-AC
+  through its major spliceosome (Talkish et al. 2019 PLoS Genet, SUT635) and
+  in human it is the U12-type minor-spliceosome class. AT-AC placements rank
+  below GT..AG and GC..AG at equal score.
 - **HP-aware scoring.** Each candidate placement is scored with the same
   chemistry-calibrated homopolymer-aware edit distance used everywhere else in
   RECTIFY, with a strict `>`-only early-exit cutoff.

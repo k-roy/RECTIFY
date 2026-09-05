@@ -121,7 +121,13 @@ def test_index_kinds_are_pinned():
     """
     idx = SpliceSiteIndex.build({'chrC': CANON})
     kinds = {k.split('|', 1)[1] for k in idx._arrays}
-    assert kinds == set(_KINDS) | {'acc_plus_ext', 'acc_minus_ext'}, (
+    # 2026-09-04: fired again, as designed, when the paired AT-AC class landed
+    # (don_at_* / acc_ac_*, format v3; ResolverConfig.atac, opt-in). Spelled
+    # out literally so that adding a kind to _KINDS cannot satisfy this pin
+    # silently — the point is to force a re-price on every vocabulary change.
+    assert kinds == {'don_gt_plus', 'don_gc_plus', 'acc_plus', 'don_minus', 'acc_minus',
+                     'acc_plus_ext', 'acc_minus_ext',
+                     'don_at_plus', 'acc_ac_plus', 'don_at_minus', 'acc_ac_minus'}, (
         f'splice-site kind vocabulary changed ({kinds}) — re-price and '
         f're-measure; see planning/721 + 722b')
 

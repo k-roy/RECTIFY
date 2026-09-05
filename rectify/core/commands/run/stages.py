@@ -54,6 +54,7 @@ def _run_alignment(
     read_length: int = 150,
     max_intron: Optional[int] = None,
     resolver_acceptor_classes: str = 'canonical',
+    resolver_atac: bool = False,
 ) -> Tuple[Dict[str, Path], Path]:
     """
     Run multi-aligner alignment and selection, or return existing multialigned.bam.
@@ -177,6 +178,7 @@ def _run_alignment(
         # historical 5000).
         max_intron=max_intron,
         resolver_acceptor_classes=resolver_acceptor_classes,
+        resolver_atac=resolver_atac,
         no_consensus=False,
         chimeric_consensus=chimeric_consensus,
         junc_bonus=9,

@@ -231,6 +231,21 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     aligner_group.add_argument(
+        '--resolver-atac',
+        dest='resolver_atac',
+        action='store_true',
+        default=False,
+        help=(
+            "Also enumerate AT-AC introns in the overhang_resolver, as a PAIRED "
+            "class (AT donor <-> AC acceptor only; never AT..AG or GT..AC). Yeast "
+            "splices AT-AC through its major spliceosome (Talkish et al. 2019 "
+            "PLoS Genet 15:e1008249, SUT635); in human, AT-AC is the U12-type "
+            "minor-spliceosome class. Ranked below GT..AG / GC..AG at equal "
+            "score. Default off = the planning/720-measured candidate space."
+        )
+    )
+
+    aligner_group.add_argument(
         '--require-aligners',
         dest='require_aligners',
         action='store_true',
@@ -1057,6 +1072,7 @@ def run_align(args: argparse.Namespace) -> int:
                 max_intron=getattr(args, 'max_intron', 5000),
                 acceptor_classes=getattr(
                     args, 'resolver_acceptor_classes', 'canonical'),
+                atac=getattr(args, 'resolver_atac', False),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"

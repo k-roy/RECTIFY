@@ -441,18 +441,34 @@ _CANONICAL_DINUCS = frozenset(
 )
 
 
-def is_canonical_junction(chrom_seq: str, start: int, end: int) -> bool:
-    """Canonical splice grammar at the WRITTEN coordinates (either strand)."""
+_ATAC_DINUCS = frozenset(
+    # AT-AC introns on the FORWARD genome: AT..AC plus-strand, GT..AT
+    # minus-strand. A PAIRED class — accepted only when `atac=True` is
+    # passed (ResolverConfig.atac); Station C and every other default caller
+    # keep the GT/GC..AG grammar. Yeast splices AT-AC through its major
+    # spliceosome (Talkish et al. 2019 PLoS Genet 15:e1008249, SUT635); in
+    # human it is the U12-type minor-spliceosome class.
+    [('AT', 'AC'), ('GT', 'AT')]
+)
+
+
+def is_canonical_junction(chrom_seq: str, start: int, end: int,
+                          atac: bool = False) -> bool:
+    """Canonical splice grammar at the WRITTEN coordinates (either strand).
+
+    ``atac=True`` additionally accepts the paired AT-AC class."""
     if start < 0 or end > len(chrom_seq):
         return False
-    return (chrom_seq[start:start + 2].upper(),
-            chrom_seq[end - 2:end].upper()) in _CANONICAL_DINUCS
+    pair = (chrom_seq[start:start + 2].upper(), chrom_seq[end - 2:end].upper())
+    return pair in _CANONICAL_DINUCS or (atac and pair in _ATAC_DINUCS)
 
 
-def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60) -> bool:
-    """True iff ANY member of the junction's ambiguity class is canonical."""
+def canonical_in_class(chrom_seq: str, start: int, end: int, max_shift: int = 60,
+                       atac: bool = False) -> bool:
+    """True iff ANY member of the junction's ambiguity class is canonical
+    (``atac=True``: or AT-AC)."""
     l, r = ambiguity_window(chrom_seq, start, end, max_shift=max_shift)
-    return any(is_canonical_junction(chrom_seq, start + d, end + d)
+    return any(is_canonical_junction(chrom_seq, start + d, end + d, atac=atac)
                for d in range(-l, r + 1))
 
 
