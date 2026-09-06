@@ -231,6 +231,11 @@ _NONCANON_ANCHOR_ASSESS_BP = 30   # bases of each anchor whose information is as
 _NONCANON_DELTA = 1               # alternative-site radius (bp)
 _NONCANON_DELTA_HP = 2            # ... when the boundary is inside a homopolymer run
 _NONCANON_HP_RUN = 3              # ... of at least this length
+# Annotated-alternative rule (T0 4f9102d follow-on to RULING 3 (b)): a
+# non-canonical-class, unannotated winner that shares one boundary with an
+# annotated canonical-class candidate and lies within this many bases of it on
+# the other boundary loses to that candidate (see refine_read_junctions).
+_ANNOT_ALT_DELTA = 2
 NONCANON_REFUSALS = (
     'alternative_within_delta',
     'adjacent_indel',
@@ -831,6 +836,36 @@ def _realizable(
         return False
 
 
+def _annotated_alternative(
+    ranked: List[tuple],
+    chrom: str,
+    js: int,
+    je: int,
+    genome_seq: str,
+    strand: str,
+    annotated_set: Set[Junction],
+    delta: int = _ANNOT_ALT_DELTA,
+) -> Optional[tuple]:
+    """The best-ranked SCORED candidate that is annotated, canonical-class,
+    shares one boundary exactly with ``(js, je)`` and lies within *delta* of it
+    on the other; None when there is none.  *ranked* is the sorted list of
+    ``refine_read_junctions``' candidate tuples (``js``/``je`` at [5]/[6])."""
+    for tup in ranked:
+        s, e = tup[5], tup[6]
+        if (s, e) == (js, je):
+            continue
+        same_donor = (s == js and 0 < abs(e - je) <= delta)
+        same_acceptor = (e == je and 0 < abs(s - js) <= delta)
+        if not (same_donor or same_acceptor):
+            continue
+        if (chrom, s, e) not in annotated_set:
+            continue
+        if _canonical_tier(s, e, genome_seq, strand) > _CANONICAL_TIER_MAX:
+            continue
+        return tup
+    return None
+
+
 def _noncanon_destination_refusal(
     read: pysam.AlignedSegment,
     cigar_idx: int,
@@ -1243,6 +1278,46 @@ def refine_read_junctions(
 
         moves = (new_js != ns or new_je != ne)
 
+        # --- Annotated-alternative rule (T0 4f9102d, RULING 3 (b) applied as a
+        # decision instead of a freeze) -----------------------------------------
+        # A non-canonical-class, unannotated destination may not win over an
+        # annotated canonical-class candidate that shares one boundary with it
+        # and lies within _ANNOT_ALT_DELTA on the other: within that distance the
+        # read cannot tell them apart (an HP undercall or a 2-3 nt deletion at the
+        # exon start prices the two placements differently by a fraction of a
+        # unit), and the annotation is the evidence that decides.  Cohort reads:
+        # 527c329f (canonical incumbent; GT-GA +1 beat the annotated GT-AG by
+        # 0.125, the preponderance gate refused it and the read FROZE 12 nt off)
+        # and 7628e0dd (GT-AC incumbent; GT-CA 3D beat the annotated GT-AG 5D).
+        # The alternative REPLACES the winner, so the R1 hold and the gate below
+        # judge an annotated canonical destination.  This is a REDIRECT and
+        # nothing else: when the alternative is the incumbent itself, or a scored
+        # incumbent outranks it, or the surgery cannot write it, the winner falls
+        # through unchanged to the R1 hold and the preponderance gate, whose
+        # refusal accounting (noncanon_destination_refused, the A/B off-switch)
+        # is untouched.  Off under motif_blind, like every other annotation prior
+        # in this function.
+        if (
+            moves
+            and not motif_blind
+            and (chrom, new_js, new_je) not in annotated_set
+            and _canonical_tier(new_js, new_je, genome_seq, strand) > _CANONICAL_TIER_MAX
+        ):
+            _alt = _annotated_alternative(
+                ranked, chrom, new_js, new_je, genome_seq, strand, annotated_set,
+            )
+            if _alt is not None:
+                _alt_js, _alt_je = _alt[5], _alt[6]
+                if (
+                    (_alt_js, _alt_je) != (ns, ne)
+                    and (incumbent_tuple is None or _alt < incumbent_tuple)
+                    and _realizable(read, cigar_idx, ns, ne, _alt_js, _alt_je,
+                                    genome_seq, strand, hp_pen, W)
+                ):
+                    _bump('noncanon_dest_lost_to_annotated_alt')
+                    best_tuple = _alt
+                    best_score_cmp = _alt[0]
+                    new_js, new_je = _alt_js, _alt_je
         # Move gate.  Two priors against a marginally-better-scoring displacement:
         #   * hold_margin      — a BLUNT prior: any move must beat the incumbent by it.
         #   * hp_drift_margin   — a TARGETED prior: only a move that slides a boundary

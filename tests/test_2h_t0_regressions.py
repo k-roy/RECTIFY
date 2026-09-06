@@ -198,6 +198,118 @@ class TestRealizability:
 
 
 # ---------------------------------------------------------------------------
+# F2 — a non-canonical winner loses to an annotated canonical alternative within delta
+# ---------------------------------------------------------------------------
+
+class TestAnnotatedAlternative:
+    """Stock S = (ns, ne) GT..CAG.  A second CAG is planted three bases upstream,
+    so A = (ns, ne-3) is canonical (tier 0) and is the ANNOTATED candidate.
+    W = (ns, ne-1) is non-canonical (acceptor trinucleotide GCA -> tier 4),
+    shares the donor with A and sits 2 nt from it.  Both are single-boundary
+    acceptor moves the surgery writes as 1D / 3D.  The gate would refuse W on
+    its own (S is a canonical site 1 nt away) and FREEZE the read; the rule
+    sends it to A instead."""
+
+    @staticmethod
+    def _setup(monkeypatch, *, scores):
+        read, g, idx, ns, ne = _locus(CLEAN, "CTA", plants=[(-6, "CAG")])
+        S, A, W = (ns, ne), (ns, ne - 3), (ns, ne - 1)
+        assert jr._canonical_tier(*S, g, "+") <= _CANONICAL_TIER_MAX
+        assert jr._canonical_tier(*A, g, "+") <= _CANONICAL_TIER_MAX
+        assert jr._canonical_tier(*W, g, "+") > _CANONICAL_TIER_MAX
+        _fake_scores(monkeypatch, {k: v for k, v in scores.items() if k in (S, A, W)}
+                     if scores else {})
+        return read, g, idx, S, A, W
+
+    def test_the_annotated_alternative_wins(self, monkeypatch):
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5}                       # incumbent absent, as in production
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        repl = _refine(read, g, scores, annotated=[A], counters=counters)
+        assert repl == [(idx, *S, *A)]
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+        assert counters["noncanon_destination_refused"] == 0   # the gate saw an annotated canonical destination
+        assert _apply(read, repl, g) == (True, "40M97N3D40M")
+
+    def test_with_a_scored_incumbent_that_ranks_below(self, monkeypatch):
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5, S: 2.0}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters) == [(idx, *S, *A)]
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+
+    def test_a_scored_incumbent_that_outranks_the_alternative_falls_through(self, monkeypatch):
+        """No redirect when the incumbent ranks above A: W goes on to the gate,
+        which refuses it on its own terms (S is a canonical site 1 nt away)."""
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, S: 0.45, A: 0.5}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters) == []
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+        assert counters["noncanon_destination_refused_alternative_within_delta"] == 1
+
+    def test_the_incumbent_as_alternative_is_the_gate_s_business(self, monkeypatch):
+        """S annotated canonical, W 1 nt away: the only alternative is the
+        incumbent -> the rule is silent and the gate refuses W as before, so the
+        refusal counter the tester reads and the A/B off-switch keep their meaning
+        (tests/test_2h_noncanon_preponderance.py pins both)."""
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, S: 2.0}                        # clears the 1.0 R1 hold: the gate decides
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[S], counters=counters) == []
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+        assert counters["noncanon_destination_refused_alternative_within_delta"] == 1
+
+    def test_beyond_delta_the_rule_is_silent(self, monkeypatch):
+        """A moved to 4 nt from W (delta is 2): no redirect; with the gate off W
+        wins as before, so the test isolates the rule from the gate."""
+        monkeypatch.setattr(jr, "_NONCANON_PREPONDERANCE", False)
+        read, g, idx, ns, ne = _locus(CLEAN, "CTA", plants=[(-8, "CAG")])
+        S, A, W = (ns, ne), (ns, ne - 5), (ns, ne - 1)
+        assert jr._canonical_tier(*A, g, "+") <= _CANONICAL_TIER_MAX < jr._canonical_tier(*W, g, "+")
+        scores = {W: 0.4, A: 0.5}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters) == [(idx, *S, *W)]
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+
+    def test_an_unannotated_canonical_neighbor_does_not_redirect(self, monkeypatch):
+        """The alternative must be ANNOTATED: A canonical but unannotated -> no
+        redirect (the gate, off here, is what judges such a W)."""
+        monkeypatch.setattr(jr, "_NONCANON_PREPONDERANCE", False)
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[], counters=counters) == [(idx, *S, *W)]
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+
+    def test_motif_blind_disables_the_rule(self, monkeypatch):
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters,
+                       motif_blind=True) == [(idx, *S, *W)]
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+
+    def test_helper_requires_a_shared_boundary(self):
+        """(ns+1, ne-3) is within 2 nt on BOTH boundaries but shares neither
+        exactly -> not an alternative under this rule."""
+        read, g, idx, ns, ne = _locus(CLEAN, "CTA", plants=[(-6, "CAG")])
+        W, A = (ns, ne - 1), (ns, ne - 3)
+        tup = lambda s, e: (0.5, 0, 1, 0, 0, s, e, 0)   # noqa: E731
+        annotated = {(CHROM, *A), (CHROM, ns + 1, ne - 3)}
+        assert jr._annotated_alternative([tup(*A)], CHROM, *W, g, "+", annotated) == tup(*A)
+        assert jr._annotated_alternative([tup(ns + 1, ne - 3)], CHROM, *W, g, "+", annotated) is None
+        assert jr._annotated_alternative([tup(*W)], CHROM, *W, g, "+", annotated | {(CHROM, *W)}) is None
+
+
+# ---------------------------------------------------------------------------
 # Replay of the tester's bundle (d4 format), skip-if-absent
 # ---------------------------------------------------------------------------
 
@@ -325,3 +437,41 @@ class TestBundleReplay:
         assert (225783365, 225789239) in new_n          # 4f9102d had left it at the stock
         assert counters["unrealizable_winner_skipped"] == 1
         assert out_n == base_n
+
+    def test_527c329f_goes_to_the_annotated_acceptor_not_the_freezer(self):
+        """F2 (canonical incumbent): GT-GA 103377463 beat the annotated GT-AG
+        103377462 by 0.125 under the corrected window; the gate refused it and
+        4f9102d left the read 12 nt off at the stock.  Now the annotated
+        alternative wins and the gate never fires."""
+        out_n, base_n, new_n, counters, annotated, tier = _replay("527c329f")
+        assert (103377106, 103377462) in base_n and (103377106, 103377462) in annotated
+        assert (103377106, 103377474) in new_n           # 4f9102d: frozen at the stock
+        assert (103377106, 103377462) in out_n
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+        assert counters["noncanon_destination_refused"] == 0
+        assert out_n == base_n
+
+    def test_7628e0dd_goes_to_the_annotated_acceptor_not_gt_ca(self):
+        """F2 (non-canonical incumbent GT..AC): GT-CA 154257064 (3D) beat the
+        annotated GT-AG 154257062 (5D) under the corrected window."""
+        out_n, base_n, new_n, counters, annotated, tier = _replay("7628e0dd")
+        assert (154255755, 154257062) in base_n and (154255755, 154257062) in annotated
+        assert (154255755, 154257064) in new_n and tier(154255755, 154257064) > _CANONICAL_TIER_MAX
+        assert (154255755, 154257062) in out_n
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+        assert out_n == base_n
+
+    def test_bbc2d388_is_an_annotated_to_annotated_choice(self):
+        """Documented, NOT a fix: both 149197991 (baseline) and 149197995 (4f9102d)
+        are GENCODE-annotated canonical donors (minus strand) in the tester's own
+        tables, 4 nt apart, and the corrected window prefers 995 (2.265 vs 3.194,
+        inside the 1.0 noise floor).  The annotated-alternative rule does not
+        apply (the destination is annotated); whether the smaller move should win
+        an annotated-vs-annotated near-tie is a ruling question, pinned here so a
+        change of behavior is noticed."""
+        out_n, base_n, new_n, counters, annotated, tier = _replay("bbc2d388")
+        assert (149190531, 149197991) in base_n and (149190531, 149197991) in annotated
+        assert (149190531, 149197995) in new_n and (149190531, 149197995) in annotated
+        assert tier(149190531, 149197995) <= _CANONICAL_TIER_MAX
+        assert (149190531, 149197995) in out_n
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
