@@ -54,11 +54,15 @@ def test_no_emitted_junction_is_one_the_writer_reverts(key, monkeypatch):
 
 def test_the_vanished_reads_draw_again(monkeypatch):
     """The 23 true vanishes of f53d770 (11 TP + 12 FP by the tester's baseline classes) draw a junction again —
-    at the coordinates 2F reports. One read is not drawn: 38722d08 (11-nt clip, 1 nt into exon 2) has no canonical
-    shift left once the writer-guard is applied to the sweep and ends as a proximity-only row; named here so the
-    residue stays visible."""
+    at the coordinates 2F reports. Two reads are not drawn, named here so the residue stays visible:
+    38722d08 (VANISHED_TP_rescue_annot; 11-nt clip, 1 nt into exon 2) has no canonical shift left once the
+    writer-guard is applied to the sweep and ends as a proximity-only row; c5d1c111 (VANISHED_FP_added_nov, listed
+    twice) is the +4 decoy 154398398 the baseline DREW on 9 matched bases — invariant A refuses that slide off the
+    annotated 154398394 as a placement without novel-site evidence (`novel_exon_matched_below_floor`, both gate
+    modes), the unslid coordinate does not pass the exon-vs-intron acceptance, and the read starts exactly at the
+    acceptor so Case 4 cannot snap it: not drawing it removes the false positive."""
     table = SB.load_bundle('f53d770')
-    not_drawn = []
+    not_drawn, tokens = [], {}
     n_vanished = 0
     for key, entry in sorted(table.items()):
         if not any(c.startswith('VANISHED') for c in entry['classes']):
@@ -67,5 +71,8 @@ def test_the_vanished_reads_draw_again(monkeypatch):
         row, res, rec, stock = SB.replay(entry, monkeypatch)
         if not (res.get('rescued') and row['five_prime_rescue_refused'] == '' and SB.new_nops(rec, stock)):
             not_drawn.append(key)
+            tokens[key] = row['five_prime_rescue_refused']
     assert n_vanished >= 23, n_vanished
-    assert not_drawn == ['38722d08'], not_drawn
+    assert not_drawn == ['38722d08', 'c5d1c111', 'c5d1c111#2'], (not_drawn, tokens)
+    assert tokens['c5d1c111'] == 'novel_exon_matched_below_floor', tokens
+    assert 'VANISHED_FP_added_nov' in table['c5d1c111']['classes'], table['c5d1c111']['classes']

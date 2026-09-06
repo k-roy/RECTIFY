@@ -264,6 +264,24 @@ NOVEL_EXON_REFUSALS = ('novel_exon_matched_below_floor',
                        'novel_exon_indel_burden',
                        'novel_exon_no_cigar')
 
+# --- ISSUE-026 invariant A (2026-09-05): a slide off an annotated coordinate is
+# a NOVEL placement. The shift sweep may move the emitted junction off the
+# annotated candidate's coordinate, outside the sequence-ambiguity window
+# (T0 chrX: fd8c2b85 / 14be8590 / 2586f261 to the GTGAGT +4/+5 GT on an
+# 11-nt clip at ED 4.0 vs 5.0; dab60caa 5 nt LEFT onto a non-canonical AG).
+# Such a placement must carry the novel-site evidence above — as a PLACEMENT
+# decision, in BOTH gate modes — and an out-of-window shift may never land on
+# a non-canonical donor when the unslid annotated coordinate is canonical.
+# When the slide is refused the candidate is re-scored at its annotated
+# coordinate (shift 0) and kept there when the exon-vs-intron acceptance holds;
+# otherwise the read falls through to the structural Case-4 snap. The
+# annotated coordinate is the default; a slide has to earn its way off it.
+ANNOTATED_SLIDE_REFUSAL = 'annotated_slide_noncanonical_donor'
+# Tokens the wrapper turns into the '<token>>annotated|novel' trace when a
+# later path re-rescues the read (NOVEL_EXON_REFUSALS is the novel-site
+# verdict proper and stays as it is; tests pin its contents).
+PLACEMENT_REFUSALS = NOVEL_EXON_REFUSALS + (ANNOTATED_SLIDE_REFUSAL,)
+
 # What the gate DOES with its verdict on a novel site (RECTIFY_2F_NOVEL_GATE):
 #   refuse — the sequence/snap rescue is refused; the token lands in
 #            five_prime_rescue_refused (arbiter RULING 1, 2026-09-05).
@@ -1842,9 +1860,9 @@ def rescue_3ss_truncation(
     # in novel_evidence so the T0 accounting sees the refusal.
     _refused_tok = (_result.get('clip_refused') or _result.get('novel_refused_first') or '')
     _result.pop('novel_refused_first', None)
-    if _refused_tok in NOVEL_EXON_REFUSALS and not _result.get('rescued'):
+    if _refused_tok in PLACEMENT_REFUSALS and not _result.get('rescued'):
         _result.setdefault('landing_annotated', False)
-    elif _refused_tok in NOVEL_EXON_REFUSALS and _result.get('rescued'):
+    elif _refused_tok in PLACEMENT_REFUSALS and _result.get('rescued'):
         _result['novel_evidence'] = (
             f"{_refused_tok}>" + ('annotated' if _result.get('landing_annotated') else 'novel'))
         _result['clip_refused'] = ''
@@ -1853,7 +1871,7 @@ def rescue_3ss_truncation(
     # the token rides on a DRAWN rescue (novel_evidence); in refuse mode it is
     # the refusal (clip_refused) or the '<token>>…' trace of a re-rescue.
     _tok = (_result.get('clip_refused') or _result.get('novel_evidence') or '').split('>')[0]
-    if _tok in NOVEL_EXON_REFUSALS:
+    if _tok in PLACEMENT_REFUSALS:
         _OI_COUNTERS[_tok] = _OI_COUNTERS.get(_tok, 0) + 1
     # ISSUE-020 (e): moves BETWEEN two annotated candidates, once per read on
     # the FINAL result (the body runs once per terminal-peel depth as well).
@@ -2068,6 +2086,10 @@ def _rescue_3ss_truncation_body(
     # acceptor sat `dist` bases past the reported one (drawn at the wrong
     # acceptor at 6485226, refused as non-canonical at f53d770).
     best_exon2_prefix = 0
+    # ISSUE-026 invariant A: the winner's own UNSLID (shift 0) alternative —
+    # (deficit, hp-ED, eff_junction, exon_seq, donor_ok, in_amb, rescue_ok) —
+    # so a refused slide can fall back to the annotated coordinate.
+    best_shift0 = None
 
     # Forced-snap fallback for the mapPacBio terminal-D overshoot pattern.
     # When the distance gate detects _n_match AND _leading_del (N-op proves the
@@ -2536,11 +2558,14 @@ def _rescue_3ss_truncation_body(
                 _survivors = ([_t for _t in _prune if _t[1] == 0]
                               + [_t for _t in _prune if _t[1] != 0][:ANCHORED_RANK_TOP_K])
                 _best_local = None
+                _shift0_alt = None   # ISSUE-026 invariant A: the unslid alternative
                 for _t in _survivors:
                     _deficit = _anchored_deficit(_rseq_u, genome_seq, _t[2], '+')
                     _n_anchored_dps += 1
                     if _deficit is None:
                         continue
+                    if _t[1] == 0:
+                        _shift0_alt = (_deficit, _t[0][0], _t[2], _t[3], _t[4], _t[5])
                     _key = (_deficit, _t[0][1], _t[0][2], _t[0][3])
                     if _best_local is None or _key < _best_local[0]:
                         _best_local = (_key, _t)
@@ -2739,11 +2764,14 @@ def _rescue_3ss_truncation_body(
                 _survivors = ([_t for _t in _prune if _t[1] == 0]
                               + [_t for _t in _prune if _t[1] != 0][:ANCHORED_RANK_TOP_K])
                 _best_local = None
+                _shift0_alt = None   # ISSUE-026 invariant A: the unslid alternative
                 for _t in _survivors:
                     _deficit = _anchored_deficit(_rseq_u, genome_seq, _t[2], '-')
                     _n_anchored_dps += 1
                     if _deficit is None:
                         continue
+                    if _t[1] == 0:
+                        _shift0_alt = (_deficit, _t[0][0], _t[2], _t[3], _t[4], _t[5])
                     _key = (_deficit, _t[0][1], _t[0][2], _t[0][3])
                     if _best_local is None or _key < _best_local[0]:
                         _best_local = (_key, _t)
@@ -2827,6 +2855,17 @@ def _rescue_3ss_truncation_body(
                     best_cand_key = (j_chrom, intron_start, intron_end)
                     best_candidate_annotated = _cand_annotated
                     best_exon2_prefix = _exon2_prefix_local
+                    # ISSUE-026 invariant A: remember the unslid alternative and
+                    # whether the exon-vs-intron acceptance holds there.
+                    if _shift0_alt is not None:
+                        _ed0 = _shift0_alt[1]
+                        if len(intron_cmp_seq) == _rlen:
+                            _ok0 = (_ed0 == 0) or (ed_intron > 0 and _ed0 < ed_intron * 0.70)
+                        else:
+                            _ok0 = (_ed0 / _rlen <= max_edit_frac)
+                        best_shift0 = _shift0_alt + (_ok0,)
+                    else:
+                        best_shift0 = None
                     best_is_canonical = _best_local_canonical
                     best_in_amb = _best_in_amb
                     best_shift_abs = _best_local_shift_abs
@@ -2871,7 +2910,11 @@ def _rescue_3ss_truncation_body(
                         strand, strict=True) is True:
                     best_junction = None
 
-        if best_junction is not None:
+        # A `while` so ISSUE-026 invariant A can re-run the placement once at the
+        # annotated coordinate after refusing a slide; every other path leaves
+        # the loop on its first pass (return, or best_junction = None).
+        _slide_fallback_used = False
+        while best_junction is not None:
             # Compute local alignment CIGAR for the exon portion so that
             # bam_writer can emit M/I/D ops instead of a flat nM block.
             #
@@ -3095,6 +3138,54 @@ def _rescue_3ss_truncation_body(
             if not _emitted_annotated:
                 _novel_tok = _novel_exon_evidence_refusal(
                     _cigar_ops, len(_align_seq), strand, max_edit_frac)
+            # --- ISSUE-026 invariant A: a slide off the annotated coordinate ---
+            # `best_candidate_annotated and not _emitted_annotated` = the sweep
+            # moved an ANNOTATED candidate to a non-equivalent coordinate. That
+            # placement is novel — the token above says whether the placed
+            # segment carries it — and, additionally, an out-of-window shift may
+            # not sit on a non-canonical donor when the unslid coordinate is
+            # canonical (T0 chrX 2586f261: +5 onto TA with 11 clean matches;
+            # dab60caa: -5 onto AG). Both are PLACEMENT decisions in BOTH gate
+            # modes: refuse the slide, fall back to the candidate's own
+            # coordinate when the exon-vs-intron acceptance holds there, else
+            # leave the read to the structural Case-4 snap. The annotated
+            # coordinate is the default; a slide has to earn its way off it.
+            _slide_tok = ''
+            if (annotated_keys is not None and best_candidate_annotated
+                    and not _emitted_annotated):
+                _slide_tok = _novel_tok
+                if (not _slide_tok and not best_in_amb and not best_is_canonical
+                        and best_shift0 is not None and best_shift0[4]):
+                    _slide_tok = ANNOTATED_SLIDE_REFUSAL
+            if _slide_tok:
+                _OI_COUNTERS['five_prime_annotated_slide_refused'] = (
+                    _OI_COUNTERS.get('five_prime_annotated_slide_refused', 0) + 1)
+                _fb = best_shift0
+                if (_fb is not None and _fb[6] and not _slide_fallback_used
+                        and best_cand_key is not None):
+                    _slide_fallback_used = True
+                    _fb_junction = (best_cand_key[0], best_cand_key[1], best_cand_key[2])
+                    _fb_ok = True
+                    if _fb_junction[1] <= align_5prime < _fb_junction[2]:
+                        # The Case-4 unspliced guard, as applied to the slid winner.
+                        _fb_ok = _intronic_bases_favour_intron(
+                            read, genome_seq, _fb_junction[1], _fb_junction[2],
+                            align_5prime, strand, strict=True) is not True
+                    if _fb_ok:
+                        best_junction = _fb_junction
+                        best_five_prime_corrected = (
+                            _fb_junction[1] - 1 if strand == '+' else _fb_junction[2])
+                        best_deficit, best_ed = _fb[0], _fb[1]
+                        best_is_canonical, best_in_amb, best_shift_abs = _fb[4], _fb[5], 0
+                        _OI_COUNTERS['five_prime_annotated_slide_fallback'] = (
+                            _OI_COUNTERS.get('five_prime_annotated_slide_fallback', 0) + 1)
+                        continue   # re-place at the annotated coordinate
+                # No acceptable unslid placement: the token rides with the read
+                # to the structural paths (the wrapper writes the trace).
+                _novel_refused = _slide_tok
+                best_junction = None
+                best_ed = -1.0
+                break
             if _novel_tok and novel_gate_mode() == 'refuse':
                 _novel_refused = _novel_tok
                 # Counted once per read, in the wrapper. Reset the score with
