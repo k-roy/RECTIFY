@@ -70,6 +70,11 @@ CORRECTION_TSV_HEADER = [
     # token here says what refuse mode would have done; in refuse mode the
     # same token also appears in five_prime_rescue_refused.
     'five_prime_novel_evidence',
+    # ISSUE-026 invariant D (2026-09-05): junction-side 5' soft-clip bases that
+    # lie over exon-2 positions (the alignment starts that many bases into exon
+    # 2). The writer draws them as M between the N-op and the body, so the N-op
+    # ends at the reported acceptor instead of the read's live edge. 0 = none.
+    'five_prime_exon2_prefix',
 ]
 
 
@@ -192,6 +197,7 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         result.get('five_prime_rescue_refused', '') or '',
         _consensus_cell(result, 'five_prime_landing_annotated'),
         result.get('five_prime_novel_evidence', '') or '',
+        str(result.get('five_prime_exon2_prefix', 0) or 0),
     ]
 
 

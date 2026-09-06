@@ -487,10 +487,11 @@ class TestRefusalIsReportedNotSwallowed:
             CORRECTION_TSV_HEADER, correction_result_to_tsv_row,
         )
         # ISSUE-017 (2026-09-05) appended the two provenance/evidence columns
-        # after it; every earlier column keeps its absolute index.
-        assert CORRECTION_TSV_HEADER[-3:] == [
+        # after it, ISSUE-026 invariant D the exon-2 prefix after those; every
+        # earlier column keeps its absolute index.
+        assert CORRECTION_TSV_HEADER[-4:] == [
             'five_prime_rescue_refused', 'five_prime_landing_annotated',
-            'five_prime_novel_evidence']
+            'five_prime_novel_evidence', 'five_prime_exon2_prefix']
         row = correction_result_to_tsv_row({
             'read_id': 'r', 'chrom': 'chrR', 'strand': '+',
             'original_3prime': 1, 'corrected_3prime': 1,
@@ -499,8 +500,8 @@ class TestRefusalIsReportedNotSwallowed:
             'five_prime_rescue_refused': REFUSAL_REROUTE,
         })
         assert len(row) == len(CORRECTION_TSV_HEADER)
-        assert row[-3] == REFUSAL_REROUTE
-        assert row[-2:] == ['', '']
+        assert row[-4] == REFUSAL_REROUTE
+        assert row[-3:] == ['', '', '0']
 
     def test_all_three_writers_share_one_implementation(self):
         """write_corrected_bam / write_softclipped_bam / write_dual_bam used to

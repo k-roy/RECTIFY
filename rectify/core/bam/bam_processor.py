@@ -452,6 +452,7 @@ def correct_read_3prime(
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
     _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
+    _five_prime_exon2_prefix = 0     # ISSUE-026 invariant D: clip bases over exon 2, drawn as M after the N
     _landing_annotated = None        # ISSUE-017: provenance of the rescue's landing site (None = no rescue)
     _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
 
@@ -515,6 +516,7 @@ def correct_read_3prime(
                 _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
                 _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
                 _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
+                _five_prime_exon2_prefix = int(_3ss_result.get('five_prime_exon2_prefix', 0) or 0)
                 # five_prime_intron_clip_pos ("icp") = the exon-2-side intron
                 # boundary, recorded whenever the alignment's 5' end sits inside
                 # the rescued intron — Case 4 (intronic_snap) and Cases 1/2 alike,
@@ -643,6 +645,7 @@ def correct_read_3prime(
                 'five_prime_upstream_trim': _five_prime_upstream_trim,
                 'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
                 'reanchor_clip_len': _reanchor_clip_len,
+                'five_prime_exon2_prefix': _five_prime_exon2_prefix,
                 'strand': strand,
             },
             genome,
@@ -665,6 +668,7 @@ def correct_read_3prime(
                 # reproduces exactly what the refusal already produced.
                 five_prime_rescued = False
                 _five_prime_intron_clip_pos = -1
+                _five_prime_exon2_prefix = 0
             # For softclipped_no_junction the intronic bases ARE hidden at the
             # true acceptor, so five_prime_rescued and the icp must survive or the
             # writer would skip that surgery and leave the bases mapped inside the
@@ -740,6 +744,10 @@ def correct_read_3prime(
         # reanchor did not materially modify the CIGAR. > 0 signals bam_writer
         # to apply the same reanchor before realign + 5'-rescue surgery.
         'reanchor_clip_len': _reanchor_clip_len,
+        # ISSUE-026 invariant D: junction-side soft-clip bases that lie over
+        # exon-2 positions; the writer draws them as M between the N-op and the
+        # body so the N-op ends at the reported acceptor (0 = none).
+        'five_prime_exon2_prefix': _five_prime_exon2_prefix,
         # '' when the 5' rescue reached the corrected BAM (or none was found);
         # otherwise the bam_writer REFUSAL_* token saying why it did not, with
         # five_prime_rescued/exon_cigar/intron_clip_pos already downgraded and the

@@ -130,6 +130,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_5p_cig  = hdr.index('five_prime_exon_cigar')       if 'five_prime_exon_cigar'       in hdr else -1
             i_5p_trim = hdr.index('five_prime_upstream_trim')    if 'five_prime_upstream_trim'    in hdr else -1
             i_5p_reanc = hdr.index('reanchor_clip_len')          if 'reanchor_clip_len'           in hdr else -1
+            i_5p_e2    = hdr.index('five_prime_exon2_prefix')    if 'five_prime_exon2_prefix'     in hdr else -1
             # Cat2 soft-clip rescue columns (v2.9.1)
             i_sc_ext   = hdr.index('sc_homopolymer_extension')  if 'sc_homopolymer_extension'  in hdr else -1
             i_sc_seq   = hdr.index('sc_rescued_seq')             if 'sc_rescued_seq'             in hdr else -1
@@ -158,6 +159,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 five_prime_exon_cig = parts[i_5p_cig]        if i_5p_cig >= 0  and len(parts) > i_5p_cig  and parts[i_5p_cig]  else ''
                 five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
                 five_prime_reanc   = int(parts[i_5p_reanc])  if i_5p_reanc >= 0 and len(parts) > i_5p_reanc and parts[i_5p_reanc] else 0
+                five_prime_e2      = int(parts[i_5p_e2])     if i_5p_e2 >= 0 and len(parts) > i_5p_e2 and parts[i_5p_e2] else 0
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
                 sc_seq   = parts[i_sc_seq]         if i_sc_seq   >= 0 and len(parts) > i_sc_seq   else ''
@@ -179,6 +181,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'five_prime_exon_cigar':      five_prime_exon_cig,
                     'five_prime_upstream_trim':   five_prime_trim,
                     'reanchor_clip_len':          five_prime_reanc,
+                    'five_prime_exon2_prefix':    five_prime_e2,
                     'five_prime_intron_clip_pos': five_prime_icp,
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
@@ -494,6 +497,9 @@ def apply_5prime_rescue_surgery(
     _rescued_flag = bool(correction.get('five_prime_rescued'))
     _rescued = _rescued_flag and correction.get('five_prime_position') is not None
 
+    # ISSUE-026 invariant D: junction-side clip bases over exon-2 positions,
+    # drawn as M after the N-op so it ends at the reported acceptor.
+    _e2 = int(correction.get('five_prime_exon2_prefix', 0) or 0)
     _extend_ok = True
     if _rescued and _icp >= 0:
         _edge = projected_5prime_rescue_intron_edge(
@@ -501,6 +507,7 @@ def apply_5prime_rescue_surgery(
             correction['five_prime_soft_clip'],
             correction['strand'],
             correction.get('five_prime_upstream_trim', 0),
+            exon2_prefix=_e2,
         )
         _extend_ok = (_edge is not None and _edge == _icp)
 
@@ -514,6 +521,7 @@ def apply_5prime_rescue_surgery(
             correction['strand'],
             exon_cigar_str=_exon_cig,
             upstream_trim=correction.get('five_prime_upstream_trim', 0),
+            exon2_prefix=_e2,
         )
         if not modified:
             refusal = REFUSAL_EXTEND

@@ -72,8 +72,12 @@ import pytest
 # 5195e1c0… exactly, i.e. no correction semantics moved (report mode draws
 # every rescue exactly as before). Prior golden 5195e1c0…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "625586c3ecf0f0c972659d2034f331d578071e4d76d120f3eea50d8110ad1ecd"
+    "231aeee14e467bdbcac7bb51307830c93ac91a215ea47c81be6c751a363c827e"
 )
+# Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
+# `five_prime_exon2_prefix` key (schema change only — the bundled validation
+# reads' corrections are unchanged: test_validation_reads{,_upf1d}.py 184 passed
+# / 0 changed on the same tree). Prior golden 625586c3… (34d6852, ISSUE-017 columns).
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a
 # run of genuine read=ref matches — cat2_plus_1's 9D+39= over a 24-A genomic run) changed

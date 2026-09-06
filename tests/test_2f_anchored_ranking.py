@@ -188,9 +188,11 @@ def test_minus_strand_mirror_lands_annotated_with_no_junction_side_gap():
 def test_dist_gt_0_trims_exon2_bases_from_the_read_not_the_genome_window():
     """The aligner started 2 bases into exon 2 and left those two exon-2 bases in
     the clip: clip = E1[-14:] + exon2[:2]. The ranking trims the 2 junction-side
-    bases from the READ (segment = E1[-14:], deficit 0 at the annotated donor);
-    the placement still aligns the whole 16-nt clip (the writer's contract), so
-    the exon CIGAR spans 16 query bases and the debug check stays silent."""
+    bases from the READ (segment = E1[-14:], deficit 0 at the annotated donor).
+    ISSUE-026 invariant D: the placement aligns the RANKED segment too — the exon
+    CIGAR spans 14 query bases and the 2 exon-2 bases are reported as
+    `five_prime_exon2_prefix`, which the writer draws as M after the N-op so the
+    N ends at the reported acceptor (200) rather than the live edge (202)."""
     clip = GENOME_SEQ[46:60] + GENOME_SEQ[200:202]
     body = GENOME_SEQ[202:262]
     read = _read('dist2_plus', 202, [(4, 16), (0, len(body))], clip + body)
@@ -199,8 +201,23 @@ def test_dist_gt_0_trims_exon2_bases_from_the_read_not_the_genome_window():
     assert res['rescued_junction'] == ANN
     assert res['anchored_deficit'] == 0.0
     ops = la.cigar_str_to_ops(res['five_prime_exon_cigar'])
-    assert sum(ln for op, ln in ops if op in (0, 1)) == 16
+    assert sum(ln for op, ln in ops if op in (0, 1)) == 14
+    assert res['five_prime_exon2_prefix'] == 2
     assert COUNTERS.get('exon2_trim_consumed_clip', 0) == 0
+    # The writer's contract, end to end: exon block + N at the ANN coordinates +
+    # 2M exon-2 prefix + body.
+    from rectify.core.bam.read_edits import extend_read_5prime_for_junction_rescue
+    assert extend_read_5prime_for_junction_rescue(
+        read, res['five_prime_corrected'], 16, '+',
+        exon_cigar_str=res['five_prime_exon_cigar'], exon2_prefix=2)
+    nops, pos = [], read.reference_start
+    for op, ln in read.cigartuples:
+        if op == 3:
+            nops.append((pos, pos + ln))
+        if op in (0, 2, 3, 7, 8):
+            pos += ln
+    assert nops == [(ANN[1], ANN[2])], read.cigarstring
+    assert read.cigartuples[-2:] == [(0, 2), (0, len(body))], read.cigarstring
 
 
 # --------------------------------------------------------------------------- reranked-between-annotated counter

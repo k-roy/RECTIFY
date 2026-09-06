@@ -290,6 +290,18 @@ def novel_gate_mode() -> str:
     return mode if mode in _NOVEL_GATE_MODES else NOVEL_GATE_DEFAULT
 
 
+def _writer_would_revert(genome_seq: str, start: int, end: int) -> bool:
+    """ISSUE-026 invariant D — the corrected-BAM writer's canonical-destination
+    guard (`bam_writer._revert_selfinflicted_noncanonical_n`: GT-AG / GC-AG /
+    AT-AC at the WRITTEN coordinates, either strand), asked here BEFORE a
+    placement is reported. A junction the writer will revert is not a placement
+    this module may emit: on the tester's f53d770 T0 (chrX, 31-read bundle) the
+    anchored rank chose a non-canonical shift (TA-AG, GG-AG, CA-AG, GA-AG, …) on
+    23 reads — the deficit is the primary key and `_donor_ok` only a
+    tie-breaker — and every one of them vanished at the writer."""
+    return not _is_canonical_junction(genome_seq, start, end, atac=True)
+
+
 def _junction_is_annotated(genome_seq: str, junction, annotated_keys: set,
                            max_shift: int = MAX_SS_SHIFT) -> bool:
     """Is the EMITTED junction an annotated one — exactly, or as a slide inside
@@ -2049,6 +2061,13 @@ def _rescue_3ss_truncation_body(
     _old_best_annotated = False
     _n_anchored_dps = 0
     _reranked = False
+    # ISSUE-026 invariant D: the winner's exon-2 prefix — the junction-side clip
+    # bases that lie over exon-2 POSITIONS (the ISSUE-020 `dist` trim). They are
+    # not exon-1 sequence and the writer draws them as M after the N-op; without
+    # this the writer's `extend` ran the N to the read's live edge and the drawn
+    # acceptor sat `dist` bases past the reported one (drawn at the wrong
+    # acceptor at 6485226, refused as non-canonical at f53d770).
+    best_exon2_prefix = 0
 
     # Forced-snap fallback for the mapPacBio terminal-D overshoot pattern.
     # When the distance gate detects _n_match AND _leading_del (N-op proves the
@@ -2291,6 +2310,7 @@ def _rescue_3ss_truncation_body(
                 continue
             if len(j_entry) >= 4 and j_entry[3] not in (strand, '.', ''):
                 continue
+            _exon2_prefix_local = 0   # ISSUE-026 invariant D (see best_exon2_prefix)
 
             if strand == '+':
                 # Upstream intron: intron_end must be at or just before align_5prime.
@@ -2447,6 +2467,7 @@ def _rescue_3ss_truncation_body(
                             continue
                         _rseq = _rseq[:-dist]
                         _rlen = len(_rseq)
+                        _exon2_prefix_local = dist
                 if not _rseq:
                     continue
                 if _edge_truncated and _rlen < _min_clip_bp:
@@ -2495,6 +2516,12 @@ def _rescue_3ss_truncation_body(
                         continue
                     _cand = genome_seq[_es:_eff_start].upper()
                     if len(_cand) < _rlen:
+                        continue
+                    # ISSUE-026 invariant D: a shift the writer would revert is
+                    # not a placement (see _writer_would_revert).
+                    if _writer_would_revert(genome_seq, _eff_start, intron_end):
+                        _OI_COUNTERS['five_prime_noncanonical_shift_skipped'] = (
+                            _OI_COUNTERS.get('five_prime_noncanonical_shift_skipped', 0) + 1)
                         continue
                     # Canonical 5'SS donors: GT (major spliceosome) or GC (minor)
                     _donor_ok = genome_seq[_eff_start:_eff_start + 2].upper() in ('GT', 'GC')
@@ -2662,6 +2689,7 @@ def _rescue_3ss_truncation_body(
                             continue
                         _rseq = _rseq[_trim:]
                         _rlen = len(_rseq)
+                        _exon2_prefix_local = _trim
                 if not _rseq:
                     continue
                 if _edge_truncated and _rlen < _min_clip_bp:
@@ -2691,6 +2719,11 @@ def _rescue_3ss_truncation_body(
                         continue
                     _cand = genome_seq[_eff_end:_eff_end + _rlen].upper()
                     if len(_cand) < _rlen:
+                        continue
+                    # ISSUE-026 invariant D (mirror): never a shift the writer reverts.
+                    if _writer_would_revert(genome_seq, intron_start, _eff_end):
+                        _OI_COUNTERS['five_prime_noncanonical_shift_skipped'] = (
+                            _OI_COUNTERS.get('five_prime_noncanonical_shift_skipped', 0) + 1)
                         continue
                     # Canonical 5'SS on minus strand in genomic orientation:
                     # AC (RC of GT, major spliceosome) or GC (RC of GC, minor)
@@ -2793,6 +2826,7 @@ def _rescue_3ss_truncation_body(
                     best_rank_seg = _rseq_u
                     best_cand_key = (j_chrom, intron_start, intron_end)
                     best_candidate_annotated = _cand_annotated
+                    best_exon2_prefix = _exon2_prefix_local
                     best_is_canonical = _best_local_canonical
                     best_in_amb = _best_in_amb
                     best_shift_abs = _best_local_shift_abs
@@ -2882,10 +2916,21 @@ def _rescue_3ss_truncation_body(
             # to a flat M block.
             _five_prime_in_intron = _intron_start <= align_5prime < _intron_end
             _align_from_intronic = bool(_five_prime_in_intron and _intronic_seq)
+            _exon2_prefix = 0
             if _align_from_intronic:
                 _align_seq = _intronic_seq
             elif rescue_type_candidate == 'softclip':
                 _align_seq = rescue_seq
+                # ISSUE-026 invariant D: the placement aligns the RANKED segment.
+                # The `best_exon2_prefix` junction-side clip bases lie over exon-2
+                # positions (the alignment starts that many bases into exon 2):
+                # they are not exon-1 sequence, so they leave the exon block and
+                # the writer draws them as M after the N — which then ends at the
+                # reported acceptor instead of the read's live edge.
+                if 0 < best_exon2_prefix < len(_align_seq):
+                    _exon2_prefix = best_exon2_prefix
+                    _align_seq = (_align_seq[:-_exon2_prefix] if strand == '+'
+                                  else _align_seq[_exon2_prefix:])
             else:
                 _align_seq = _intronic_seq if _intronic_seq else rescue_seq
 
@@ -3068,6 +3113,9 @@ def _rescue_3ss_truncation_body(
                     'query_bp': len(rescue_seq),
                     'five_prime_exon_cigar': _exon_cigar_str,
                     'five_prime_upstream_trim': _upstream_trim,
+                    # ISSUE-026 invariant D: junction-side clip bases the writer
+                    # draws as M over exon 2, after the N-op (0 = none).
+                    'five_prime_exon2_prefix': _exon2_prefix,
                     'landing_annotated': _emitted_annotated,
                     # '' on an annotated site; 'pass' or the token on a novel one
                     # (both modes — the join over the TSV is exact either way).
@@ -3101,6 +3149,7 @@ def _rescue_3ss_truncation_body(
             'query_bp': 0,
             'five_prime_exon_cigar': '',
             'five_prime_upstream_trim': 0,
+            'five_prime_exon2_prefix': 0,   # ISSUE-026 D: a snap has no clip over exon 2
             # Structural (the read's own N-op proves the intron): no evidence
             # gate, but the provenance column is still filled.
             'landing_annotated': (annotated_keys is None
@@ -3137,6 +3186,12 @@ def _rescue_3ss_truncation_body(
         # (reference_end = intron_start + 1 for minus strand) is mapping into
         # the intron and must be snapped.
         if not (intron_start <= align_5prime < intron_end):
+            continue
+        # ISSUE-026 invariant D: the snap's N-op is drawn at exactly these
+        # coordinates; one the writer's canonical guard reverts is not a placement.
+        if _writer_would_revert(genome_seq, intron_start, intron_end):
+            _OI_COUNTERS['five_prime_noncanonical_snap_skipped'] = (
+                _OI_COUNTERS.get('five_prime_noncanonical_snap_skipped', 0) + 1)
             continue
         # Skip if an existing N-op already approximates this intron
         already_has_n = any(
@@ -3227,6 +3282,7 @@ def _rescue_3ss_truncation_body(
             'query_bp': intronic_depth,
             'five_prime_exon_cigar': _exon_cigar_str4,
             'five_prime_upstream_trim': 0,
+            'five_prime_exon2_prefix': 0,   # ISSUE-026 D: the 5' end is inside the intron
             'landing_annotated': _annot4,
             'novel_evidence': '' if _annot4 else (_tok4 or 'pass'),
             # A sequence rescue refused before this snap (refuse mode) — the

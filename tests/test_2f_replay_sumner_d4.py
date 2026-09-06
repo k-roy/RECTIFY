@@ -235,6 +235,7 @@ def test_writer_draws_the_annotated_n_op_for_the_former_within1_reads(read8, mon
     corr = {'five_prime_rescued': True, 'five_prime_position': res['five_prime_corrected'],
             'five_prime_soft_clip': rcl or five_sc, 'five_prime_exon_cigar': res['five_prime_exon_cigar'],
             'five_prime_upstream_trim': int(res.get('five_prime_upstream_trim', 0) or 0),
+            'five_prime_exon2_prefix': int(res.get('five_prime_exon2_prefix', 0) or 0),
             'five_prime_intron_clip_pos': icp, 'reanchor_clip_len': rcl, 'strand': strand}
     b = copy.deepcopy(a0)
     bw._decode_eq_seq_inplace(b, genome)
@@ -253,6 +254,57 @@ def test_writer_draws_the_annotated_n_op_for_the_former_within1_reads(read8, mon
             pos += ln
     assert (ann_local[1], ann_local[2]) in nops, (nops, ann_local)
     assert not adj_d, b.cigarstring
+
+
+def _materialize(res, a0, genome, strand):
+    """The writer's own materialization of a 2F result: the correction dict `correct_read_3prime` publishes,
+    then the reanchor pre-pass and `apply_5prime_rescue_surgery` (as bundle1_rbrowse.py does)."""
+    from rectify.core.bam import bam_writer as bw
+    rj = res['rescued_junction']
+    align5 = a0.reference_start if strand == '+' else a0.reference_end - 1
+    icp = -1
+    if rj[1] <= align5 < rj[2]:
+        icp = rj[1] if strand == '-' else rj[2]
+    ct = a0.cigartuples
+    five_sc = (ct[0][1] if ct[0][0] == 4 else 0) if strand == '+' else (ct[-1][1] if ct[-1][0] == 4 else 0)
+    rcl = int(res.get('reanchor_clip_len', 0) or 0)
+    corr = {'five_prime_rescued': True, 'five_prime_position': res['five_prime_corrected'],
+            'five_prime_soft_clip': rcl or five_sc, 'five_prime_exon_cigar': res.get('five_prime_exon_cigar', '') or '',
+            'five_prime_upstream_trim': int(res.get('five_prime_upstream_trim', 0) or 0),
+            'five_prime_exon2_prefix': int(res.get('five_prime_exon2_prefix', 0) or 0),
+            'five_prime_intron_clip_pos': icp, 'reanchor_clip_len': rcl, 'strand': strand}
+    b = copy.deepcopy(a0)
+    bw._decode_eq_seq_inplace(b, genome)
+    if rcl > 0:
+        bw._apply_reanchor_from_clip_len(b, rcl)
+    modified, refusal = bw.apply_5prime_rescue_surgery(b, corr, genome)
+    pos, nops = b.reference_start, []
+    for op, ln in b.cigartuples or []:
+        if op == 3:
+            nops.append((pos, pos + ln))
+        if op in (0, 2, 3, 7, 8):
+            pos += ln
+    return modified, refusal, nops, b
+
+
+@pytest.mark.parametrize('read8', sorted(READS))
+def test_every_bundle_rescue_is_drawn_where_reported(read8, monkeypatch):
+    """ISSUE-026 invariant D on the 10-read fixture: materializing every accepted rescue through the writer
+    yields exactly the reported N-op with refusal ''. c887bc16 (ISSUE-027: a reanchor of 18 on a 13-nt clip
+    whose alignment starts 2 nt into exon 2) used to be reverted as `noncanonical_destination` because `extend`
+    ran the N to the live edge; with the exon-2 prefix it draws at the reported junction like every other read —
+    no exception, no special case."""
+    rows, sam, slices, ext = _load()
+    row = [r for r in rows if r['read'].startswith(read8)][0]
+    res, junction, novel, annotated = _replay(row, sam, slices, monkeypatch)
+    assert res['rescued']
+    a0, genome, _n, _a, off = _inputs(row, sam, slices)
+    modified, refusal, nops, b = _materialize(res, a0, genome, row['strand'])
+    rj = res['rescued_junction']
+    assert modified and refusal == '', (read8, modified, refusal)
+    assert (rj[1], rj[2]) in nops, (read8, (rj[1] + off, rj[2] + off), [(s + off, e + off) for s, e in nops])
+    if read8 == 'c887bc16':
+        assert int(res.get('five_prime_exon2_prefix', 0)) > 0, res   # the ISSUE-027 geometry, now expressed
 
 
 def test_exon_cigar_query_span_matches_the_writer_contract(monkeypatch):
@@ -286,16 +338,21 @@ def test_exon_cigar_query_span_matches_the_writer_contract(monkeypatch):
         inside = j_start <= five < j_end
         trim = int(res.get('five_prime_upstream_trim', 0) or 0)
         rcl = int(res.get('reanchor_clip_len', 0) or 0)
+        # ISSUE-026 invariant D: the junction-side exon-2 prefix leaves the exon
+        # block (the writer draws it as M after the N), so the exon CIGAR consumes
+        # clip + trim - prefix — the writer's own `expected_query`.
+        e2 = int(res.get('five_prime_exon2_prefix', 0) or 0)
         if rcl > 0:
             # Terminal peel / re-anchor: the writer's pre-pass converts the
             # 5' bases through the re-anchor point into a soft clip of length
             # reanchor_clip_len, and `extend` converts exactly that clip.
-            assert span == rcl + trim, (row['read'], res['five_prime_exon_cigar'], span, rcl, trim)
+            assert span == rcl + trim - e2, (row['read'], res['five_prime_exon_cigar'], span, rcl, trim, e2)
         elif inside:
             intronic = _get_intronic_query_bases(a, j_start if strand == '-' else j_end, strand)
             assert trim == 0, (row['read'], trim)
+            assert e2 == 0, (row['read'], e2)
             assert span == len(intronic), (row['read'], res['five_prime_exon_cigar'], span, len(intronic))
         else:
-            assert span == clip + trim, (row['read'], res['five_prime_exon_cigar'], span, clip, trim)
+            assert span == clip + trim - e2, (row['read'], res['five_prime_exon_cigar'], span, clip, trim, e2)
         checked += 1
     assert checked >= 3, checked

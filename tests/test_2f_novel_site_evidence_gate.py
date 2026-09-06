@@ -268,8 +268,10 @@ def _cells(row):
 
 
 def test_tsv_columns_report_mode():
-    assert CORRECTION_TSV_HEADER[-2:] == ['five_prime_landing_annotated',
-                                          'five_prime_novel_evidence']
+    # ISSUE-026 invariant D appended `five_prime_exon2_prefix` after these two.
+    assert CORRECTION_TSV_HEADER[-3:] == ['five_prime_landing_annotated',
+                                          'five_prime_novel_evidence',
+                                          'five_prime_exon2_prefix']
     pool = bp._build_pool_chrom_index({JUNCTION})
     novel_tiny = _row(_intronic_read(4), annotated_junctions=set(), pool_chrom_index=pool)
     assert novel_tiny['five_prime_rescued'] and novel_tiny['five_prime_rescue_refused'] == ''
