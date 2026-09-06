@@ -29,8 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   junction: a 5' end inside the intron compares the soft clip PLUS the
   intron-mapped bases (the string the placement aligns — the old clip-only
   segment ended 1–3 bases short and the slide was compensating for it), and an
-  alignment that starts past the acceptor trims those exon-2 bases from the
-  READ, never slides the genome. Consistency invariant — the ranking score of
+  alignment that starts past the acceptor trims the bases over those exon-2
+  positions from the READ, never slides the genome; and a shift that would
+  collapse the intron to zero or negative length is no longer tried (the
+  anchored rank otherwise finds the read's own unspliced placement there).
+  Consistency invariant — the ranking score of
   the chosen candidate is the score of the emitted placement and no scored
   candidate did better — asserted by `tests/test_2f_anchored_ranking.py` and,
   in debug mode `RECTIFY_2F_CHECK_CONSISTENCY=1`, inside the code. New result

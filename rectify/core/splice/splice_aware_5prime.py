@@ -2426,9 +2426,20 @@ def _rescue_3ss_truncation_body(
                         _rlen = _RESCUE_DP_CAP
                     # ISSUE-020 (b): dist > 0 — the alignment already starts
                     # `dist` bases into exon 2, so the clip's junction-side tail
-                    # (its 3' end on the plus strand) holds exon-2 bases the
-                    # aligner left unaligned. TRIM them from the READ; the
-                    # genome window is never slid (that was the `_off` sweep).
+                    # (its 3' end on the plus strand) MAY hold exon-2 bases the
+                    # aligner left unaligned — or basecall junk over those
+                    # positions (a reanchor pre-pass turns the mismatching body
+                    # edge into clip). Either way those `dist` bases lie over
+                    # exon-2 POSITIONS and are never exon-1 sequence: TRIM them
+                    # from the READ, unconditionally, and never slide the genome
+                    # window (that was the `_off` sweep). Conditioning the trim on
+                    # the bases matching exon 2 was tried and rejected: junk that
+                    # fails the match then stays anchored at the junction and
+                    # coincidentally fits a shifted window 1–2 nt inside the
+                    # intron (c887bc16 `GC` tail -> +2). A read that genuinely
+                    # LACKS the exon-2 bases loses `dist` exon-1 bases from its
+                    # ranking segment — the same loss for every candidate at
+                    # that distance, so the rank between candidates survives.
                     if dist > 0:
                         if dist >= _rlen:
                             _OI_COUNTERS['exon2_trim_consumed_clip'] = (
@@ -2473,6 +2484,11 @@ def _rescue_3ss_truncation_body(
                 for _shift in range(_shift_lo, _shift_hi + 1):
                     _eff_start = intron_start + _shift
                     if _eff_start <= 0 or _eff_start + 2 > _gs:
+                        continue
+                    # ISSUE-020: a shift that collapses the intron to <= 0 nt is
+                    # not a junction — the anchored rank otherwise finds the
+                    # read's own unspliced placement there (deficit 0).
+                    if _eff_start >= intron_end:
                         continue
                     _es = _eff_start - _rlen
                     if _es < 0:
@@ -2635,6 +2651,9 @@ def _rescue_3ss_truncation_body(
                     # `dist = align_5prime - intron_end` is 0 at its edge.
                     # (c41c7314, chr7 -, dist 1: a trim of 1 removed a genuine
                     # exon-1 base and the +1 shift won.)
+                    # Unconditional, as in the plus block: the dist - 1 bases over
+                    # exon-2 positions genome[align_5prime + 1 : intron_start] are
+                    # never exon-1 sequence.
                     _trim = dist - 1
                     if _trim > 0:
                         if _trim >= _rlen:
@@ -2666,6 +2685,9 @@ def _rescue_3ss_truncation_body(
                 for _shift in range(_shift_lo, _shift_hi + 1):
                     _eff_end = intron_end + _shift
                     if _eff_end - 2 < 0 or _eff_end > _gs:
+                        continue
+                    # ISSUE-020: no zero/negative-length intron (see plus block).
+                    if _eff_end <= intron_start:
                         continue
                     _cand = genome_seq[_eff_end:_eff_end + _rlen].upper()
                     if len(_cand) < _rlen:

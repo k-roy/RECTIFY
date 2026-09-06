@@ -1287,6 +1287,18 @@ class TestRescue3SSTruncationExtended:
         (ISSUE-006): below that floor no clip can distinguish its placement from
         chance and the sequence rescue is refused by design. The donor tie-break
         this test asserts is unchanged — only the clip length is.
+
+        ISSUE-020: the ranking segment now ends exactly at the junction — a 5'
+        base inside the intron joins the clip, a base over an exon-2 position
+        is trimmed. The old mock's body ran to reference_end 100 over genome
+        'TT' with 'C' bases (two mismatches the reanchor pre-pass turns into
+        clip), and its last base sat ON intron_start; with those bases in the
+        segment the toy's exon 1 (G*98) is indistinguishable from junction A's
+        intron (T + G*98), so the exon-vs-intron acceptance cannot pass — the old
+        clip-only segment hid that. The read now ends one base before the intron
+        (reference_end 98, dist 2) with an 11-nt clip whose first base lies over
+        exon-2 position 98 and is trimmed; the 10 G's tie on both candidates and
+        the canonical AC donor decides, as the test intends.
         """
         genome = {
             'chrM2': (
@@ -1306,11 +1318,11 @@ class TestRescue3SSTruncationExtended:
         # Soft clip at HIGH end (last op) = 'G'*10, matching genome[200:210] and genome[100:110]
         read = MockRead(
             reference_name='chrM2',
-            reference_start=10,
-            reference_end=100,
+            reference_start=17,
+            reference_end=98,
             is_reverse=True,
-            query_sequence='C' * 82 + 'G' * 10,  # last 10 = soft-clip at 5' (high) end
-            cigartuples=[(0, 82), (4, 10)],
+            query_sequence='C' * 81 + 'G' * 11,  # body over [17, 98); 11-nt soft clip at the 5' (high) end
+            cigartuples=[(0, 81), (4, 11)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='-')
         assert r['rescued'] is True
@@ -1376,6 +1388,15 @@ class TestRescue3SSTruncationExtended:
         The clip is 11 nt rather than 6 so it clears ``min_informative_clip_bp()``
         (ISSUE-006); the HP-vs-substitution preference under test is unchanged.
 
+        ISSUE-020: the read starts 9 nt into exon 2 (dist 9 for junction A, 2 for
+        junction B) and the ranking now TRIMS the `dist` junction-side clip bases
+        — the exon-2 positions the aligner left unaligned — instead of sliding the
+        genome window over them. The read therefore carries those exon-2 bases in
+        its clip (nine mixed bases — a G run would make the 20-nt clip periodic
+        and refuse the search — the realistic soft-clip shape); the old mock
+        simply lacked them, and the slide was silently supplying the missing
+        geometry. The exon-1 segment compared is the same 11 nt as before.
+
         Genome:
           pos 0-94:   A*95  (poly-A exon body)
           pos 95-99:  'AAAAC'  (last 5 = candidate window for junction A at is=100)
@@ -1410,8 +1431,9 @@ class TestRescue3SSTruncationExtended:
             reference_start=199,
             reference_end=249,
             is_reverse=False,
-            query_sequence='A' * 10 + 'C' + 'G' * 50,
-            cigartuples=[(4, 11), (0, 50)],
+            # exon-1 tail + nine bases over the unaligned exon-2 positions [190, 199) as the clip; body = genome[199:249]
+            query_sequence='A' * 10 + 'C' + 'TCAGTCGAC' + 'G' * 50,
+            cigartuples=[(4, 20), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
