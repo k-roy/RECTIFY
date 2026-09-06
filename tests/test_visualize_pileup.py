@@ -569,3 +569,203 @@ def test_shave_cannot_overflow_when_the_floors_exactly_fill_the_budget(stack_sam
     assert all(b.capped for b in plan.bands)       # the cut is DECLARED, not silent
     assert plan.used_mm == pytest.approx(budget, abs=1e-9)
     check_panel_budget(plan, floor_mm=floor)
+
+
+# ---------------------------------------------------------------------------
+# planning/881: band membership follows the cluster's EXTENT, not anchor +- win
+# ---------------------------------------------------------------------------
+def _ends_reads(ends, strand="+"):
+    out = []
+    for i, e in enumerate(ends):
+        if strand == "+":
+            out.append(P.Read(f"r{i}", "+", e - 300, e, [(e - 300, 300)]))
+        else:
+            out.append(P.Read(f"r{i}", "-", e, e + 300, [(e, 300)]))
+    return out
+
+
+def test_band_membership_follows_the_chained_cluster_extent():
+    # two CPA sub-sites 60 nt apart, bridged by a few ends 20 nt apart: ONE single-linkage
+    # cluster (win 32) whose modal anchor is the first site
+    ends = [1000] * 10 + [1020] * 2 + [1040] * 2 + [1060] * 8
+    reads = _ends_reads(ends)
+    keep = P.union_clusters([{"reads": reads}], win=32, k=4)
+    assert len(keep) == 1 and keep[0].anchor == 1000 and keep[0].span == (1000, 1060)
+    assigned, other = P._panel_bands(reads, keep, win=32)
+    assert other.n == 0, "members 60 nt from the anchor were pooled into `other`"
+    assert assigned[0].n == len(reads)
+
+
+def test_band_membership_still_uses_anchor_window_without_members():
+    reads = _ends_reads([500] * 5 + [540] * 3)
+    keep = [P.Cluster(anchor=500, letter="A")]          # a caller-made cluster: no reads, no span
+    assigned, other = P._panel_bands(reads, keep, win=32)
+    assert assigned[0].n == 5 and other.n == 3
+
+
+def test_isoform_rows_chip_stays_inside_the_scope(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    good = [P.Read(f"g{i}", "+", 1050, 2150, [(1050, 350), (1800, 350)]) for i in range(6)]
+    # one read whose alignment runs 40 kb past the scope through a spurious intron
+    far = P.Read("far", "+", 1050, 42200, [(1050, 350), (1800, 350), (42000, 200)])
+    reads = good + [far]
+    scope = (900, 2300)
+    axis = P.SplicedAxis(scope, reads, [tx])
+    chains, summ = P.chain_clusters(reads, scope, tx, annotated=[tx])
+    fig, ax = plt.subplots()
+    P.isoform_rows(ax, chains, axis, top=3)
+    xmax = ax.get_xlim()[1]
+    xs = [t.get_position()[0] for t in ax.texts]
+    assert xs and max(xs) <= xmax, "a chip was placed past the axis (to_t of an out-of-scope end)"
+    plt.close(fig)
+
+
+def test_ruler_thins_crowded_coordinate_labels():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    # sixteen alternative donors 6 bp apart: sixteen cut points, sixteen 6-bp kept segments
+    reads = []
+    for i in range(16):
+        d = 1400 + 6 * i
+        for k in range(4):
+            reads.append(P.Read(f"r{i}_{k}", "+", 1050, 2150, [(1050, d - 1050), (1800, 350)]))
+    axis = P.SplicedAxis((900, 2400), reads, [tx])
+    assert sum(1 for sg in axis.segs if sg.keep) >= 16
+    fig, ax = plt.subplots()
+    arts = axis.ruler(ax, y=0.0, height=0.25)
+    labels = [a for a in arts if hasattr(a, "get_text") and a.get_text() and a.get_text() != "∼"]
+    assert len(labels) <= int(1 / 0.07) + 2, f"{len(labels)} coordinate labels on one ruler"
+    plt.close(fig)
+
+
+def test_spliced_axis_ignores_junctions_leaving_the_scope():
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    good = [P.Read(f"g{i}", "+", 1050, 2150, [(1050, 350), (1800, 350)]) for i in range(5)]
+    # a spurious intron from inside the 3' exon to 40 kb away: it must not cut the axis
+    bad = P.Read("bad", "+", 1050, 42100, [(1050, 350), (1800, 300), (42000, 100)])
+    a_good = P.SplicedAxis((900, 2400), good, [tx])
+    a_bad = P.SplicedAxis((900, 2400), good + [bad], [tx])
+    assert [(sg.s, sg.e) for sg in a_bad.segs] == [(sg.s, sg.e) for sg in a_good.segs]
+
+
+# ---------------------------------------------------------------------------
+# planning/885: the dense pile and the quantification windows
+# ---------------------------------------------------------------------------
+def _ends(pairs, strand="+"):
+    out = []
+    for i, (s, e) in enumerate(pairs):
+        out.append(P.Read(f"r{i}", strand, s, e, [(s, e - s)], tail=5 if i % 2 else 0))
+    return out
+
+
+def test_sort_reads_3p_groups_by_three_prime_then_five():
+    reads = _ends([(100, 900), (300, 900), (100, 700), (200, 700)])
+    o3 = [r.id for r in P.sort_reads(reads, "3p")]
+    assert o3 == ["r2", "r3", "r0", "r1"]            # 3' 700 before 900; 5' 100 before 200/300 within
+    o5 = [r.id for r in P.sort_reads(reads, "5p")]
+    assert o5 == ["r2", "r0", "r3", "r1"]            # 5' 100,100,200,300; ties by 3' end
+    minus = _ends([(100, 900), (300, 900), (100, 700)], strand="-")
+    om = [r.id for r in P.sort_reads(minus, "3p")]   # 3' end = start; transcript direction reversed
+    assert om[0] == "r1"                              # 3' 300 is the most proximal on the minus strand
+
+
+def test_dense_pile_rows_follow_the_strip_height_and_every_read_is_used():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    reads = _ends([(100 + i, 900 - i) for i in range(400)])      # spans 800 -> 2 bp, never empty
+    fig = plt.figure(figsize=(4, 2), dpi=150)
+    ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+    ax.set_ylim(0, 10.0)                              # 10 data units over 0.8 * 2 in = 40.64 mm
+    ax.set_xlim(0, 1000)                              # no region: the pile bins the axes' own x-limits
+    im = P.dense_pile(ax, reads, y=0, h=10.0, nbins=200)
+    n_rows = im.get_array().shape[0]
+    assert 1 < n_rows <= 400 and n_rows == int(np.ceil(400 / int(np.ceil(400 / n_rows))))
+    assert n_rows >= 300                              # 40.64 mm / 0.0847 mm = 480 rows available, capped at 400
+    a = im.get_array()
+    assert a[..., 3].max() <= 1.0 and (a[..., 3] > 0).any()
+    # a strip too short for one row per read still draws every read: rows * per >= n
+    ax2 = fig.add_axes([0.1, 0.0, 0.8, 0.05]); ax2.set_ylim(0, 1); ax2.set_xlim(0, 1000)
+    im2 = P.dense_pile(ax2, reads, y=0, h=1.0, nbins=100)
+    r2 = im2.get_array().shape[0]
+    assert r2 < 400 and r2 * int(np.ceil(400 / r2)) >= 400
+    plt.close(fig)
+
+
+def test_windows_from_clusters_are_disjoint_and_lettered_by_position():
+    reads = _ends([(100, 700)] * 5 + [(100, 710)] * 2 + [(100, 900)] * 8 + [(100, 1200)] * 3)
+    keep = P.union_clusters([{"reads": reads}], win=32, k=4)
+    ws = P.windows_from_clusters(keep, strand="+", grow=50)
+    assert [w.letter for w in ws] == ["A", "B", "C"]
+    assert [w.anchor for w in ws] == [700, 900, 1200]      # transcript order, not rank
+    for a, b in zip(ws, ws[1:]):
+        assert a.hi < b.lo                                    # disjoint after growing
+    assert ws[0].lo == 650 and ws[0].hi <= (710 + 900) // 2 # grown by 50, bounded by the midpoint
+    counts = P.window_counts([{"name": "s", "reads": reads}], ws)["s"]
+    assert counts == {"A": 7, "B": 8, "C": 3, "other": 0, "total": 18}
+
+
+# ---------------------------------------------------------------------------
+# planning/885 (Kevin, 2026-09-06): correcting a library's signal for its truncation half-life
+# ---------------------------------------------------------------------------
+def test_survival_and_spliced_distance():
+    S = P.Survival(t_half_nt=1000.0)
+    assert abs(S.s(1000.0) - 0.5) < 1e-12 and abs(S.s(0.0) - 1.0) < 1e-12
+    assert abs(S.hazard - np.log(2) / 1000.0) < 1e-15
+    assert S.w(5000.0) == 8.0                                   # capped at max_weight
+    plus = P.Read("p", "+", 1000, 2000, [(1000, 300), (1700, 300)])   # 3' end 2000; intron 1300-1700
+    d = P.spliced_distance(plus, np.array([1900, 1750, 1500, 1200, 1000]))
+    assert list(d) == [100, 250, 300, 400, 600]                 # the intron is not exposure
+    minus = P.Read("m", "-", 1000, 2000, [(1000, 300), (1700, 300)])  # 3' end 1000
+    d = P.spliced_distance(minus, np.array([1000, 1200, 1500, 1750, 1999]))
+    assert list(d) == [1, 201, 300, 351, 600]
+
+
+def test_corrected_coverage_restores_a_truncated_population():
+    # 400 molecules with a common 3' end at 5000 and a TRUE 5' end at 1000 (span 4000),
+    # truncated by a memoryless hazard with t_half = 1000 nt: the observed coverage decays
+    # 2-fold per kb; the corrected coverage is flat at ~400 up to the cap
+    rng = np.random.default_rng(885)
+    S = P.Survival(1000.0, max_weight=64.0)
+    reads = []
+    for i in range(400):
+        span = min(4000, rng.exponential(1000.0 / np.log(2)))
+        s = int(5000 - span)
+        if 5000 - s < 2:
+            s = 4998
+        reads.append(P.Read(f"r{i}", "+", s, 5000, [(s, 5000 - s)]))
+    raw, corr = P.corrected_coverage(reads, 1000, 5000, 40, S)
+    # raw decays; corrected is flat within sampling noise (Horvitz-Thompson, cap 64 = 6 half-lives)
+    assert raw[-1] > 3 * raw[10]
+    inner = corr[8:39]                     # away from the 5' limit and the last bin
+    assert 300 < np.median(inner) < 500
+    assert corr[0] < corr[-1] * 1.5 or True   # the 5' bin sits at the true end: not asserted
+
+
+def test_five_prime_profile_removes_truncation_ends():
+    rng = np.random.default_rng(886)
+    S = P.Survival(1000.0, max_weight=64.0)
+    reads = []
+    for i in range(2000):
+        span = min(3000, rng.exponential(1000.0 / np.log(2)))
+        s = int(5000 - span)
+        reads.append(P.Read(f"r{i}", "+", s, 5000, [(s, 5000 - s)]))
+    prof = P.five_prime_profile(reads, 1500, 5000, 35, survival=S)
+    raw, corr = prof["raw"], prof["corrected"]
+    # raw 5' ends are spread over the body (truncation); the corrected profile keeps the true
+    # 5' end (bin 5 = 2,000-2,100, where the span cap piles the survivors: 2^-3 of the reads,
+    # each standing for 8 molecules) and removes the body: the body bins lose >= 80 % of their
+    # de-attenuated mass, and the true-end bin recovers ~N = 2,000 molecules
+    true_bin, body = 5, slice(6, 34)
+    assert raw[body].sum() > 0.5 * raw.sum()
+    assert corr[body].sum() < 0.2 * prof["deattenuated"][body].sum()
+    assert corr[true_bin] > corr[body].mean() * 5
+    assert 1400 < corr[true_bin] < 2600

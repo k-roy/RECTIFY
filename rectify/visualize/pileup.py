@@ -203,13 +203,17 @@ def _body_color(role: Optional[str]) -> str:
 # merged row
 # ============================================================================
 def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
-                 region=None, xform: XForm = None, nbins: Optional[int] = None, zorder: int = 3):
+                 region=None, xform: XForm = None, nbins: Optional[int] = None, zorder: int = 3,
+                 survival: Optional["Survival"] = None):
     """A group of reads as one compressed raster strip from ``y`` to ``y + h``.
 
     Per column: body alpha = 0.2 + 0.8 * (bodies / n) in the body colour (``subtle`` or the
     sample's layer-A ``role``); the poly(A) prefix wins the column in ``polya`` when tails are
     >= a quarter of the bodies present (or bodies have ended); the non-A clip remainder in
-    ``mute`` by the same rule. Returns the ``AxesImage``.
+    ``mute`` by the same rule. With ``survival`` (the library's own truncation half-life) the
+    body fraction is the survival-CORRECTED coverage over n, capped at 1: the strip then shows
+    the molecules the library would have covered, not the reads it did -- a model, which the
+    caller must declare (chip / legend). Returns the ``AxesImage``.
     """
     from matplotlib.colors import to_rgb
     r = _apply_xlim(ax, region)
@@ -219,6 +223,8 @@ def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, r
         return None
     nb = nbins or _nbins_for(ax, x0, x1)
     cb, ct, cc = _columns(reads, x0, x1, nb, xform)
+    if survival is not None:
+        cb = np.minimum(float(n), _weighted_columns(reads, x0, x1, nb, survival, xform)[0])
     G = TOK.track_geometry()
     body_rgb = np.array(to_rgb(_body_color(role)))
     tail_rgb = np.array(to_rgb(TOK.color("polya")))
@@ -350,7 +356,12 @@ class SplicedAxis:
                 introns.append((s, e))
         for r in reads:
             for s, l in r.junctions or []:
-                cuts.add(s); cuts.add(s + l)
+                # only junctions INSIDE the scope cut the axis -- the same rule chain_clusters
+                # applies (`_scoped_junctions`). A cDNA alignment can carry a spurious intron
+                # from the 3' end to tens of kb away; its start cut the 3' flank into 14
+                # segments inside 100 bp at RPL24B while the chains ignored it (planning/881d)
+                if s >= self.scope[0] and s + l <= self.scope[1]:
+                    cuts.add(s); cuts.add(s + l)
         pts = sorted(p for p in cuts if self.scope[0] <= p <= self.scope[1])
         segs = [Segment(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
         for sg in segs:
@@ -458,12 +469,21 @@ class SplicedAxis:
     def xlim(self) -> Tuple[float, float]:
         return (0.0, self.t_end)
 
-    def ruler(self, ax, *, y: float = 0.0, height: float = 0.25, label_kb: bool = True):
+    def ruler(self, ax, *, y: float = 0.0, height: float = 0.25, label_kb: bool = True,
+              min_label_gap: Optional[float] = None):
         """A segment strip under the axis: exonic segments as ink bars, kept non-exonic as
         hairline bars, a '~' at every collapse, a break mark on every compressed segment,
-        and the genome coordinate at each kept segment's start. Returns the artists."""
+        and the genome coordinate at each kept segment's start. Returns the artists.
+
+        ``min_label_gap`` (display units; default 7 % of the axis) thins the coordinate
+        labels: a segment whose start lies closer than that to the last labelled start gets
+        no label. Deep real data cuts the 3' flank at every read end ≥ 1 % of the reads
+        (RPL24B: 14 segments inside 100 bp), and a label per segment overprinted itself
+        (planning/881d, render 2)."""
         S = TOK.stroke(); T = TOK.typography()
         out = []
+        gap = (0.07 * self.t_end) if min_label_gap is None else min_label_gap
+        last_label_t = None
         for sg in self.segs:
             if not sg.keep:
                 if sg.t1 > sg.t0:
@@ -485,9 +505,10 @@ class SplicedAxis:
             if sg.compressed:
                 out.append(ax.plot([sg.t0, sg.t1], [y - 0.02, y - 0.02], color=TOK.color("polya"), lw=S["hairline"],
                                    ls=(0, (2, 1.5)))[0])
-            if label_kb:
+            if label_kb and (last_label_t is None or sg.t0 - last_label_t >= gap):
                 out.append(ax.annotate(f"{sg.s / 1000:,.1f}", xy=(sg.t0, y), xytext=(0, -2), textcoords="offset points",
                                        ha="left", va="top", fontsize=T["tick_label"], color=TOK.color("subtle")))
+                last_label_t = sg.t0
         ax.set_xlim(*self.xlim)
         return out
 
@@ -739,6 +760,10 @@ def isoform_rows(ax, chains: Sequence[Chain], axis: SplicedAxis, *, top: int = 6
                 if r.has_bases_in(sg.s, sg.e):
                     cov.add(i)
         lo = min(min(r.start, r.end) for r in c.reads); hi = max(max(r.start, r.end) for r in c.reads)
+        # clip to the scope: a cDNA alignment can run tens of kb past it through a spurious
+        # intron, and `to_t` extends linearly beyond the scope, which put the chip off the
+        # axis (planning/881d, render 1: the FL row had no visible chip)
+        lo, hi = max(lo, axis.scope[0]), min(hi, axis.scope[1])
         ax.plot([axis.to_t(lo), axis.to_t(hi)], [y, y], color=TOK.color("hairline"), lw=S["hairline"], zorder=2)
         for i in cov:
             sg = kept[i]
@@ -750,7 +775,7 @@ def isoform_rows(ax, chains: Sequence[Chain], axis: SplicedAxis, *, top: int = 6
         # the class glyphs (★ ⊘ ▮ ⇢ ✱ ≈) are not in Arial/Helvetica: they go in their own Text
         # with an explicit DejaVu fallback so they never render as tofu, whatever the rc family
         glyph = ("★" if c.dominant else "") + (c.glyph if c.glyph else "")
-        chip = f"{c.label}" + (f" ({c.tx_name})" if c.tx_name else "") + f" · n={c.n}{share}"
+        chip = f"{c.label}" + (f" ({c.tx_name})" if c.tx_name else "") + f" · n={c.n:,}{share}"
         # the letter sits left of the first COVERED segment (a block can start before the reads)
         x_first = min((kept[i].t0 for i in cov), default=axis.to_t(lo))
         ax.annotate(letter, xy=(x_first, y), xytext=(-6, 0), textcoords="offset points", ha="right",
@@ -803,7 +828,7 @@ def junction_arcs(ax, counts: Dict[Interval, int], *, y: float = 0.0, height: Op
             continue
         lw = lw_range[0] + (lw_range[1] - lw_range[0]) * (n / mx)
         out += arc(ax, X(s), X(e), y=y, height=height, role=role or "neutral", lw=lw,
-                   label=str(n) if label else None, direction=direction)
+                   label=f"{n:,}" if label else None, direction=direction)
     for s, e in annotated:
         if (s, e) not in counts:
             out += arc(ax, X(s), X(e), y=y, height=height, lw=TOK.stroke()["hairline"], direction=direction,
@@ -856,6 +881,16 @@ class Cluster:
     @property
     def n(self) -> int:
         return len(self.reads)
+
+    @property
+    def span(self) -> Optional[Interval]:
+        """(min, max) 3' end over the members -- the cluster's real extent. Clusters are
+        single-linkage chains, so a member can sit further than ``win`` from the modal
+        anchor (RPL24B, planning/881: two CPA sub-sites 60 nt apart chain into one cluster)."""
+        if not self.reads:
+            return None
+        ends = [r.three_prime for r in self.reads]
+        return (min(ends), max(ends))
 
 
 @dataclass
@@ -976,12 +1011,18 @@ def _panel_bands(reads: Sequence[Read], keep: Sequence[Cluster], *, win: int) ->
     """Split one sample's reads over the stack's kept clusters plus one `other`."""
     assigned: List[Cluster] = [Cluster(anchor=c.anchor, letter=c.letter) for c in keep]
     other = Cluster(anchor=None, letter=None, pooled=True)
+    spans = [c.span for c in keep]
     for r in reads:
         tp = r.three_prime
         best, bestd = None, None
-        for slot, c in zip(assigned, keep):
+        for slot, c, sp in zip(assigned, keep, spans):
             d = abs(tp - c.anchor)
-            if d <= win and (bestd is None or d < bestd):
+            # a read belongs to a kept cluster when its 3' end lies inside the cluster's
+            # EXTENT (the chain it was pooled into) -- not only within `win` of the modal
+            # anchor. Membership by anchor +- win disagreed with single-linkage clustering
+            # and pooled 50 % of RPL24B's reads into `other` (planning/881d, render 1).
+            inside = sp is not None and sp[0] <= tp <= sp[1]
+            if (inside or d <= win) and (bestd is None or d < bestd):
                 best, bestd = slot, d
         (best or other).reads.append(r)
     return assigned, other
@@ -1408,3 +1449,281 @@ def _draw_stack_model(ax, model, keep: Sequence[Cluster], *, region, xform, heig
         if c.anchor is None:
             continue
         mark(ax, c.anchor, "polya", y=0.0, height=0.55, label=c.letter, xform=xform)
+
+
+# ============================================================================
+# the DENSE PILE -- rbrowse's merged density (drawBandRaster) on the publication path
+# ============================================================================
+def sort_reads(reads: Sequence[Read], order: str = "3p") -> List[Read]:
+    """rbrowse's row order. ``"5p"`` is the browser's flat merged default (``sortBy:
+    'five'``: rows by 5' end, 3' ends unsorted within); ``"3p"`` groups by 3' end first,
+    5' end within -- the order that turns the pile's 3' edge into the isoform staircase.
+    Both run in TRANSCRIPT direction so the most 5'-reaching read is on top either way."""
+    if order not in ("3p", "5p"):
+        raise ValueError("order must be '3p' or '5p'")
+    def k(r):
+        sgn = 1 if r.strand == "+" else -1
+        a, b = sgn * r.three_prime, sgn * r.five_prime
+        return (a, b) if order == "3p" else (b, a)
+    return sorted(reads, key=k)
+
+
+def dense_pile(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
+               region=None, xform: XForm = None, order: str = "3p", row_mm: Optional[float] = None,
+               nbins: Optional[int] = None, zorder: int = 3):
+    """rbrowse's **merged density** as a publication glyph: the reads in ``order`` are cut into
+    as many chunks as the strip has pixel rows, and each chunk is one row of the per-column
+    MAJORITY raster (:func:`merged_reads`). Every read contributes, nothing is sampled, and
+    a row is never thinner than a device pixel -- so 5,000 reads in a 12 mm strip draw as a
+    ~140-row density picture whose edges are the 5' and 3' end distributions
+    (rbrowse ``drawBandRaster``, HANDOFF.md:1961's fix for the overflowing per-read pile).
+
+    ``row_mm`` is the minimum row height on the page (default one 300-dpi pixel, 0.0847 mm);
+    :func:`merged_reads` is the ``n_rows == 1`` case. The pile carries no legible single read,
+    by design: what it shows is the shape of the population. Returns the ``AxesImage``.
+    """
+    from matplotlib.colors import to_rgb
+    r = _apply_xlim(ax, region)
+    x0, x1 = (r.start, r.end) if r is not None else sorted(ax.get_xlim())
+    n = len(reads)
+    if n == 0:
+        return None
+    nb = nbins or _nbins_for(ax, x0, x1)
+    fig = ax.figure
+    strip_mm = h / abs(np.diff(ax.get_ylim())[0]) * ax.get_position().height * fig.get_figheight() * MM_PER_IN \
+        if np.diff(ax.get_ylim())[0] else 0.0
+    rm = row_mm if row_mm is not None else 25.4 / 300.0
+    n_rows = int(max(1, min(n, np.floor(strip_mm / rm)))) if strip_mm > 0 else min(n, 200)
+    per = int(np.ceil(n / n_rows))
+    n_rows = int(np.ceil(n / per))
+    G = TOK.track_geometry()
+    body_rgb = np.array(to_rgb(_body_color(role)))
+    tail_rgb = np.array(to_rgb(TOK.color("polya")))
+    clip_rgb = np.array(to_rgb(TOK.color("mute")))
+    a0 = G.get("merged_alpha_floor", 0.2)
+    ordered = sort_reads(reads, order)
+    img = np.zeros((n_rows, nb, 4))
+    for k in range(n_rows):
+        chunk = ordered[k * per:(k + 1) * per]
+        m = len(chunk)
+        cb, ct, cc = _columns(chunk, x0, x1, nb, xform)
+        tail_wins = (ct > 0) & (ct * 4 >= cb)
+        clip_wins = (cc > 0) & (cc * 4 >= cb) & ~tail_wins
+        body = (cb > 0) & ~tail_wins & ~clip_wins
+        row = img[k]
+        row[tail_wins, :3] = tail_rgb; row[tail_wins, 3] = np.minimum(1, 0.35 + 0.65 * ct[tail_wins] / m)
+        row[clip_wins, :3] = clip_rgb; row[clip_wins, 3] = np.minimum(1, 0.25 + 0.55 * cc[clip_wins] / m)
+        row[body, :3] = body_rgb; row[body, 3] = np.minimum(1, a0 + (1 - a0) * cb[body] / m)
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    # row 0 (the most 5'-reaching reads) at the TOP of the strip, like the browser
+    im = ax.imshow(img, extent=(lo, hi, y, y + h), aspect="auto", interpolation="nearest",
+                   origin="upper", zorder=zorder)
+    if r is not None:
+        ax.set_xlim(*r.xlim())
+    return im
+
+
+# ============================================================================
+# quantification WINDOWS -- the studio's shaded bands, and what they count
+# ============================================================================
+@dataclass
+class Window:
+    """One quantification window: every 3' end in ``[lo, hi]`` (inclusive) counts for
+    ``letter``. rbrowse: "a letter is an INTERVAL, not a point" (rbrowse.js:17397)."""
+    letter: str
+    lo: int
+    hi: int
+    anchor: Optional[int] = None
+
+    def holds(self, r: Read) -> bool:
+        return self.lo <= r.three_prime <= self.hi
+
+
+def windows_from_clusters(keep: Sequence[Cluster], *, strand: str = "+", grow: int = 0,
+                          letters: str = "ABCDEFGHIJ", order: str = "position") -> List[Window]:
+    """Windows from the stack's kept clusters: each window is the cluster's own 3'-end extent
+    (``Cluster.span``), grown outward by ``grow`` bp but never past the midpoint to its
+    neighbour (rbrowse ``figUsage`` orphan absorption, without the annotation-class rule).
+    ``order="position"`` letters them in TRANSCRIPT order 5'->3' (the studio's
+    ``clusterOrder: 'position'``); ``"rank"`` keeps the pooled-count order the stack uses."""
+    cl = [c for c in keep if c.span is not None]
+    if not cl:
+        return []
+    if order == "position":
+        cl = sorted(cl, key=lambda c: c.anchor if strand == "+" else -c.anchor)
+    elif order != "rank":
+        raise ValueError("order must be 'position' or 'rank'")
+    spans = [list(c.span) for c in cl]
+    by_pos = sorted(range(len(cl)), key=lambda i: spans[i][0])
+    for k, i in enumerate(by_pos):
+        lo, hi = spans[i]
+        lo2 = lo - grow; hi2 = hi + grow
+        if k > 0:
+            j = by_pos[k - 1]; lo2 = max(lo2, (spans[j][1] + lo) // 2 + 1)
+        if k < len(by_pos) - 1:
+            j = by_pos[k + 1]; hi2 = min(hi2, (hi + spans[j][0]) // 2)
+        spans[i] = [min(lo, lo2), max(hi, hi2)]
+    return [Window(letters[i] if i < len(letters) else str(i), int(s[0]), int(s[1]), anchor=c.anchor)
+            for i, (c, s) in enumerate(zip(cl, spans))]
+
+
+def window_bands(ax, windows: Sequence[Window], *, y0: float, y1: float, xform: XForm = None,
+                 zorder: int = 1) -> list:
+    """The studio's shaded quantification windows over a read panel: a ``wash``-grey band
+    across ``[lo, hi]`` with a slightly stronger edge, a registration mark and never a data
+    colour (rbrowse.js:17397, Kevin 2026-08-13: "faint grey rectangles ... rather than a
+    single vertical line"). Draw BEHIND the reads (low ``zorder``)."""
+    X = xform or (lambda p: p)
+    S = TOK.stroke()
+    out = []
+    for w in windows:
+        a, b = sorted((X(w.lo), X(w.hi + 1)))
+        out.append(ax.add_patch(Rectangle((a, y0), b - a, y1 - y0, facecolor=TOK.color("neutral"), alpha=0.14,
+                                          edgecolor="none", zorder=zorder)))
+        for x in (a, b):
+            out.append(ax.plot([x, x], [y0, y1], color=TOK.color("neutral"), lw=S["hairline"], alpha=0.5,
+                               zorder=zorder)[0])
+    return out
+
+
+def window_counts(samples: Sequence[dict], windows: Sequence[Window]) -> Dict[str, Dict[str, int]]:
+    """``{sample name: {letter: n, "other": n, "total": n}}`` -- what each window counts in
+    each sample. Every read is counted exactly once (windows are disjoint by construction)."""
+    out: Dict[str, Dict[str, int]] = {}
+    for s in samples:
+        d = {w.letter: 0 for w in windows}
+        d["other"] = 0
+        for r in s.get("reads", ()):
+            hit = next((w for w in windows if w.holds(r)), None)
+            d[hit.letter if hit else "other"] += 1
+        d["total"] = len(s.get("reads", ()))
+        out[s.get("name", "")] = d
+    return out
+
+
+# ============================================================================
+# TRUNCATION SURVIVAL -- correcting a library's signal for its own 5' truncation hazard
+# ============================================================================
+@dataclass
+class Survival:
+    """A library's 5'-truncation survival, S(d) = 2^(-d / t_half): the probability that a
+    molecule's aligned body still covers a position ``d`` SPLICED nucleotides upstream of its
+    3' end.
+
+    The model is Sumner planning/136: an exponential per-nucleotide hazard ``lambda`` that the
+    observed 5' end is missing (t_half = ln 2 / lambda), fitted per library on the spliced span
+    of reads whose 3' end sits at an annotated transcript end. Direct RNA is 3'-anchored, so
+    every 5'-end signal a library shows is the true 5' ends TIMES this survival, plus the
+    truncation events themselves; the correction below undoes both.
+
+    ``max_weight`` caps 1/S: beyond ~3 half-lives an observed read stands for eight molecules
+    and the estimate is noise, so the cap is declared, not hidden.
+    """
+    t_half_nt: float
+    max_weight: float = 8.0
+
+    @property
+    def hazard(self) -> float:
+        """lambda, per spliced nucleotide."""
+        return float(np.log(2.0) / self.t_half_nt)
+
+    def s(self, d):
+        return np.power(2.0, -np.asarray(d, dtype=float) / self.t_half_nt)
+
+    def w(self, d):
+        """Inverse-probability weight 1/S(d), capped."""
+        return np.minimum(self.max_weight, 1.0 / self.s(d))
+
+
+def spliced_distance(r: Read, x) -> np.ndarray:
+    """Spliced distance (aligned nucleotides, introns excluded) from the read's 3' end to each
+    position ``x`` -- the exposure the hazard runs on. Positions past the 5' end still get the
+    distance to the 5' end (the read's full spliced span)."""
+    x = np.asarray(x, dtype=float)
+    d = np.zeros_like(x)
+    if r.strand == "+":
+        e = r.end
+        for bs, bl in r.blocks:
+            lo, hi = bs, bs + bl
+            d += np.clip(np.minimum(hi, e) - np.maximum(x, lo), 0, None)
+    else:
+        s0 = r.start
+        for bs, bl in r.blocks:
+            lo, hi = bs, bs + bl
+            d += np.clip(np.minimum(x + 1, hi) - np.maximum(lo, s0), 0, None)
+    return d
+
+
+def _weighted_columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, survival: Survival,
+                      xform: XForm = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-bin (weighted body coverage, weighted 5'-end count, raw 5'-end count): each read
+    covering a bin centre counts 1/S(d) molecules, d its spliced distance from the read's 3'
+    end to that centre. Bins are in display space when ``xform`` is given."""
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nbins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    cov_w = np.zeros(nbins); ends_w = np.zeros(nbins); ends_raw = np.zeros(nbins)
+    for r in reads:
+        xs = [(X(bs), X(bs + bl), bs, bl) for bs, bl in r.blocks]
+        for a, b, bs, bl in xs:
+            a, b = min(a, b), max(a, b)
+            i0 = int(np.searchsorted(edges, a, side="right") - 1)
+            i1 = int(np.searchsorted(edges, b, side="left"))
+            i0 = max(0, i0); i1 = min(nbins, i1)
+            if i1 <= i0:
+                continue
+            # genome positions of the covered bin centres (inverse of a linear xform is not
+            # available in general, so the distance is taken along the block in genome space)
+            frac = (centers[i0:i1] - a) / max(b - a, 1e-9)
+            gx = bs + frac * bl if xform is None else bs + frac * bl
+            cov_w[i0:i1] += survival.w(spliced_distance(r, gx))
+        p5 = r.five_prime
+        j = int(np.searchsorted(edges, X(p5), side="right") - 1)
+        if 0 <= j < nbins:
+            ends_raw[j] += 1
+            ends_w[j] += float(survival.w(spliced_distance(r, np.array([p5])))[0])
+    return cov_w, ends_w, ends_raw
+
+
+def corrected_coverage(reads: Sequence[Read], x0: float, x1: float, nbins: int, survival: Survival,
+                       xform: XForm = None) -> Tuple[np.ndarray, np.ndarray]:
+    """(raw coverage, survival-corrected coverage) per bin -- the second is the number of
+    molecules that would cover each position had the library not truncated them
+    (Horvitz-Thompson: each surviving read stands for 1/S(d))."""
+    cb, _, _ = _columns(reads, x0, x1, nbins, xform)
+    cov_w, _, _ = _weighted_columns(reads, x0, x1, nbins, survival, xform)
+    return cb, cov_w
+
+
+def five_prime_profile(reads: Sequence[Read], x0: float, x1: float, nbins: int,
+                       survival: Optional[Survival] = None, xform: XForm = None) -> Dict[str, np.ndarray]:
+    """The 5'-end density per bin, raw and, with a ``survival``, deconvolved:
+
+        true_ends(x) = [ends_w(x) - lambda * binwidth * cov_w(x)]_+
+
+    where ``ends_w`` are the observed 5' ends each weighted by 1/S (de-attenuated) and the
+    subtracted term is the hazard's expected TRUNCATION ends at x (lambda per nt times the
+    de-attenuated molecules still covering x). Negative bins are clipped to zero and counted in
+    ``n_clipped`` -- a place where the model overshoots the data, to be stated, not hidden.
+    """
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nbins + 1)
+    out: Dict[str, np.ndarray] = {"edges": edges}
+    if survival is None:
+        raw = np.zeros(nbins)
+        for r in reads:
+            j = int(np.searchsorted(edges, X(r.five_prime), side="right") - 1)
+            if 0 <= j < nbins:
+                raw[j] += 1
+        out["raw"] = raw
+        return out
+    cov_w, ends_w, ends_raw = _weighted_columns(reads, x0, x1, nbins, survival, xform)
+    bw = (hi - lo) / nbins                      # in display units == genome nt when xform is None
+    trunc = survival.hazard * bw * cov_w
+    corr = ends_w - trunc
+    out.update({"raw": ends_raw, "deattenuated": ends_w, "expected_truncation": trunc,
+                "corrected": np.clip(corr, 0, None), "n_clipped": np.array([int((corr < 0).sum())])})
+    return out
