@@ -227,6 +227,32 @@
   }
  ],
  "greyscale_redundancy": {
-  "_doc": "Honest record, 2026-09-04. CODON_VARIANT_MARKERS in config.py supplies the non-colour cue these sets need, but vep_panels.py hardcodes marker='o' for the consequence legend and does not yet read it. No set is declared redundant, because the cue is not wired. [3b] is therefore EXPECTED TO FAIL until that wiring lands; [1] and [2], the CVD checks this change exists to fix, must PASS."
+  "_doc": "Updated 2026-09-06, after the marker channel was WIRED. The 2026-09-04 note here said the cue existed as data but vep_panels.py hardcoded marker='o', so no set could be declared redundant and [3b] was expected to fail. That is no longer true: all four consequence-drawing sites in vep_panels.py (the legend and three scatters) now read CODON_VARIANT_MARKERS, so every consequence class carries a distinct SHAPE as well as a colour. The pairs below are declared redundant on that basis, and the cue is named.",
+  "vep_severity": [
+   [
+    "missense",
+    "splice_region"
+   ]
+  ],
+  "vep_lof": [
+   [
+    "stop_gained",
+    "start_lost"
+   ]
+  ],
+  "vep_inframe": [
+   [
+    "missense",
+    "inframe_deletion"
+   ]
+  ],
+  "vep_stops": [
+   [
+    "stop_gained",
+    "stop_lost"
+   ]
+  ],
+  "_cue_marker_shape": "Every consequence class has its own matplotlib marker in CODON_VARIANT_MARKERS: stop_gained X, start_lost P, frameshift d, missense o, inframe_insertion ^, inframe_deletion v, stop_lost s, splice_region *, and the silent/non-coding tier '.'. The legend draws the same shape it plots. A mono printout separates every declared pair by shape, which is what the colour pair cannot do: amber missense and sky inframe_deletion sit at L* 70.6 and 69.8.",
+  "_scope": "This declaration covers the VEP consequence panels in vep_panels.py ONLY. Any new panel that colours by consequence must read CODON_VARIANT_MARKERS too, or it inherits the declaration without honouring it."
  }
 }

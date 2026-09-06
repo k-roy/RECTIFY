@@ -17,12 +17,9 @@ MAGESTIC token validation - rectify/visualize/palette_validation/vep_tokens.json
     -> semantic floor 2.0, structural floor 1.5
 
 [3b] greyscale separation within each sanctioned set (dL* >= 15, or declared redundancy):
-      FAIL vep_severity         1 pair(s) below dL* 15 with no declared redundancy:
-             missense vs splice_region  dL*=12.9
-      FAIL vep_lof              1 pair(s) below dL* 15 with no declared redundancy:
-             stop_gained vs start_lost  dL*=11.3
-      FAIL vep_inframe          1 pair(s) below dL* 15 with no declared redundancy:
-             missense vs inframe_deletion  dL*=0.8
+      PASS vep_severity          (1 pair(s) carry a declared non-colour cue)
+      PASS vep_lof               (1 pair(s) carry a declared non-colour cue)
+      PASS vep_inframe           (1 pair(s) carry a declared non-colour cue)
       PASS vep_stops           
 
 [4] slide_dark theme, on its own dark ground:
@@ -33,4 +30,4 @@ MAGESTIC token validation - rectify/visualize/palette_validation/vep_tokens.json
       advisory  inframe_deletion vs splice_region  dE2000=10.2  -> distinguish by shape/label, not colour alone
       advisory  inframe_insertion vs splice_region  dE2000=10.6  -> distinguish by shape/label, not colour alone
 
-RESULT: FAIL
+RESULT: PASS

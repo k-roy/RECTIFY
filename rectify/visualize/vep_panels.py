@@ -144,7 +144,7 @@ def _add_gene_type_legend(ax, gene_labels: Dict[str, str]):
     handles = []
     for gene_type in ['target', 'upstream_1', 'upstream_2', 'downstream_1', 'downstream_2']:
         if gene_type in gene_labels:
-            color = GENE_TYPE_COLORS.get(gene_type, '#95a5a6')
+            color = GENE_TYPE_COLORS.get(gene_type, CODON_VARIANT_COLORS['unknown'])
             marker = GENE_TYPE_MARKERS.get(gene_type, 'o')
             label = gene_labels[gene_type]
             handles.append(Line2D(
@@ -257,7 +257,7 @@ def draw_evo2_panel(
         vtype = str(row.get('codon_variant_type', 'unknown')).lower()
         color = CODON_VARIANT_COLORS.get(
             vtype,
-            CODON_VARIANT_COLORS.get('unknown', '#95a5a6')
+            CODON_VARIANT_COLORS['unknown']
         )
         variant_types_shown.append(vtype)
 
@@ -377,7 +377,7 @@ def draw_esm1v_panel(
         vtype = str(row.get('codon_variant_type', 'missense')).lower()
         color = CODON_VARIANT_COLORS.get(
             vtype,
-            CODON_VARIANT_COLORS.get('missense', '#3498db')
+            CODON_VARIANT_COLORS['unknown']
         )
         variant_types_shown.append(vtype)
 
@@ -495,7 +495,7 @@ def draw_shorkie_pergene_panel(
         if subset.empty:
             continue
 
-        color = GENE_TYPE_COLORS.get(gene_type, '#95a5a6')
+        color = GENE_TYPE_COLORS.get(gene_type, CODON_VARIANT_COLORS['unknown'])
         marker = GENE_TYPE_MARKERS.get(gene_type, 'o')
 
         # Get gene name for legend
@@ -632,7 +632,7 @@ def draw_yorzoi_pergene_panel(
         if subset.empty:
             continue
 
-        color = GENE_TYPE_COLORS.get(gene_type, '#95a5a6')
+        color = GENE_TYPE_COLORS.get(gene_type, CODON_VARIANT_COLORS['unknown'])
         marker = GENE_TYPE_MARKERS.get(gene_type, 'o')
 
         gene_label = subset['gene_common'].iloc[0] if not subset['gene_common'].isna().all() else gene_type
@@ -765,7 +765,7 @@ def draw_vep_panel_styled(
         vtype = str(row.get('codon_variant_type', 'unknown')).lower()
         color = CODON_VARIANT_COLORS.get(
             vtype,
-            CODON_VARIANT_COLORS.get('unknown', '#95a5a6')
+            CODON_VARIANT_COLORS['unknown']
         )
         variant_types_shown.append(vtype)
 
