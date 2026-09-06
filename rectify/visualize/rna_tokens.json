@@ -1,6 +1,6 @@
 {
  "$schema_note": "rna-figure design tokens -- the RNA figure house standard for the Chanfreau and Sumner spaces. SINGLE SOURCE OF TRUTH for both colour layers, typography, geometry and the two floors. Every renderer (rectify/visualize, panels.py, tracks.py) reads this file or its byte-identical copy rectify/visualize/rna_tokens.json (kept in sync by tests/sync_tokens.sh --check). Edit HERE, run tests/palette_check.py, then sync. Never hard-code a colour, font size or stroke weight anywhere else.",
- "version": "1.2.0",
+ "version": "1.3.0",
  "adopted": "2026-09-05",
  "provenance": "Layer A hexes are the Okabe-Ito colour-vision-deficiency-safe set (Wong, B. 'Points of view: Color blindness', Nature Methods 8, 441 (2011), doi:10.1038/nmeth.1618) exactly as Kevin approved them in Chanfreau planning/806_house_palette.py (2026-08-26), with ONE replacement (control) made after measurement -- see `meaning.control`. Layer B marks and the plum control were SEARCHED, not picked: an HLS grid of ~2,000 candidates scored with the MAGESTIC validator's CIEDE2000 + Vienot dichromat simulation against every layer-A role and every neutral under normal, deuteranopia and protanopia, filtered to contrast >= 2.0 on paper. Structural greys are 806's own ramp. Validated by tests/palette_check.py (rna-figure), which imports the maths of ~/.claude/skills/magestic-figure/tests/palette_check.py rather than forking it. Scoped by Chanfreau planning/871 (2026-09-04); decisions ruled by Kevin 2026-09-05 (two layers with a hard boundary; B neutral-first with accents disjoint from A; sample identity from A, strand by position; replace control, declare focal/stratum_a).",
  "layers": {
@@ -419,7 +419,9 @@
    "tail_rule_alpha": 0.5,
    "band_floor_mm": 0.8,
    "pitch_floor_mm": 0.423,
-   "spliced_downstream_keep_bp": 3000
+   "spliced_downstream_keep_bp": 3000,
+   "strip_row_mm": 1.6,
+   "survival_max_weight": 8
   },
   "callout": {
    "style": "dashed",
@@ -429,7 +431,11 @@
    ],
    "stroke": "hairline"
   },
-  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880. spliced_downstream_keep_bp: segments on a gene's 3' side that >= 1 % of reads cover keep their real width up to this budget (rbrowse DOWNSTREAM_KEEP_BP; Kevin 2026-08-16 'the read alignments look cut off'); without it every 3' end past the annotation piles onto a compression boundary (audit 879 F7.3)."
+  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880. spliced_downstream_keep_bp: segments on a gene's 3' side that >= 1 % of reads cover keep their real width up to this budget (rbrowse DOWNSTREAM_KEEP_BP; Kevin 2026-08-16 'the read alignments look cut off'); without it every 3' end past the annotation piles onto a compression boundary (audit 879 F7.3). strip_row_mm: the row pitch of the replicate STRIP block (pileup.strip_rows) -- one majority strip per library at 1.6 mm, which is the smallest row a tail block and a body fraction still read at in print (planning/885b/885c: 6 and 16 rows); a 7.5 pt label is taller than the row, so strips carry GROUP labels with a hairline bracket, never a label per row. survival_max_weight: the cap on the truncation-survival inverse weight 1/S(d) (pileup.Survival): 8 = three half-lives; beyond it one observed read stands for more than eight molecules and the estimate is noise, so the cap is declared where the correction is applied (885d).",
+  "points": {
+   "spill_reach": 0.42,
+   "_doc": "reps-as-points (panels.reps_as_points; Chanfreau planning/885c, Kevin 2026-09-06 'a guard against spill over of data points'): the point CENTRES of one bar's replicate swarm are spread over at most spill_reach x the bar width to either side of the bar centre (0.42 = 84 % of the width), the marker area shrinks with n so the marker's edge stays inside the bar, and the layout is REFUSED (ValueError) when it cannot. A point drawn outside its own bar reads as the neighbour's. The group key is written above the axes, never on the data; figure-qa runs with include_data=True on a points panel."
+  }
  },
  "principles": {
   "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",
@@ -442,6 +448,15 @@
   "7_rank_visual_weight": "Three stroke tiers and a 2-neutral + <= 4-accent budget per panel."
  },
  "changelog": [
+  {
+   "version": "1.3.0",
+   "date": "2026-09-06",
+   "change": "The read-view idioms settled on real reads (Chanfreau planning/881, 885) promoted into the standard: the dense pile, quantification windows, replicate strips, the compact block, the truncation-survival correction and reps-as-points with the spill guard. Three geometry keys: track.strip_row_mm 1.6, track.survival_max_weight 8, points.spill_reach 0.42. No colour changed.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup: pile_stack / strip_rows / halflife_ladder / rep_values read strip_row_mm and survival_max_weight; panels.reps_as_points reads points.spill_reach"
+   ]
+  },
   {
    "version": "1.2.0",
    "date": "2026-09-05",

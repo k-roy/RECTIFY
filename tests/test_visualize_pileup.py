@@ -769,3 +769,176 @@ def test_five_prime_profile_removes_truncation_ends():
     assert corr[body].sum() < 0.2 * prof["deattenuated"][body].sum()
     assert corr[true_bin] > corr[body].mean() * 5
     assert 1400 < corr[true_bin] < 2600
+
+
+# ---------------------------------------------------------------------------
+# planning/885 -> the 887 landing: the compact block promoted -- pile_stack, strip_rows,
+# halflife_ladder, rep_values. Every rule carries a violation that must be REFUSED.
+# ---------------------------------------------------------------------------
+def _pile_samples():
+    """Two groups over three 3'-end sites on the minus strand (ATG40-shaped, planning/885b)."""
+    rng = np.random.default_rng(885)
+
+    def mk(tag, weights):
+        reads = []
+        for site, n in zip((2000, 2600, 3100), weights):
+            for i in range(n):
+                e = min(4000, site + 300 + int(rng.integers(0, 900)))
+                reads.append(P.Read(f"{tag}{site}_{i}", "-", site, e, [(site, e - site)], tail=8, clip3=10))
+        return reads
+    return mk("a", (40, 15, 5)), mk("b", (10, 30, 20))
+
+
+def test_pile_stack_geometry_windows_chips_and_one_axis_label():
+    from matplotlib.patches import Rectangle
+    a, b = _pile_samples()
+    tx = T.Transcript("GENE1", "chrI", "-", exons=[(1900, 4000)])
+    reg = T.Region("chrI", 1800, 4100, strand="-")
+    keep = P.union_clusters([{"reads": a}, {"reads": b}], win=32, k=4)
+    ws = P.windows_from_clusters(keep, strand="-", grow=20)
+    assert [w.letter for w in ws] == ["A", "B", "C"]
+    fig = plt.figure(figsize=(7.2, 100 / MM), layout="none")
+    try:
+        res = P.pile_stack(fig, [{"name": "WT", "reads": a, "role": "reference"},
+                                 {"name": "mut", "reads": b, "role": "focal"}], tx, region=reg,
+                           origin_mm=95.0, panel_mm=14.0, panel_gap_mm=2.0, model_mm=7.0, model_gap_mm=2.0,
+                           axis_mm=8.0, top_mm=2.0, windows=ws, axis_label="chrI (kb)")
+        H = fig.get_figheight() * MM
+        # the budget IS the geometry: every panel is panel_mm tall, the model model_mm
+        for ax in res["panels"]:
+            assert ax.get_position().height * H == pytest.approx(14.0, abs=1e-6)
+        assert res["model_ax"].get_position().height * H == pytest.approx(7.0, abs=1e-6)
+        assert res["height_mm"] == pytest.approx(2 + 7 + 2 + 14 + 2 + 14 + 8)
+        assert res["height_mm"] == pytest.approx(P.stack_height_mm(2, panel_mm=14, panel_gap_mm=2, model_mm=7,
+                                                                   model_gap_mm=2, axis_mm=8, top_mm=2))
+        assert res["bottom_mm"] == pytest.approx(95.0 - res["height_mm"])
+        assert len(fig.axes) == 2 + 2                       # model, two panels, the axis band -- nothing else
+        # a pile, not a strip: more than one raster row per panel
+        assert all(r > 1 for r in res["rows"])
+        # the windows shade EVERY panel and letter the model
+        for ax in res["panels"]:
+            assert sum(isinstance(p, Rectangle) for p in ax.patches) == len(ws)
+        assert {w.letter for w in ws} <= {t.get_text() for t in res["model_ax"].texts}
+        # one chip per panel, carrying n
+        chips = [t.get_text() for t in fig.texts if "n=" in t.get_text()]
+        assert len(chips) == 2 and "n=60" in chips[0] and "n=60" in chips[1]
+        # R8: the axis band alone carries the label; panels and model carry none
+        assert res["axis_ax"].get_xlabel() == "chrI (kb)"
+        assert all(ax.get_xlabel() == "" for ax in res["panels"] + [res["model_ax"]])
+        assert all(not ax.xaxis.get_ticklabels() or not ax.xaxis.get_ticklabels()[0].get_visible()
+                   for ax in res["panels"])
+    finally:
+        plt.close(fig)
+
+
+def test_pile_stack_strip_sits_inside_the_budget_and_layer_b_is_refused():
+    a, b = _pile_samples()
+    reg = T.Region("chrI", 1800, 4100, strand="-")
+    fig = plt.figure(figsize=(7.2, 60 / MM), layout="none")
+    try:
+        res = P.pile_stack(fig, [{"name": "WT", "reads": a, "role": "reference"}], None, region=reg,
+                           origin_mm=55.0, panel_mm=14.0, axis_mm=0.0, top_mm=0.0, strip_mm=2.0, strip_gap_mm=0.6)
+        ax = res["panels"][0]
+        ims = sorted(ax.images, key=lambda im: im.get_extent()[2])
+        assert len(ims) == 2
+        pile_lo, pile_hi = ims[0].get_extent()[2:]
+        strip_lo, strip_hi = ims[1].get_extent()[2:]
+        assert (pile_lo, pile_hi) == pytest.approx((0.0, 14.0 - 2.6))
+        assert (strip_lo, strip_hi) == pytest.approx((14.0 - 2.0, 14.0))
+        assert ims[1].get_array().shape[0] == 1                # the strip is the one-row case
+        # no model, no axis: the block is exactly one panel tall
+        assert res["height_mm"] == pytest.approx(14.0)
+        # the boundary rule holds even for an EMPTY sample
+        with pytest.raises(ValueError, match="layer-B"):
+            P.pile_stack(fig, [{"name": "x", "reads": [], "role": "polya"}], None, region=reg, origin_mm=30.0)
+    finally:
+        plt.close(fig)
+
+
+def test_strip_rows_pitch_from_tokens_group_labels_and_survival():
+    a, b = _pile_samples()
+    reg = T.Region("chrI", 1800, 4100, strand="-")
+    rm = TOK.track_geometry()["strip_row_mm"]
+    assert rm == pytest.approx(1.6)
+    reps = ([{"name": f"WT rep{i}", "reads": a[i::3], "role": "reference", "group": "WT"} for i in range(3)]
+            + [{"name": f"mut rep{i}", "reads": b[i::3], "role": "focal", "group": "mut"} for i in range(3)])
+    fig = plt.figure(figsize=(7.2, 60 / MM), layout="none")
+    try:
+        ax, y_bot = P.strip_rows(fig, reps, region=reg, origin_mm=50.0, gap_mm=0.5)
+        H = fig.get_figheight() * MM
+        h = 6 * rm + 5 * 0.5
+        assert ax.get_position().height * H == pytest.approx(h, abs=1e-6)
+        assert y_bot == pytest.approx(50.0 - h)
+        assert len(ax.images) == 6
+        # rows at the token pitch, first sample on top
+        exts = [im.get_extent()[2:] for im in ax.images]
+        assert exts[0] == pytest.approx((h - rm, h)) and all(e[1] - e[0] == pytest.approx(rm) for e in exts)
+        # GROUP labels, not row labels: two texts, two brackets
+        labels = [t.get_text() for t in fig.texts]
+        assert len(labels) == 2 and labels[0].startswith("WT · 3 libs") and labels[1].startswith("mut · 3 libs")
+        assert len(ax.lines) == 2
+    finally:
+        plt.close(fig)
+    # without groups every row is labelled; a corrected strip (survival) is denser than the raw one
+    fig = plt.figure(figsize=(7.2, 60 / MM), layout="none")
+    try:
+        long = [P.Read(f"L{i}", "-", 2000, 4000, [(2000, 2000)]) for i in range(20)]
+        raw = {"name": "lib", "reads": long}
+        cor = {"name": "lib", "reads": long, "survival": P.Survival(400.0)}
+        ax, _ = P.strip_rows(fig, [raw, cor], region=reg, origin_mm=50.0, group_labels=False)
+        assert len(fig.texts) == 2 and len(ax.lines) == 0
+        a_raw, a_cor = (im.get_array()[0, :, 3] for im in ax.images)
+        assert a_cor.sum() > a_raw.sum() and a_cor.max() <= 1.0
+        with pytest.raises(ValueError, match="layer-B"):
+            P.strip_rows(fig, [{"name": "x", "reads": [], "role": "splice"}], region=reg, origin_mm=20.0)
+    finally:
+        plt.close(fig)
+
+
+def test_halflife_ladder_aligns_to_the_rows_and_refuses_off_axis():
+    reps = [{"name": "a", "reads": [], "role": "reference"}, {"name": "b", "reads": [], "role": "focal"},
+            {"name": "c", "reads": []}]
+    rm, gap = 1.6, 0.5
+    fig = plt.figure(figsize=(7.2, 40 / MM), layout="none")
+    try:
+        ax = P.halflife_ladder(fig, reps, {"a": 500.0, "b": 1000.0, "c": 3000.0}, y_bottom_mm=10.0,
+                               row_mm=rm, gap_mm=gap, x_left_mm=150.0, width_mm=13.0)
+        assert ax.get_xscale() == "log" and ax.get_xlim() == (250.0, 5000.0)
+        h = 3 * rm + 2 * gap
+        pts = [c.get_offsets()[0] for c in ax.collections]
+        assert [p[0] for p in pts] == [500.0, 1000.0, 3000.0]
+        assert [p[1] for p in pts] == pytest.approx([h - (i + 1) * rm - i * gap + rm / 2 for i in range(3)])
+        assert ax.get_xlabel() == "t½ (kb)"
+        with pytest.raises(KeyError):
+            P.halflife_ladder(fig, reps, {"a": 500.0, "b": 1000.0}, y_bottom_mm=10.0, row_mm=rm, gap_mm=gap,
+                              x_left_mm=150.0, width_mm=13.0)
+        with pytest.raises(ValueError, match="off the axis"):
+            P.halflife_ladder(fig, reps, {"a": 500.0, "b": 1000.0, "c": 30000.0}, y_bottom_mm=10.0, row_mm=rm,
+                              gap_mm=gap, x_left_mm=150.0, width_mm=13.0)
+    finally:
+        plt.close(fig)
+
+
+def test_rep_values_share_ppm_and_the_subsample_factor():
+    ws = [P.Window("A", 690, 710, anchor=700), P.Window("B", 890, 910, anchor=900)]
+    rep1 = {"name": "r1", "group": "WT", "reads": _ends([(100, 700)] * 6 + [(100, 900)] * 3 + [(100, 1200)])}
+    rep2 = {"name": "r2", "group": "WT", "reads": []}
+    rows = P.rep_values([rep1, rep2], ws, depth={"r1": 2e6}, scale={"r1": 2.0})
+    assert len(rows) == 2 * 3
+    r1 = {r["letter"]: r for r in rows if r["rep"] == "r1"}
+    assert (r1["A"]["n"], r1["B"]["n"], r1["other"]["n"]) == (6, 3, 1)
+    assert (r1["A"]["share"], r1["B"]["share"], r1["other"]["share"]) == pytest.approx((0.6, 0.3, 0.1))
+    assert r1["A"]["ppm"] == pytest.approx(1e6 * 6 * 2.0 / 2e6)        # the subsample restored, then per million
+    assert sum(r["share"] for r in r1.values()) == pytest.approx(1.0)
+    r2 = {r["letter"]: r for r in rows if r["rep"] == "r2"}
+    assert all(r["share"] == 0.0 and "ppm" not in r for r in r2.values())   # no depth -> no ppm; no reads -> 0, not NaN
+
+
+def test_survival_cap_comes_from_tokens_and_holds():
+    cap = TOK.track_geometry()["survival_max_weight"]
+    S = P.Survival(1000.0)
+    assert S.max_weight == cap == 8
+    assert float(S.w(10 * 1000.0)) == cap                    # ten half-lives: 1/S would be 1024
+    assert float(S.w(0.0)) == 1.0
+    with pytest.raises(ValueError):
+        P.Survival(0.0)

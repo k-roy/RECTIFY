@@ -67,6 +67,11 @@ __all__ = [
     "Cluster", "BandPlan", "PanelPlan", "BandScale", "cluster_by_three_prime", "union_clusters",
     "solve_band_scale", "select_bands", "effective_counts", "plan_read_panel",
     "read_panel", "read_stack", "stack_height_mm",
+    # the dense pile, quantification windows, truncation survival (Chanfreau planning/885)
+    "sort_reads", "dense_pile", "Window", "windows_from_clusters", "window_bands", "window_counts",
+    "rep_values", "Survival", "spliced_distance", "corrected_coverage", "five_prime_profile",
+    # the compact block (planning/885; the 887 landing)
+    "pile_stack", "strip_rows", "halflife_ladder",
 ]
 
 Interval = Tuple[int, int]
@@ -1602,6 +1607,36 @@ def window_counts(samples: Sequence[dict], windows: Sequence[Window]) -> Dict[st
     return out
 
 
+def rep_values(samples: Sequence[dict], windows: Sequence[Window], *, depth: Optional[Dict[str, float]] = None,
+               scale: Optional[Dict[str, float]] = None) -> List[dict]:
+    """Per replicate, per window (plus ``"other"``): the count, the SHARE of that replicate's
+    reads at the locus, and -- when ``depth[name]`` (the library's denominator, e.g. its
+    protein-coding read count) is given -- reads per million (``ppm``). ``scale[name]``
+    multiplies the count first: the slicer's uniform subsample factor ``n_before_cap /
+    n_kept``, so a capped shard is restored before it is normalised (Chanfreau planning/885b).
+
+    Rows are ``{"rep", "group", "letter", "n", "share", "total"[, "ppm"]}`` -- the input
+    :func:`panels.reps_as_points` takes. A replicate with no reads has share 0 in every
+    window, not NaN, so it still counts as one point.
+    """
+    counts = window_counts(samples, windows)
+    rows: List[dict] = []
+    for s in samples:
+        name = s.get("name", "")
+        c = counts[name]
+        tot = c["total"] or 1
+        for w in list(windows) + [None]:
+            key = w.letter if w is not None else "other"
+            n = c[key]
+            row = {"rep": name, "group": s.get("group"), "letter": key, "n": n, "share": n / tot,
+                   "total": c["total"]}
+            if depth and name in depth:
+                f = (scale or {}).get(name, 1.0)
+                row["ppm"] = 1e6 * n * f / depth[name]
+            rows.append(row)
+    return rows
+
+
 # ============================================================================
 # TRUNCATION SURVIVAL -- correcting a library's signal for its own 5' truncation hazard
 # ============================================================================
@@ -1618,10 +1653,19 @@ class Survival:
     truncation events themselves; the correction below undoes both.
 
     ``max_weight`` caps 1/S: beyond ~3 half-lives an observed read stands for eight molecules
-    and the estimate is noise, so the cap is declared, not hidden.
+    and the estimate is noise, so the cap is declared, not hidden. The default is
+    ``tokens.geometry.track.survival_max_weight`` (8); print the cap wherever the correction
+    is applied (R6, Chanfreau planning/885d).
     """
     t_half_nt: float
-    max_weight: float = 8.0
+    max_weight: Optional[float] = None
+
+    def __post_init__(self):
+        if self.t_half_nt <= 0:
+            raise ValueError(f"Survival: t_half_nt must be > 0, got {self.t_half_nt}")
+        if self.max_weight is None:
+            # the declared cap: tokens.geometry.track.survival_max_weight (8 = three half-lives)
+            self.max_weight = float(TOK.track_geometry().get("survival_max_weight", 8.0))
 
     @property
     def hazard(self) -> float:
@@ -1727,3 +1771,261 @@ def five_prime_profile(reads: Sequence[Read], x0: float, x1: float, nbins: int,
     out.update({"raw": ends_raw, "deattenuated": ends_w, "expected_truncation": trunc,
                 "corrected": np.clip(corr, 0, None), "n_clipped": np.array([int((corr < 0).sum())])})
     return out
+
+
+# ============================================================================
+# THE COMPACT BLOCK -- piles under one model, replicate strips, the t1/2 ladder
+# (Chanfreau planning/885; the 887 landing; Kevin's rulings R1-R8, 2026-09-05/06)
+# ============================================================================
+def _bare_axes(ax, *, bottom: bool = False):
+    """A read / strip axes: no y axis, no spines except (optionally) the bottom rule."""
+    ax.set_yticks([])
+    for side in ("left", "right", "top"):
+        ax.spines[side].set_visible(False)
+    if not bottom:
+        ax.spines["bottom"].set_visible(False)
+        ax.tick_params(labelbottom=False, bottom=False)
+
+
+def _column(fig, *, left_mm: float, label_mm: float, right_mm: float) -> Tuple[float, float]:
+    """(x0, width) of the drawing column as figure fractions, from the mm gutters: a label
+    gutter on the left (the chips), a right margin, the same for every block of a page so
+    the blocks register column for column."""
+    W_mm = fig.get_figwidth() * MM_PER_IN
+    x0 = (left_mm + label_mm) / W_mm
+    return x0, 1.0 - right_mm / W_mm - x0
+
+
+def _check_role(role: Optional[str]) -> None:
+    """A sample's role is a LAYER-A role or None -- refused up front, even for an empty
+    sample (the junction_arcs precedent: an empty panel must not silently accept a
+    molecular identity as a sample colour)."""
+    if role is not None:
+        TOK.role(role)
+
+
+def pile_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: XForm = None,
+               origin_mm: Optional[float] = None, panel_mm: float = 12.0, panel_gap_mm: float = 2.5,
+               model_mm: float = 7.0, model_gap_mm: float = 2.0, axis_mm: float = 8.0,
+               top_mm: float = 2.0, left_mm: float = 4.0, label_mm: float = 22.0,
+               right_mm: float = 3.0, order: str = "3p", strip_mm: float = 0.0,
+               strip_gap_mm: float = 0.6, windows: Sequence[Window] = (),
+               axis_label: Optional[str] = None, chip: bool = True, model_marks: bool = True,
+               neighbours: Sequence = ()) -> dict:
+    """N sample panels under ONE model, each panel a DENSE PILE (:func:`dense_pile`,
+    rbrowse's merged density) on a mm budget, the quantification ``windows`` shaded down
+    the stack and lettered on the model's ``polya`` marks, one chip per panel, one axis.
+
+    This is the read block of the COMPACT BLOCK -- the default showcase for DRS / cDNA in
+    a figure (Chanfreau planning/885b/885c, Kevin's ruling R5, 2026-09-06): one model with
+    the window letters, one strip per library (:func:`strip_rows`), one 3'-sorted pile per
+    group in the two sample roles, the windows shaded, one axis, then per-window bars with
+    the libraries as points (``panels.reps_as_points``).
+
+    ``samples`` is ``[{"name", "reads", "role"[, "note"]}, ...]``; the geometry mirrors
+    :func:`read_stack` (same gutters, the same ``panel_mm`` budget, ``top_mm`` above the
+    model, ``axis_mm`` below the last panel) so the two forms compare mm for mm, and
+    :func:`stack_height_mm` gives the block's height BEFORE drawing. ``origin_mm`` is the
+    block's TOP edge in mm from the figure bottom (default: the page top); ``strip_mm`` > 0
+    puts the one-row majority strip of every read above the pile INSIDE the budget;
+    ``order`` is ``"3p"`` (the isoform staircase; the figure default) or ``"5p"`` (the
+    browser's truncation ramp). A layer-B token as a role is refused. Only the axis band
+    may carry a label, and only when ``axis_label`` is given -- one axis label per page, a
+    stack's axis band holds tick labels only (R8; 881a render 1).
+
+    Returns ``{"panels", "model_ax", "axis_ax", "windows", "rows", "top_mm", "bottom_mm",
+    "height_mm"}``; ``rows`` is the raster row count each pile drew.
+    """
+    from .tracks import gene_model, mark, region_axis
+    T = TOK.typography()
+    W_mm = fig.get_figwidth() * MM_PER_IN
+    H_mm = fig.get_figheight() * MM_PER_IN
+    x0, wf = _column(fig, left_mm=left_mm, label_mm=label_mm, right_mm=right_mm)
+    for s in samples:
+        _check_role(s.get("role"))
+
+    def rect(bottom_mm, h_mm):
+        return [x0, bottom_mm / H_mm, wf, h_mm / H_mm]
+
+    y_top = H_mm if origin_mm is None else origin_mm
+    y = y_top - top_mm
+    out: dict = {"panels": [], "model_ax": None, "axis_ax": None, "windows": list(windows), "rows": [],
+                 "top_mm": y_top}
+    if model is not None:
+        y -= model_mm
+        axm = fig.add_axes(rect(y, model_mm))
+        axm.set_ylim(-1.0, 1.6)
+        _bare_axes(axm)
+        _apply_xlim(axm, region)
+        gene_model(axm, model, y=0.0, height=0.55, region=region, xform=xform, tss=True, label_pos="left")
+        for nb in neighbours:
+            gene_model(axm, nb, y=0.0, height=0.55, region=region, xform=xform, tss=True, label_pos="above")
+        if model_marks:
+            for w in windows:
+                at = w.anchor if w.anchor is not None else (w.lo + w.hi) // 2
+                mark(axm, at, "polya", y=0.0, height=0.55, label=w.letter, xform=xform)
+        out["model_ax"] = axm
+        y -= model_gap_mm
+    for i, s in enumerate(samples):
+        y -= panel_mm
+        ax = fig.add_axes(rect(y, panel_mm))
+        ax.set_ylim(0.0, panel_mm)              # one data unit = one millimetre (read_panel's convention)
+        _bare_axes(ax)
+        _apply_xlim(ax, region)
+        pile_h = panel_mm - (strip_mm + strip_gap_mm if strip_mm > 0 else 0.0)
+        window_bands(ax, windows, y0=0.0, y1=panel_mm, xform=xform, zorder=1)
+        reads = s.get("reads", ())
+        n_rows = 0
+        if reads:
+            im = dense_pile(ax, reads, y=0.0, h=pile_h, role=s.get("role"), region=region, xform=xform,
+                            order=order, zorder=3)
+            n_rows = int(im.get_array().shape[0]) if im is not None else 0
+            if strip_mm > 0:
+                merged_reads(ax, reads, y=pile_h + strip_gap_mm, h=strip_mm, role=s.get("role"),
+                             region=region, xform=xform, zorder=3)
+        out["rows"].append(n_rows)
+        if chip:
+            txt = f"{s.get('name', '')}\nn={len(reads):,}"
+            if s.get("note"):
+                txt += f"\n{s['note']}"
+            fig.text(left_mm / W_mm, (y + panel_mm / 2) / H_mm, txt, ha="left", va="center",
+                     fontsize=T["annotation"], color=TOK.color("ink"), linespacing=1.35)
+        out["panels"].append(ax)
+        if i < len(samples) - 1:
+            y -= panel_gap_mm
+    if axis_mm > 0:
+        # a hairline strip at the TOP of the axis band so the tick labels hang DOWN into it
+        rule_mm, rule_gap_mm = 0.4, 2.0
+        axa = fig.add_axes(rect(y - rule_mm - rule_gap_mm, rule_mm))
+        axa.set_ylim(0, 1)
+        axa.set_yticks([])
+        for side in ("left", "right", "top"):
+            axa.spines[side].set_visible(False)
+        _apply_xlim(axa, region)
+        if xform is None and region is not None:
+            region_axis(axa, region, label=False)
+        if axis_label:
+            axa.set_xlabel(axis_label, fontsize=T["axis_label"])
+        out["axis_ax"] = axa
+        y -= axis_mm
+    out["bottom_mm"] = y
+    out["height_mm"] = y_top - y
+    return out
+
+
+def strip_rows(fig, samples: Sequence[dict], *, region=None, xform: XForm = None, origin_mm: float,
+               row_mm: Optional[float] = None, gap_mm: float = 0.5, left_mm: float = 4.0,
+               label_mm: float = 22.0, right_mm: float = 3.0, windows: Sequence[Window] = (),
+               label_every: bool = True, group_labels: bool = True):
+    """One majority strip per sample, one row each, every read -- the replicate heatmap
+    (Chanfreau planning/885: "do the replicates agree" is what a strip block answers; the
+    tail blocks and extents line up row for row, or they do not).
+
+    ``row_mm`` defaults to ``tokens.geometry.track.strip_row_mm`` (1.6 mm): the smallest
+    row at which a tail block and a body fraction still read in print. A 7.5 pt label is
+    taller than that pitch, so rows are labelled by GROUP -- a sample dict carrying
+    ``"group"`` gets one label per run of consecutive rows (name, library count, reads) with
+    a hairline bracket -- and never one label per row; samples without a group get a
+    per-row label when ``label_every``. A sample may carry ``"survival"`` (a
+    :class:`Survival`): its strip is then the survival-CORRECTED coverage, a MODEL, which
+    the page must declare (R6: the raw strip stays on the page, the parameter is printed
+    where it applies -- :func:`halflife_ladder`). Returns ``(axes, bottom_mm)``.
+    """
+    T = TOK.typography()
+    S = TOK.stroke()
+    G = TOK.track_geometry()
+    rm = float(G.get("strip_row_mm", 1.6)) if row_mm is None else float(row_mm)
+    W_mm = fig.get_figwidth() * MM_PER_IN
+    H_mm = fig.get_figheight() * MM_PER_IN
+    x0, wf = _column(fig, left_mm=left_mm, label_mm=label_mm, right_mm=right_mm)
+    for s in samples:
+        _check_role(s.get("role"))
+    n = len(samples)
+    h = n * rm + max(0, n - 1) * gap_mm
+    y = origin_mm - h
+    ax = fig.add_axes([x0, y / H_mm, wf, h / H_mm])
+    ax.set_ylim(0.0, h)
+    _bare_axes(ax)
+    _apply_xlim(ax, region)
+    window_bands(ax, windows, y0=0.0, y1=h, xform=xform, zorder=1)
+    tops: Dict[int, float] = {}
+    for i, s in enumerate(samples):
+        yy = h - (i + 1) * rm - i * gap_mm
+        tops[i] = yy
+        merged_reads(ax, s.get("reads", ()), y=yy, h=rm, role=s.get("role"), region=region, xform=xform,
+                     zorder=3, survival=s.get("survival"))
+        if label_every and not s.get("group"):
+            fig.text(left_mm / W_mm, (y + yy + rm / 2) / H_mm,
+                     f"{s.get('name', '')} · n={len(s.get('reads', ())):,}", ha="left", va="center",
+                     fontsize=T["annotation"], color=TOK.color("ink"))
+    if group_labels and any(s.get("group") for s in samples):
+        xl = ax.get_xlim()[0]
+        i = 0
+        while i < n:
+            g = samples[i].get("group")
+            j = i
+            while j + 1 < n and samples[j + 1].get("group") == g:
+                j += 1
+            if g:
+                y_top, y_bot = tops[i] + rm, tops[j]
+                ntot = sum(len(samples[k].get("reads", ())) for k in range(i, j + 1))
+                fig.text(left_mm / W_mm, (y + (y_top + y_bot) / 2) / H_mm,
+                         f"{g} · {j - i + 1} libs\nn={ntot:,}", ha="left", va="center",
+                         fontsize=T["annotation"], color=TOK.color("ink"), linespacing=1.15)
+                ax.plot([xl, xl], [y_bot, y_top], color=TOK.color("hairline"), lw=S["hairline"],
+                        clip_on=False, zorder=5)
+            i = j + 1
+    return ax, y
+
+
+def halflife_ladder(fig, samples: Sequence[dict], thalf: Dict[str, float], *, y_bottom_mm: float,
+                    row_mm: Optional[float] = None, gap_mm: float = 0.5, x_left_mm: float, width_mm: float,
+                    lo: float = 250.0, hi: float = 5000.0, label: bool = True):
+    """The truncation half-life ladder beside a strip block: one dot per row on a log axis,
+    ALIGNED to the rows, in the sample's role -- the Sumner planning/136 idiom placed next
+    to the heatmap it explains, so a corrected strip carries its parameter where it is
+    applied (R6; planning/885d). ``thalf`` maps sample name -> t1/2 in nt. Every sample
+    needs a value (``KeyError`` otherwise), and a value outside ``[lo, hi]`` is REFUSED
+    rather than drawn off the axis -- widen the range. Returns the axes.
+    """
+    T = TOK.typography()
+    S = TOK.stroke()
+    G = TOK.track_geometry()
+    rm = float(G.get("strip_row_mm", 1.6)) if row_mm is None else float(row_mm)
+    missing = [s.get("name", "") for s in samples if s.get("name", "") not in thalf]
+    if missing:
+        raise KeyError(f"halflife_ladder: no t1/2 for {missing}")
+    outside = [(s["name"], thalf[s["name"]]) for s in samples if not (lo <= thalf[s["name"]] <= hi)]
+    if outside:
+        raise ValueError(f"halflife_ladder: t1/2 outside [{lo}, {hi}] nt would draw off the axis: {outside}")
+    W_mm = fig.get_figwidth() * MM_PER_IN
+    H_mm = fig.get_figheight() * MM_PER_IN
+    n = len(samples)
+    h = n * rm + max(0, n - 1) * gap_mm
+    ax = fig.add_axes([x_left_mm / W_mm, y_bottom_mm / H_mm, width_mm / W_mm, h / H_mm])
+    ax.set_xscale("log")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(0.0, h)
+    ax.set_yticks([])
+    for side in ("left", "right", "top"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_linewidth(S["hairline"])
+    ticks = [t for t in (300, 1000, 3000) if lo <= t <= hi]
+    ax.set_xticks(ticks)
+    ax.set_xticks([], minor=True)
+    if label:
+        ax.set_xticklabels([f"{t / 1000:g}" for t in ticks], fontsize=T["tick_label"])
+        ax.tick_params(axis="x", length=2, width=S["hairline"], pad=1)
+        ax.set_xlabel("t½ (kb)", fontsize=T["annotation"], labelpad=1)
+    else:
+        ax.set_xticklabels([])
+        ax.tick_params(axis="x", length=2, width=S["hairline"])
+    for x in ticks:
+        ax.plot([x, x], [0, h], color=TOK.color("wash"), lw=S["hairline"], zorder=1)
+    for i, s in enumerate(samples):
+        _check_role(s.get("role"))
+        yy = h - (i + 1) * rm - i * gap_mm + rm / 2
+        col = TOK.role(s["role"]) if s.get("role") else TOK.color("subtle")
+        ax.scatter([thalf[s["name"]]], [yy], s=9, color=col, edgecolor=TOK.color("paper"),
+                   linewidth=S["hairline"], zorder=4)
+    return ax
