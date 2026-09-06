@@ -203,13 +203,17 @@ def _body_color(role: Optional[str]) -> str:
 # merged row
 # ============================================================================
 def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
-                 region=None, xform: XForm = None, nbins: Optional[int] = None, zorder: int = 3):
+                 region=None, xform: XForm = None, nbins: Optional[int] = None, zorder: int = 3,
+                 survival: Optional["Survival"] = None):
     """A group of reads as one compressed raster strip from ``y`` to ``y + h``.
 
     Per column: body alpha = 0.2 + 0.8 * (bodies / n) in the body colour (``subtle`` or the
     sample's layer-A ``role``); the poly(A) prefix wins the column in ``polya`` when tails are
     >= a quarter of the bodies present (or bodies have ended); the non-A clip remainder in
-    ``mute`` by the same rule. Returns the ``AxesImage``.
+    ``mute`` by the same rule. With ``survival`` (the library's own truncation half-life) the
+    body fraction is the survival-CORRECTED coverage over n, capped at 1: the strip then shows
+    the molecules the library would have covered, not the reads it did -- a model, which the
+    caller must declare (chip / legend). Returns the ``AxesImage``.
     """
     from matplotlib.colors import to_rgb
     r = _apply_xlim(ax, region)
@@ -219,6 +223,8 @@ def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, r
         return None
     nb = nbins or _nbins_for(ax, x0, x1)
     cb, ct, cc = _columns(reads, x0, x1, nb, xform)
+    if survival is not None:
+        cb = np.minimum(float(n), _weighted_columns(reads, x0, x1, nb, survival, xform)[0])
     G = TOK.track_geometry()
     body_rgb = np.array(to_rgb(_body_color(role)))
     tail_rgb = np.array(to_rgb(TOK.color("polya")))
@@ -1593,4 +1599,131 @@ def window_counts(samples: Sequence[dict], windows: Sequence[Window]) -> Dict[st
             d[hit.letter if hit else "other"] += 1
         d["total"] = len(s.get("reads", ()))
         out[s.get("name", "")] = d
+    return out
+
+
+# ============================================================================
+# TRUNCATION SURVIVAL -- correcting a library's signal for its own 5' truncation hazard
+# ============================================================================
+@dataclass
+class Survival:
+    """A library's 5'-truncation survival, S(d) = 2^(-d / t_half): the probability that a
+    molecule's aligned body still covers a position ``d`` SPLICED nucleotides upstream of its
+    3' end.
+
+    The model is Sumner planning/136: an exponential per-nucleotide hazard ``lambda`` that the
+    observed 5' end is missing (t_half = ln 2 / lambda), fitted per library on the spliced span
+    of reads whose 3' end sits at an annotated transcript end. Direct RNA is 3'-anchored, so
+    every 5'-end signal a library shows is the true 5' ends TIMES this survival, plus the
+    truncation events themselves; the correction below undoes both.
+
+    ``max_weight`` caps 1/S: beyond ~3 half-lives an observed read stands for eight molecules
+    and the estimate is noise, so the cap is declared, not hidden.
+    """
+    t_half_nt: float
+    max_weight: float = 8.0
+
+    @property
+    def hazard(self) -> float:
+        """lambda, per spliced nucleotide."""
+        return float(np.log(2.0) / self.t_half_nt)
+
+    def s(self, d):
+        return np.power(2.0, -np.asarray(d, dtype=float) / self.t_half_nt)
+
+    def w(self, d):
+        """Inverse-probability weight 1/S(d), capped."""
+        return np.minimum(self.max_weight, 1.0 / self.s(d))
+
+
+def spliced_distance(r: Read, x) -> np.ndarray:
+    """Spliced distance (aligned nucleotides, introns excluded) from the read's 3' end to each
+    position ``x`` -- the exposure the hazard runs on. Positions past the 5' end still get the
+    distance to the 5' end (the read's full spliced span)."""
+    x = np.asarray(x, dtype=float)
+    d = np.zeros_like(x)
+    if r.strand == "+":
+        e = r.end
+        for bs, bl in r.blocks:
+            lo, hi = bs, bs + bl
+            d += np.clip(np.minimum(hi, e) - np.maximum(x, lo), 0, None)
+    else:
+        s0 = r.start
+        for bs, bl in r.blocks:
+            lo, hi = bs, bs + bl
+            d += np.clip(np.minimum(x + 1, hi) - np.maximum(lo, s0), 0, None)
+    return d
+
+
+def _weighted_columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, survival: Survival,
+                      xform: XForm = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-bin (weighted body coverage, weighted 5'-end count, raw 5'-end count): each read
+    covering a bin centre counts 1/S(d) molecules, d its spliced distance from the read's 3'
+    end to that centre. Bins are in display space when ``xform`` is given."""
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nbins + 1)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    cov_w = np.zeros(nbins); ends_w = np.zeros(nbins); ends_raw = np.zeros(nbins)
+    for r in reads:
+        xs = [(X(bs), X(bs + bl), bs, bl) for bs, bl in r.blocks]
+        for a, b, bs, bl in xs:
+            a, b = min(a, b), max(a, b)
+            i0 = int(np.searchsorted(edges, a, side="right") - 1)
+            i1 = int(np.searchsorted(edges, b, side="left"))
+            i0 = max(0, i0); i1 = min(nbins, i1)
+            if i1 <= i0:
+                continue
+            # genome positions of the covered bin centres (inverse of a linear xform is not
+            # available in general, so the distance is taken along the block in genome space)
+            frac = (centers[i0:i1] - a) / max(b - a, 1e-9)
+            gx = bs + frac * bl if xform is None else bs + frac * bl
+            cov_w[i0:i1] += survival.w(spliced_distance(r, gx))
+        p5 = r.five_prime
+        j = int(np.searchsorted(edges, X(p5), side="right") - 1)
+        if 0 <= j < nbins:
+            ends_raw[j] += 1
+            ends_w[j] += float(survival.w(spliced_distance(r, np.array([p5])))[0])
+    return cov_w, ends_w, ends_raw
+
+
+def corrected_coverage(reads: Sequence[Read], x0: float, x1: float, nbins: int, survival: Survival,
+                       xform: XForm = None) -> Tuple[np.ndarray, np.ndarray]:
+    """(raw coverage, survival-corrected coverage) per bin -- the second is the number of
+    molecules that would cover each position had the library not truncated them
+    (Horvitz-Thompson: each surviving read stands for 1/S(d))."""
+    cb, _, _ = _columns(reads, x0, x1, nbins, xform)
+    cov_w, _, _ = _weighted_columns(reads, x0, x1, nbins, survival, xform)
+    return cb, cov_w
+
+
+def five_prime_profile(reads: Sequence[Read], x0: float, x1: float, nbins: int,
+                       survival: Optional[Survival] = None, xform: XForm = None) -> Dict[str, np.ndarray]:
+    """The 5'-end density per bin, raw and, with a ``survival``, deconvolved:
+
+        true_ends(x) = [ends_w(x) - lambda * binwidth * cov_w(x)]_+
+
+    where ``ends_w`` are the observed 5' ends each weighted by 1/S (de-attenuated) and the
+    subtracted term is the hazard's expected TRUNCATION ends at x (lambda per nt times the
+    de-attenuated molecules still covering x). Negative bins are clipped to zero and counted in
+    ``n_clipped`` -- a place where the model overshoots the data, to be stated, not hidden.
+    """
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nbins + 1)
+    out: Dict[str, np.ndarray] = {"edges": edges}
+    if survival is None:
+        raw = np.zeros(nbins)
+        for r in reads:
+            j = int(np.searchsorted(edges, X(r.five_prime), side="right") - 1)
+            if 0 <= j < nbins:
+                raw[j] += 1
+        out["raw"] = raw
+        return out
+    cov_w, ends_w, ends_raw = _weighted_columns(reads, x0, x1, nbins, survival, xform)
+    bw = (hi - lo) / nbins                      # in display units == genome nt when xform is None
+    trunc = survival.hazard * bw * cov_w
+    corr = ends_w - trunc
+    out.update({"raw": ends_raw, "deattenuated": ends_w, "expected_truncation": trunc,
+                "corrected": np.clip(corr, 0, None), "n_clipped": np.array([int((corr < 0).sum())])})
     return out

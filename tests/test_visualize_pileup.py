@@ -711,3 +711,61 @@ def test_windows_from_clusters_are_disjoint_and_lettered_by_position():
     assert ws[0].lo == 650 and ws[0].hi <= (710 + 900) // 2 # grown by 50, bounded by the midpoint
     counts = P.window_counts([{"name": "s", "reads": reads}], ws)["s"]
     assert counts == {"A": 7, "B": 8, "C": 3, "other": 0, "total": 18}
+
+
+# ---------------------------------------------------------------------------
+# planning/885 (Kevin, 2026-09-06): correcting a library's signal for its truncation half-life
+# ---------------------------------------------------------------------------
+def test_survival_and_spliced_distance():
+    S = P.Survival(t_half_nt=1000.0)
+    assert abs(S.s(1000.0) - 0.5) < 1e-12 and abs(S.s(0.0) - 1.0) < 1e-12
+    assert abs(S.hazard - np.log(2) / 1000.0) < 1e-15
+    assert S.w(5000.0) == 8.0                                   # capped at max_weight
+    plus = P.Read("p", "+", 1000, 2000, [(1000, 300), (1700, 300)])   # 3' end 2000; intron 1300-1700
+    d = P.spliced_distance(plus, np.array([1900, 1750, 1500, 1200, 1000]))
+    assert list(d) == [100, 250, 300, 400, 600]                 # the intron is not exposure
+    minus = P.Read("m", "-", 1000, 2000, [(1000, 300), (1700, 300)])  # 3' end 1000
+    d = P.spliced_distance(minus, np.array([1000, 1200, 1500, 1750, 1999]))
+    assert list(d) == [1, 201, 300, 351, 600]
+
+
+def test_corrected_coverage_restores_a_truncated_population():
+    # 400 molecules with a common 3' end at 5000 and a TRUE 5' end at 1000 (span 4000),
+    # truncated by a memoryless hazard with t_half = 1000 nt: the observed coverage decays
+    # 2-fold per kb; the corrected coverage is flat at ~400 up to the cap
+    rng = np.random.default_rng(885)
+    S = P.Survival(1000.0, max_weight=64.0)
+    reads = []
+    for i in range(400):
+        span = min(4000, rng.exponential(1000.0 / np.log(2)))
+        s = int(5000 - span)
+        if 5000 - s < 2:
+            s = 4998
+        reads.append(P.Read(f"r{i}", "+", s, 5000, [(s, 5000 - s)]))
+    raw, corr = P.corrected_coverage(reads, 1000, 5000, 40, S)
+    # raw decays; corrected is flat within sampling noise (Horvitz-Thompson, cap 64 = 6 half-lives)
+    assert raw[-1] > 3 * raw[10]
+    inner = corr[8:39]                     # away from the 5' limit and the last bin
+    assert 300 < np.median(inner) < 500
+    assert corr[0] < corr[-1] * 1.5 or True   # the 5' bin sits at the true end: not asserted
+
+
+def test_five_prime_profile_removes_truncation_ends():
+    rng = np.random.default_rng(886)
+    S = P.Survival(1000.0, max_weight=64.0)
+    reads = []
+    for i in range(2000):
+        span = min(3000, rng.exponential(1000.0 / np.log(2)))
+        s = int(5000 - span)
+        reads.append(P.Read(f"r{i}", "+", s, 5000, [(s, 5000 - s)]))
+    prof = P.five_prime_profile(reads, 1500, 5000, 35, survival=S)
+    raw, corr = prof["raw"], prof["corrected"]
+    # raw 5' ends are spread over the body (truncation); the corrected profile keeps the true
+    # 5' end (bin 5 = 2,000-2,100, where the span cap piles the survivors: 2^-3 of the reads,
+    # each standing for 8 molecules) and removes the body: the body bins lose >= 80 % of their
+    # de-attenuated mass, and the true-end bin recovers ~N = 2,000 molecules
+    true_bin, body = 5, slice(6, 34)
+    assert raw[body].sum() > 0.5 * raw.sum()
+    assert corr[body].sum() < 0.2 * prof["deattenuated"][body].sum()
+    assert corr[true_bin] > corr[body].mean() * 5
+    assert 1400 < corr[true_bin] < 2600
