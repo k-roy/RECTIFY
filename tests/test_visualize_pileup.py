@@ -942,3 +942,21 @@ def test_survival_cap_comes_from_tokens_and_holds():
     assert float(S.w(0.0)) == 1.0
     with pytest.raises(ValueError):
         P.Survival(0.0)
+
+
+def test_tailed_coverage_stacks_tails_on_bodies(ax):
+    """R9 (Chanfreau 889a): in a coverage panel the tails sit ON the bodies they end, never from the
+    baseline. Eight reads end at 100 with 20-nt tails: at x in (100, 120) body = 0 and tail = 8, and
+    the polya fill's lower edge there is the body top (0), its upper edge 8 / top."""
+    reads = [R(i, 0, 100, tail=20, clip3=20) for i in range(8)] + [R(9, 0, 150)]
+    out = P.tailed_coverage(ax, reads, 0, 200, nbins=200, role="focal")
+    body, tail, top = out["body"], out["tail"], out["top"]
+    assert top == 9.0 and body[50] == 9 and tail[50] == 0
+    assert body[110] == 1 and tail[110] == 8                     # past the eight 3' ends: one body, eight tails
+    a_body, a_tail = out["artists"]
+    assert _hex(a_tail.get_facecolor()[0]) == TOK.color("polya").upper()
+    assert _hex(a_body.get_facecolor()[0]) == TOK.color("focal").upper()
+    # the tail polygon at x=110 spans [body, body + tail] / top = [1/9, 9/9], not [0, 8/9]
+    verts = a_tail.get_paths()[0].vertices
+    ys = verts[(np.abs(verts[:, 0] - 110.5) < 0.6), 1]
+    assert ys.min() > 0.05 and abs(ys.max() - 1.0) < 1e-6

@@ -101,6 +101,14 @@ class Read:
     clip3: int = 0
     clip5: int = 0
     sample: Optional[str] = None
+    # dorado's signal-level poly(A) estimate (rbrowse ``tn`` / BAM ``pt:i``), in nt; None when
+    # the read carries no such call (cDNA, or a DRS read the estimator skipped), 0 = estimation
+    # failed, -1 = adapter anchor not found. Only > 0 is a length. Kept BESIDE ``tail`` (the
+    # basecalled clip prefix), never merged into it: the two disagree by design -- the basecaller
+    # collapses homopolymers, so the clip prefix saturates (~14 nt in yeast DRS; measured 2026-09-06:
+    # yeast median tp 9-11 vs pt 21-27, human SMA median tp 21 vs pt 121) -- and ``tail_src``
+    # chooses which one a glyph draws, printed in the legend by the caller.
+    tail_pt: Optional[int] = None
 
     def __post_init__(self):
         if self.strand not in ("+", "-"):
@@ -144,7 +152,8 @@ class Read:
         clip5 = len(rec.get("cl", "") if rec.get("st", "+") == "+" else rec.get("cr", ""))
         return cls(rec["id"], rec["st"], rec["s"], rec["e"], [tuple(b) for b in rec["bl"]],
                    junctions=[tuple(j) for j in rec.get("n", [])] or None,
-                   tail=rec.get("tp", 0) or 0, clip3=clip3, clip5=clip5, sample=rec.get("sample"))
+                   tail=rec.get("tp", 0) or 0, clip3=clip3, clip5=clip5, sample=rec.get("sample"),
+                   tail_pt=rec.get("tn"))
 
     @classmethod
     def from_aligned_segment(cls, seg, *, tail: int = 0, sample: Optional[str] = None,
@@ -165,9 +174,35 @@ class Read:
 # ============================================================================
 # Column accumulation (difference arrays, O(blocks))
 # ============================================================================
-def _columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xform: XForm = None):
+TAIL_SRCS = ("clip", "pt")
+
+
+def tail_len(r: Read, tail_src: str = "clip") -> int:
+    """The poly(A) length a glyph draws for ``r``: ``"clip"`` = the basecalled A-rich prefix of
+    the 3' soft clip (rbrowse ``tp``; saturates), ``"pt"`` = dorado's signal-level estimate
+    (rbrowse ``tn``; the molecule's tail). Under ``"pt"`` a read without a usable call (None,
+    0 = failed, -1 = no anchor) draws NO tail -- never the clip as a silent stand-in, because
+    a mixed-source tail column would be two measures in one colour."""
+    if tail_src not in TAIL_SRCS:
+        raise ValueError(f"tail_src must be one of {TAIL_SRCS}, got {tail_src!r}")
+    if tail_src == "pt":
+        return int(r.tail_pt) if r.tail_pt is not None and r.tail_pt > 0 else 0
+    return int(r.tail)
+
+
+def tail_src_note(tail_src: str) -> str:
+    """The legend clause that names the tail measure (a figure must print which one it drew)."""
+    return ("poly(A) length = dorado pt (signal-level estimate, drawn from the aligned 3' end)"
+            if tail_src == "pt" else
+            "poly(A) = the A-rich prefix of the basecalled 3' soft clip (saturates ~14 nt)")
+
+
+def _columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xform: XForm = None,
+             tail_src: str = "clip"):
     """Per-bin counts of body / tail / non-A clip across [x0, x1) (in display space
-    when ``xform`` is given). Returns three arrays of length nbins."""
+    when ``xform`` is given). Returns three arrays of length nbins. ``tail_src`` picks the
+    tail measure (:func:`tail_len`); the non-A clip remainder is always the clip's own
+    (``clip3 - tail``) and sits past whichever tail was drawn."""
     X = xform or (lambda p: p)
     lo, hi = (X(x0), X(x1)) if xform else (x0, x1)
     lo, hi = min(lo, hi), max(lo, hi)
@@ -184,12 +219,13 @@ def _columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xform: XFo
     for r in reads:
         for bs, bl in r.blocks:
             add(body, X(bs), X(bs + bl))
-        if r.tail > 0:
-            t0 = r.end if r.strand == "+" else r.start - r.tail
-            add(tail, X(t0), X(t0 + r.tail))
+        tl = tail_len(r, tail_src)
+        if tl > 0:
+            t0 = r.end if r.strand == "+" else r.start - tl
+            add(tail, X(t0), X(t0 + tl))
         rest = r.clip3 - r.tail
         if rest > 0:
-            c0 = r.end + r.tail if r.strand == "+" else r.start - r.clip3
+            c0 = r.end + tl if r.strand == "+" else r.start - tl - rest
             add(clip, X(c0), X(c0 + rest))
     return np.cumsum(body)[:nbins], np.cumsum(tail)[:nbins], np.cumsum(clip)[:nbins]
 
@@ -201,6 +237,30 @@ def coverage_columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xf
     they came from (fill from body to body + tail, in `polya`) -- never from the baseline, where
     they read as islands (Kevin, Chanfreau planning/889a, 2026-09-06)."""
     return _columns(reads, x0, x1, nbins, xform)
+
+
+def tailed_coverage(ax, reads: Sequence[Read], x0: float, x1: float, nbins: Optional[int] = None, *,
+                    role: Optional[str] = None, xform: XForm = None, y0: float = 0.0, top: Optional[float] = None,
+                    alpha: float = 0.85, zorder: float = 3.0) -> dict:
+    """Coverage of ``reads`` across [x0, x1) with the poly(A) tails STACKED on the bodies they end:
+    the body fill in the sample's layer-A ``role`` (``subtle`` when None) from ``y0`` up, and the tail
+    counts as a ``polya`` fill from the body top to body + tail, so each 3' step of the pile carries its
+    tails as a shoulder attached to it. Never from the baseline -- drawn that way the tails sit as
+    isolated islands at the foot of the pile, detached from their reads (Kevin, Chanfreau planning/889a,
+    2026-09-06, R9: tails stay `polya`; form carries the marker). Heights are normalised to ``top``
+    (default max(body + tail)) so a corrected line can share the axis. Returns
+    ``{"body", "tail", "top", "artists"}``."""
+    nb = nbins or _nbins_for(ax, x0, x1)
+    body, tail, _clip = _columns(reads, x0, x1, nb, xform)
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nb + 1)
+    xc = 0.5 * (edges[:-1] + edges[1:])
+    tp = float(top if top is not None else max((body + tail).max(), 1.0))
+    a1 = ax.fill_between(xc, y0, y0 + body / tp, step="mid", color=_body_color(role), alpha=alpha, lw=0, zorder=zorder)
+    a2 = ax.fill_between(xc, y0 + body / tp, y0 + (body + tail) / tp, step="mid", color=TOK.color("polya"), lw=0,
+                         zorder=zorder + 0.5)
+    return {"body": body, "tail": tail, "top": tp, "artists": [a1, a2]}
 
 
 def _nbins_for(ax, x0, x1) -> int:
@@ -218,8 +278,9 @@ def _body_color(role: Optional[str]) -> str:
 # ============================================================================
 def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
                  region=None, xform: XForm = None, nbins: Optional[int] = None, zorder: int = 3,
-                 survival: Optional["Survival"] = None):
+                 survival: Optional["Survival"] = None, tail_src: str = "clip"):
     """A group of reads as one compressed raster strip from ``y`` to ``y + h``.
+    ``tail_src`` = ``"clip"`` (basecalled A-prefix) or ``"pt"`` (dorado estimate), see :func:`tail_len`.
 
     Per column: body alpha = 0.2 + 0.8 * (bodies / n) in the body colour (``subtle`` or the
     sample's layer-A ``role``); the poly(A) prefix wins the column in ``polya`` when tails are
@@ -236,7 +297,7 @@ def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, r
     if n == 0:
         return None
     nb = nbins or _nbins_for(ax, x0, x1)
-    cb, ct, cc = _columns(reads, x0, x1, nb, xform)
+    cb, ct, cc = _columns(reads, x0, x1, nb, xform, tail_src)
     if survival is not None:
         cb = np.minimum(float(n), _weighted_columns(reads, x0, x1, nb, survival, xform)[0])
     G = TOK.track_geometry()
@@ -266,7 +327,7 @@ def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, r
 def ribbon(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, anchor: Optional[int] = None,
            role: Optional[str] = None, minor: bool = False, capped: bool = False, region=None,
            xform: XForm = None, nbins: Optional[int] = None, letter: Optional[str] = None,
-           zorder: int = 3) -> list:
+           zorder: int = 3, tail_src: str = "clip") -> list:
     """One cluster of reads as a WEDGE: at each x the stacked heights are the fractions of
     the cluster's reads whose body / poly(A) prefix / non-A clip cover it, scaled to ``h``.
     ``anchor`` (the shared 3' end) draws a sharp ink line through the band; ``letter`` is the
@@ -280,7 +341,7 @@ def ribbon(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, anchor:
     if n == 0:
         return out
     nb = nbins or _nbins_for(ax, x0, x1)
-    cb, ct, cc = _columns(reads, x0, x1, nb, xform)
+    cb, ct, cc = _columns(reads, x0, x1, nb, xform, tail_src)
     X = xform or (lambda p: p)
     lo, hi = sorted((X(x0), X(x1)))
     edges = np.linspace(lo, hi, nb + 1)
@@ -1228,9 +1289,10 @@ def _squished_rows(ax, reads: Sequence[Read], plan: PanelPlan, *, role, region, 
                 ax.plot([X(prev), X(bs)], [y, y], color=TOK.color("hairline"), lw=S["hairline"],
                         zorder=zorder - 1)
             prev = bs + bl
-        if r.tail > 0:
-            t0 = r.end if r.strand == "+" else r.start - r.tail
-            ax.plot([X(t0), X(t0 + r.tail)], [y, y], color=tail_col, lw=plan.lw_pt,
+        tl = tail_len(r, tail_src)
+        if tl > 0:
+            t0 = r.end if r.strand == "+" else r.start - tl
+            ax.plot([X(t0), X(t0 + tl)], [y, y], color=tail_col, lw=plan.lw_pt,
                     solid_capstyle="butt", zorder=zorder + 1)
 
 
@@ -1238,7 +1300,7 @@ def read_panel(ax, reads: Sequence[Read], keep: Sequence[Cluster] = (), *,
                budget_mm: float, scale: Optional[BandScale] = None, name: str = "",
                role: Optional[str] = None, region=None, xform: XForm = None,
                merged_mm: float = 2.5, merged_gap_mm: float = 0.8, band_gap_mm: float = 0.4,
-               win: int = 32, mode: str = "auto", plan: Optional[PanelPlan] = None,
+               win: int = 32, mode: str = "auto", plan: Optional[PanelPlan] = None, tail_src: str = "clip",
                guides: bool = True, zorder: int = 3) -> PanelPlan:
     """ONE sample inside ``budget_mm`` of page: a merged raster row over up to k ribbon
     bands (or per-read rows when the budget can show them at a legible pitch).
@@ -1275,11 +1337,12 @@ def read_panel(ax, reads: Sequence[Read], keep: Sequence[Cluster] = (), *,
         for b in plan.bands:
             y -= b.h_mm
             ribbon(ax, b.reads, y=y, h=b.h_mm, anchor=b.anchor, role=role, minor=b.minor,
-                   capped=b.capped, region=region, xform=xform, letter=None, zorder=zorder)
+                   capped=b.capped, region=region, xform=xform, letter=None, zorder=zorder,
+                   tail_src=tail_src)
             y -= plan.band_gap_mm
     if plan.merged_mm > 0 and reads:
         merged_reads(ax, reads, y=plan.bands_mm + plan.merged_gap_mm, h=plan.merged_mm,
-                     role=role, region=region, xform=xform, zorder=zorder)
+                     role=role, region=region, xform=xform, zorder=zorder, tail_src=tail_src)
     if guides:
         _panel_guides(ax, keep, xform=xform, top=budget_mm)
     return plan
@@ -1324,7 +1387,7 @@ def read_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
                reserved_mm: float = 0.0, left_mm: float = 4.0, label_mm: float = 20.0,
                right_mm: float = 3.0, k: int = 4, win: int = 32, mode: str = "auto",
                letters: str = "ABCDEFGHIJ", band_gap_mm: float = 0.4,
-               merged_mm: float = 2.5, merged_gap_mm: float = 0.8,
+               merged_mm: float = 2.5, merged_gap_mm: float = 0.8, tail_src: str = "clip",
                size_figure: bool = True, axis_label: Optional[str] = None,
                origin_mm: Optional[float] = None) -> dict:
     """N sample read panels under ONE gene model, ONE letter key and ONE axis.
@@ -1407,7 +1470,7 @@ def read_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
                                merged_gap_mm=merged_gap_mm, band_gap_mm=band_gap_mm,
                                win=win, mode=mode)
         read_panel(ax, s.get("reads", ()), keep, budget_mm=panel_mm, plan=plan,
-                   role=s.get("role"), region=region, xform=xform, guides=True)
+                   role=s.get("role"), region=region, xform=xform, guides=True, tail_src=tail_src)
         ax.tick_params(labelbottom=False, bottom=False)
         ax.spines["bottom"].set_visible(False)
         # (e) ONE chip per panel, in the left gutter -- reserved width, never an overhang
@@ -1472,19 +1535,27 @@ def sort_reads(reads: Sequence[Read], order: str = "3p") -> List[Read]:
     """rbrowse's row order. ``"5p"`` is the browser's flat merged default (``sortBy:
     'five'``: rows by 5' end, 3' ends unsorted within); ``"3p"`` groups by 3' end first,
     5' end within -- the order that turns the pile's 3' edge into the isoform staircase.
-    Both run in TRANSCRIPT direction so the most 5'-reaching read is on top either way."""
-    if order not in ("3p", "5p"):
-        raise ValueError("order must be '3p' or '5p'")
+    Both run in TRANSCRIPT direction so the most 5'-reaching read is on top either way.
+    ``"3p_desc"`` (Kevin, 2026-09-06: "the 3'-most reads at the top") reverses the primary key
+    only: the most DISTAL 3' end is the top row -- the full-length / canonical-PAS molecules sit
+    directly under the model and the coverage, the proximal-PAS step below them, truncations at
+    the bottom -- so the pile's 3' edge descends like the coverage curve above it; the 5' key
+    within a step is unchanged (most 5'-reaching first). Strand-aware: "descending" is in RNA
+    order, i.e. ascending in genomic coordinate on the minus strand."""
+    if order not in ("3p", "5p", "3p_desc"):
+        raise ValueError("order must be '3p', '5p' or '3p_desc'")
     def k(r):
         sgn = 1 if r.strand == "+" else -1
         a, b = sgn * r.three_prime, sgn * r.five_prime
+        if order == "3p_desc":
+            return (-a, b)
         return (a, b) if order == "3p" else (b, a)
     return sorted(reads, key=k)
 
 
 def dense_pile(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
                region=None, xform: XForm = None, order: str = "3p", row_mm: Optional[float] = None,
-               nbins: Optional[int] = None, zorder: int = 3):
+               nbins: Optional[int] = None, zorder: int = 3, tail_src: str = "clip"):
     """rbrowse's **merged density** as a publication glyph: the reads in ``order`` are cut into
     as many chunks as the strip has pixel rows, and each chunk is one row of the per-column
     MAJORITY raster (:func:`merged_reads`). Every read contributes, nothing is sampled, and
@@ -1520,7 +1591,7 @@ def dense_pile(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, rol
     for k in range(n_rows):
         chunk = ordered[k * per:(k + 1) * per]
         m = len(chunk)
-        cb, ct, cc = _columns(chunk, x0, x1, nb, xform)
+        cb, ct, cc = _columns(chunk, x0, x1, nb, xform, tail_src)
         tail_wins = (ct > 0) & (ct * 4 >= cb)
         clip_wins = (cc > 0) & (cc * 4 >= cb) & ~tail_wins
         body = (cb > 0) & ~tail_wins & ~clip_wins
@@ -1820,7 +1891,7 @@ def pile_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
                right_mm: float = 3.0, order: str = "3p", strip_mm: float = 0.0,
                strip_gap_mm: float = 0.6, windows: Sequence[Window] = (),
                axis_label: Optional[str] = None, chip: bool = True, model_marks: bool = True,
-               neighbours: Sequence = ()) -> dict:
+               neighbours: Sequence = (), tail_src: str = "clip") -> dict:
     """N sample panels under ONE model, each panel a DENSE PILE (:func:`dense_pile`,
     rbrowse's merged density) on a mm budget, the quantification ``windows`` shaded down
     the stack and lettered on the model's ``polya`` marks, one chip per panel, one axis.
@@ -1837,8 +1908,10 @@ def pile_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
     :func:`stack_height_mm` gives the block's height BEFORE drawing. ``origin_mm`` is the
     block's TOP edge in mm from the figure bottom (default: the page top); ``strip_mm`` > 0
     puts the one-row majority strip of every read above the pile INSIDE the budget;
-    ``order`` is ``"3p"`` (the isoform staircase; the figure default) or ``"5p"`` (the
-    browser's truncation ramp). A layer-B token as a role is refused. Only the axis band
+    ``order`` is ``"3p"`` (the isoform staircase; the figure default), ``"3p_desc"`` (the
+    same staircase with the 3'-most reads on top) or ``"5p"`` (the browser's truncation ramp);
+    ``tail_src`` picks the poly(A) measure every glyph in the block draws (:func:`tail_len`) --
+    print :func:`tail_src_note` in the legend. A layer-B token as a role is refused. Only the axis band
     may carry a label, and only when ``axis_label`` is given -- one axis label per page, a
     stack's axis band holds tick labels only (R8; 881a render 1).
 
@@ -1887,11 +1960,11 @@ def pile_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
         n_rows = 0
         if reads:
             im = dense_pile(ax, reads, y=0.0, h=pile_h, role=s.get("role"), region=region, xform=xform,
-                            order=order, zorder=3)
+                            order=order, zorder=3, tail_src=tail_src)
             n_rows = int(im.get_array().shape[0]) if im is not None else 0
             if strip_mm > 0:
                 merged_reads(ax, reads, y=pile_h + strip_gap_mm, h=strip_mm, role=s.get("role"),
-                             region=region, xform=xform, zorder=3)
+                             region=region, xform=xform, zorder=3, tail_src=tail_src)
         out["rows"].append(n_rows)
         if chip:
             txt = f"{s.get('name', '')}\nn={len(reads):,}"
@@ -1925,7 +1998,7 @@ def pile_stack(fig, samples: Sequence[dict], model=None, *, region=None, xform: 
 def strip_rows(fig, samples: Sequence[dict], *, region=None, xform: XForm = None, origin_mm: float,
                row_mm: Optional[float] = None, gap_mm: float = 0.5, left_mm: float = 4.0,
                label_mm: float = 22.0, right_mm: float = 3.0, windows: Sequence[Window] = (),
-               label_every: bool = True, group_labels: bool = True):
+               label_every: bool = True, group_labels: bool = True, tail_src: str = "clip"):
     """One majority strip per sample, one row each, every read -- the replicate heatmap
     (Chanfreau planning/885: "do the replicates agree" is what a strip block answers; the
     tail blocks and extents line up row for row, or they do not).
@@ -1962,7 +2035,7 @@ def strip_rows(fig, samples: Sequence[dict], *, region=None, xform: XForm = None
         yy = h - (i + 1) * rm - i * gap_mm
         tops[i] = yy
         merged_reads(ax, s.get("reads", ()), y=yy, h=rm, role=s.get("role"), region=region, xform=xform,
-                     zorder=3, survival=s.get("survival"))
+                     zorder=3, survival=s.get("survival"), tail_src=tail_src)
         if label_every and not s.get("group"):
             fig.text(left_mm / W_mm, (y + yy + rm / 2) / H_mm,
                      f"{s.get('name', '')} · n={len(s.get('reads', ())):,}", ha="left", va="center",
