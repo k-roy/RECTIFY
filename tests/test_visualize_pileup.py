@@ -4,7 +4,7 @@ and junction arcs. Pins the semantics that were ported, not the pixels:
 
   * a merged column is a MAJORITY (a minority tail never repaints the body);
   * a ribbon column is a FRACTION (the 5' staircase is an ECDF ramp);
-  * the tail is the `tail` identity (R9, 2026-09-06) and the clip remainder is `mute`;
+  * the tail is the `polya` identity and the clip remainder is `mute`;
   * the spliced axis keeps covered/exonic segments, collapses the rest to a fixed gap,
     compresses long non-exonic segments, and to_t/from_t invert each other;
   * chains: exact junction key; retention through a boundary; DRS-suffix assignment;
@@ -68,7 +68,7 @@ def test_merged_column_is_a_majority(ax):
     im = P.merged_reads(ax, reads, region=("chrI", 0, 120), nbins=120)
     img = im.get_array()
     body_rgb = np.array(matplotlib.colors.to_rgb(TOK.color("subtle")))
-    tail_rgb = np.array(matplotlib.colors.to_rgb(TOK.color("tail")))
+    tail_rgb = np.array(matplotlib.colors.to_rgb(TOK.color("polya")))
     assert np.allclose(img[0, 50, :3], body_rgb)    # bodies rule the column
     assert np.allclose(img[0, 110, :3], tail_rgb)   # tail wins once bodies have ended
     assert img[0, 50, 3] == pytest.approx(1.0)
@@ -103,7 +103,7 @@ def test_ribbon_heights_are_fractions(ax):
     near = ys[(xs > 8) & (xs < 12)]
     assert near.max() == pytest.approx(0.25, abs=0.05)
     tail = out[1]
-    assert _hex(tail.get_facecolor()[0]) == TOK.color("tail").upper()
+    assert _hex(tail.get_facecolor()[0]) == TOK.color("polya").upper()
     texts = [a for a in out if hasattr(a, "get_text")]
     assert texts and texts[0].get_text() == "A"
 

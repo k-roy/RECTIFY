@@ -1,552 +1,508 @@
 {
-  "$schema_note": "rna-figure design tokens -- the RNA figure house standard for the Chanfreau and Sumner spaces. SINGLE SOURCE OF TRUTH for both colour layers, typography, geometry and the two floors. Every renderer (rectify/visualize, panels.py, tracks.py) reads this file or its byte-identical copy rectify/visualize/rna_tokens.json (kept in sync by tests/sync_tokens.sh --check). Edit HERE, run tests/palette_check.py, then sync. Never hard-code a colour, font size or stroke weight anywhere else.",
-  "version": "1.4.0",
-  "adopted": "2026-09-05",
-  "provenance": "Layer A hexes are the Okabe-Ito colour-vision-deficiency-safe set (Wong, B. 'Points of view: Color blindness', Nature Methods 8, 441 (2011), doi:10.1038/nmeth.1618) exactly as Kevin approved them in Chanfreau planning/806_house_palette.py (2026-08-26), with ONE replacement (control) made after measurement -- see `meaning.control`. Layer B marks and the plum control were SEARCHED, not picked: an HLS grid of ~2,000 candidates scored with the MAGESTIC validator's CIEDE2000 + Vienot dichromat simulation against every layer-A role and every neutral under normal, deuteranopia and protanopia, filtered to contrast >= 2.0 on paper. Structural greys are 806's own ramp. Validated by tests/palette_check.py (rna-figure), which imports the maths of ~/.claude/skills/magestic-figure/tests/palette_check.py rather than forking it. Scoped by Chanfreau planning/871 (2026-09-04); decisions ruled by Kevin 2026-09-05 (two layers with a hard boundary; B neutral-first with accents disjoint from A; sample identity from A, strand by position; replace control, declare focal/stratum_a).",
-  "layers": {
-    "_doc": "THE ONE DESIGN DECISION (871 section 3, ruled by Kevin 2026-09-05). Two colour contracts coexist in one figure and must never be confused. Layer A colours name an ARGUMENT ROLE and are applied to data panels. Layer B colours name a MOLECULAR IDENTITY and are applied to RNA glyphs. The rule that keeps them apart: LAYER B COLOURS NAME MOLECULES AND NEVER CARRY AN ARGUMENT; LAYER A COLOURS CARRY THE ARGUMENT AND ARE NEVER APPLIED TO A MOLECULAR GLYPH. A gene track under a bar chart uses B; the bars use A. This is the analogue of MAGESTIC's 'structure is never coloured'.",
-    "A": {
-      "name": "argument roles",
-      "contract": "One colour = one ARGUMENT ROLE across the whole manuscript. FOCAL is never a plain category colour; if two series are strata of one measurement they take stratum_a / stratum_b and FOCAL stays free for the annotation that carries the point. REFERENCE is never used for a second focal series. Greys carry everything the argument does not turn on.",
-      "tokens": [
-        "focal",
-        "reference",
-        "match",
-        "stratum_a",
-        "stratum_b",
-        "control"
-      ],
-      "neutral_series": "neutral",
-      "applies_to": [
-        "bar",
-        "scatter",
-        "strip",
-        "heatmap",
-        "violin",
-        "box",
-        "ECDF",
-        "forest",
-        "line",
-        "metaplot as a data panel",
-        "signal glyphs coloured by SAMPLE: coverage fills, junction arcs, read pileups, 3'-end profiles"
-      ],
-      "source": "Chanfreau planning/806_house_palette.py, hexes verbatim except `control` (measured collapse, see meaning.control). Legacy aliases VERM/BLUE/GREEN/ORANGE/SKY/PURPLE/GREY map onto these roles so a script adopts with a one-line import swap."
-    },
-    "B": {
-      "name": "molecular identities",
-      "contract": "One colour = one MOLECULAR IDENTITY, forever, in every figure of both labs. Neutral-first: the gene model (exon, UTR, intron), reads and single-sample coverage are drawn in the structural greys -- structure is never coloured. Hue is spent on three MARKS (tick, arc, lollipop -- never a fill) and, since 1.4.0, on ONE fill: the poly(A) tail block at the 3' end of a read (`tail`).",
-      "tokens": [
-        "splice",
-        "polya",
-        "mod",
-        "tail"
-      ],
-      "neutral_glyphs": {
-        "exon_cds": "ink fill, full track height",
-        "utr": "ink fill at utr_height_ratio of the exon height (form carries the distinction, not colour)",
-        "intron": "hairline stroke in `hairline` grey, optional chevrons in the direction of transcription",
-        "tss": "bent arrow in ink at the 5' end",
-        "read": "`subtle` fill for an aligned block; soft-clip = `mute` fill with hatch; junction gap = hairline",
-        "coverage_single_sample": "`subtle` fill, no outline",
-        "strand": "carried by POSITION (mirrored above/below the axis) and by arrow direction, never by hue (Kevin, 2026-09-05)",
-        "read_tail": "the A-rich poly(A) PREFIX of a read's 3' clip is a `tail` fill on that read -- rbrowse's on-screen green, searched for print (R9, Kevin 2026-09-06: 'add the pA tails in green to the ends of the reads -- a clean visual marker of read orientation and that we have the full RNA from head to tail'). The 3' SITE mark, the ribbon's anchor edge and the chain badge stay `polya`. A 1-px ink rule at the body/tail junction is the form cue (rbrowse finding [9]). In a coverage panel the tails hang past the 3' edge as a `tail` fill (pileup.coverage_columns).",
-        "read_clip": "the non-A remainder of a soft clip is `mute` -- unaligned, not poly(A)",
-        "compressed_reads": "a merged raster (per-column MAJORITY) or a ribbon wedge (per-column FRACTION as height) -- rbrowse's representations, ported to rectify.visualize.pileup; the body is `subtle` or the sample's layer-A role",
-        "isoform_identity": "a LETTER badge at the 3' anchor and on the isoform row, never a hue (Kevin, rbrowse 2026-08-12: 'too many colors on the figure'); shared-suffix chains are hatched"
-      },
-      "applies_to": [
-        "gene / transcript models",
-        "exons, UTRs, introns",
-        "5'SS, 3'SS, branch point",
-        "poly(A) / CPA / PAS sites",
-        "TSS",
-        "read pileups and soft clips",
-        "splice arcs as ANNOTATION",
-        "RNA modification marks (m6A, psi)",
-        "browser views",
-        "compressed read views (merged raster, ribbon wedge)",
-        "union-exon (spliced) axis and isoform chain rows",
-        "junction arcs as counts (signal) or annotation"
-      ]
-    },
-    "boundary_rule": "A colour from layer A never touches a molecular glyph; a colour from layer B never encodes a sample, a condition, a stratum or a claim. Enforced by API: tracks.gene_model / tracks.mark take no colour argument at all; panels.* take a ROLE name, not a hex.",
-    "signal_rule": "Ruled by Kevin 2026-09-05. A SIGNAL glyph (coverage fill, junction arc drawn as counts, read pileup, per-position 3'-end profile) is DATA ABOUT A SAMPLE, so when a panel compares samples its fills take layer-A roles (which sample the claim is about IS the argument). A single-sample signal is `subtle` grey. An ANNOTATION glyph (gene model, site marks, arcs drawn as annotation) is a molecule and stays in layer B. Plus/minus strand is mirrored above/below the axis in the same colour, never a hue.",
-    "cross_layer_separation": "MEASURED 2026-09-05: every B mark clears every A role at dE2000 >= 16.6 in normal, deuteranopia and protanopia (worst: match vs mod, deuteranopia). Five of the six A fills sit >= 17 L* LIGHTER than every B mark (A fills L* 46-71; B marks L* 23-40); the plum `control` (L* 35) is the exception and clears the marks by hue (>= 14.4) and by form instead. B marks share hue FAMILIES with A (a dark red beside vermillion, an indigo beside blue, a forest green beside green) because seven Okabe-Ito hues already occupy the hue circle; hue distance, lightness and form (mark vs fill) together are what stop a reader linking them -- DESIGN.md section 2 says why that is enough."
+ "$schema_note": "rna-figure design tokens -- the RNA figure house standard for the Chanfreau and Sumner spaces. SINGLE SOURCE OF TRUTH for both colour layers, typography, geometry and the two floors. Every renderer (rectify/visualize, panels.py, tracks.py) reads this file or its byte-identical copy rectify/visualize/rna_tokens.json (kept in sync by tests/sync_tokens.sh --check). Edit HERE, run tests/palette_check.py, then sync. Never hard-code a colour, font size or stroke weight anywhere else.",
+ "version": "1.3.0",
+ "adopted": "2026-09-05",
+ "provenance": "Layer A hexes are the Okabe-Ito colour-vision-deficiency-safe set (Wong, B. 'Points of view: Color blindness', Nature Methods 8, 441 (2011), doi:10.1038/nmeth.1618) exactly as Kevin approved them in Chanfreau planning/806_house_palette.py (2026-08-26), with ONE replacement (control) made after measurement -- see `meaning.control`. Layer B marks and the plum control were SEARCHED, not picked: an HLS grid of ~2,000 candidates scored with the MAGESTIC validator's CIEDE2000 + Vienot dichromat simulation against every layer-A role and every neutral under normal, deuteranopia and protanopia, filtered to contrast >= 2.0 on paper. Structural greys are 806's own ramp. Validated by tests/palette_check.py (rna-figure), which imports the maths of ~/.claude/skills/magestic-figure/tests/palette_check.py rather than forking it. Scoped by Chanfreau planning/871 (2026-09-04); decisions ruled by Kevin 2026-09-05 (two layers with a hard boundary; B neutral-first with accents disjoint from A; sample identity from A, strand by position; replace control, declare focal/stratum_a).",
+ "layers": {
+  "_doc": "THE ONE DESIGN DECISION (871 section 3, ruled by Kevin 2026-09-05). Two colour contracts coexist in one figure and must never be confused. Layer A colours name an ARGUMENT ROLE and are applied to data panels. Layer B colours name a MOLECULAR IDENTITY and are applied to RNA glyphs. The rule that keeps them apart: LAYER B COLOURS NAME MOLECULES AND NEVER CARRY AN ARGUMENT; LAYER A COLOURS CARRY THE ARGUMENT AND ARE NEVER APPLIED TO A MOLECULAR GLYPH. A gene track under a bar chart uses B; the bars use A. This is the analogue of MAGESTIC's 'structure is never coloured'.",
+  "A": {
+   "name": "argument roles",
+   "contract": "One colour = one ARGUMENT ROLE across the whole manuscript. FOCAL is never a plain category colour; if two series are strata of one measurement they take stratum_a / stratum_b and FOCAL stays free for the annotation that carries the point. REFERENCE is never used for a second focal series. Greys carry everything the argument does not turn on.",
+   "tokens": [
+    "focal",
+    "reference",
+    "match",
+    "stratum_a",
+    "stratum_b",
+    "control"
+   ],
+   "neutral_series": "neutral",
+   "applies_to": [
+    "bar",
+    "scatter",
+    "strip",
+    "heatmap",
+    "violin",
+    "box",
+    "ECDF",
+    "forest",
+    "line",
+    "metaplot as a data panel",
+    "signal glyphs coloured by SAMPLE: coverage fills, junction arcs, read pileups, 3'-end profiles"
+   ],
+   "source": "Chanfreau planning/806_house_palette.py, hexes verbatim except `control` (measured collapse, see meaning.control). Legacy aliases VERM/BLUE/GREEN/ORANGE/SKY/PURPLE/GREY map onto these roles so a script adopts with a one-line import swap."
   },
-  "palette": {
-    "semantic": {
-      "focal": "#D55E00",
-      "reference": "#0072B2",
-      "match": "#009E73",
-      "stratum_a": "#E69F00",
-      "stratum_b": "#56B4E9",
-      "control": "#853272",
-      "splice": "#1105BD",
-      "polya": "#950404",
-      "mod": "#036D43",
-      "tail": "#6cb06a"
-    },
-    "structural": {
-      "ink": "#262626",
-      "hairline": "#404040",
-      "subtle": "#737373",
-      "neutral": "#999999",
-      "mute": "#C7C7C7",
-      "wash": "#E0E0E0",
-      "paper": "#FFFFFF",
-      "focal_tint": "#F3C9AE",
-      "reference_tint": "#B8D8EA",
-      "match_tint": "#B3E3D3"
-    }
+  "B": {
+   "name": "molecular identities",
+   "contract": "One colour = one MOLECULAR IDENTITY, forever, in every figure of both labs. Neutral-first: the gene model (exon, UTR, intron), reads and single-sample coverage are drawn in the structural greys -- structure is never coloured. Hue is spent on three MARKS only, and a B accent is a mark (tick, arc, lollipop), never a fill.",
+   "tokens": [
+    "splice",
+    "polya",
+    "mod"
+   ],
+   "neutral_glyphs": {
+    "exon_cds": "ink fill, full track height",
+    "utr": "ink fill at utr_height_ratio of the exon height (form carries the distinction, not colour)",
+    "intron": "hairline stroke in `hairline` grey, optional chevrons in the direction of transcription",
+    "tss": "bent arrow in ink at the 5' end",
+    "read": "`subtle` fill for an aligned block; soft-clip = `mute` fill with hatch; junction gap = hairline",
+    "coverage_single_sample": "`subtle` fill, no outline",
+    "strand": "carried by POSITION (mirrored above/below the axis) and by arrow direction, never by hue (Kevin, 2026-09-05)",
+    "read_tail": "the A-rich poly(A) PREFIX of a read's 3' clip is a `polya` fill on that read -- ONE hue for the 3' end, its site mark and its tail (rbrowse paints tails base-A green on screen; the publication path keeps one identity per hue). A 1-px ink rule at the body/tail junction is the form cue (rbrowse finding [9]: that boundary is the most-read edge in the tool and a rule survives any palette)",
+    "read_clip": "the non-A remainder of a soft clip is `mute` -- unaligned, not poly(A)",
+    "compressed_reads": "a merged raster (per-column MAJORITY) or a ribbon wedge (per-column FRACTION as height) -- rbrowse's representations, ported to rectify.visualize.pileup; the body is `subtle` or the sample's layer-A role",
+    "isoform_identity": "a LETTER badge at the 3' anchor and on the isoform row, never a hue (Kevin, rbrowse 2026-08-12: 'too many colors on the figure'); shared-suffix chains are hatched"
+   },
+   "applies_to": [
+    "gene / transcript models",
+    "exons, UTRs, introns",
+    "5'SS, 3'SS, branch point",
+    "poly(A) / CPA / PAS sites",
+    "TSS",
+    "read pileups and soft clips",
+    "splice arcs as ANNOTATION",
+    "RNA modification marks (m6A, psi)",
+    "browser views",
+    "compressed read views (merged raster, ribbon wedge)",
+    "union-exon (spliced) axis and isoform chain rows",
+    "junction arcs as counts (signal) or annotation"
+   ]
   },
-  "roles": {
-    "_doc": "Every token has a role. The validator applies DIFFERENT rules per role.",
-    "semantic": {
-      "tokens": [
-        "focal",
-        "reference",
-        "match",
-        "stratum_a",
-        "stratum_b",
-        "control",
-        "splice",
-        "polya",
-        "mod",
-        "tail"
-      ],
-      "rule": "Encodes an argument role (layer A) or a molecular identity (layer B). All ten must be mutually distinguishable under normal, deuteranopia and protanopia (dE2000 >= 12) and reach contrast >= 2.0 on paper. A pair between declarable_min_delta_e and 12 may be admitted ONLY with a named form cue in `cvd_redundancy`; below declarable_min_delta_e a declaration is refused and the hex must change (that is how `control` was replaced).",
-      "min_delta_e": 12.0,
-      "declarable_min_delta_e": 10.0,
-      "min_contrast_on_paper": 2.0
-    },
-    "structural": {
-      "tokens": [
-        "ink",
-        "hairline",
-        "subtle",
-        "neutral",
-        "mute"
-      ],
-      "rule": "806's grey ramp. Carries no meaning of its own: text, spines, rails, exon fills, intron lines, single-sample signal, denominators. `neutral` is 806's NEUTRAL (#999999, 'not part of the argument') and is allowed inside a data set as the recessive series; it is checked against the accents it sits beside like any other member of a set. The grey ramp is a HIERARCHY, not a set of categories: two greys are never asked to carry independent meaning against each other, so the validator does not score structural x structural pairs -- except `neutral`, the one grey that acts as a data series, which is scored against everything it sits beside.",
-      "min_contrast_on_paper": 1.5
-    },
-    "background": {
-      "tokens": [
-        "paper",
-        "wash",
-        "focal_tint",
-        "reference_tint",
-        "match_tint"
-      ],
-      "rule": "The ground and 806's three tints (fills that must not compete with the line or edge in the same role: a confidence band, a floor band, a highlighted window). Being near-invisible against paper is the function, so no contrast floor applies, and nothing may ever be encoded by one of these alone.",
-      "min_contrast_on_paper": 0.0
-    }
+  "boundary_rule": "A colour from layer A never touches a molecular glyph; a colour from layer B never encodes a sample, a condition, a stratum or a claim. Enforced by API: tracks.gene_model / tracks.mark take no colour argument at all; panels.* take a ROLE name, not a hex.",
+  "signal_rule": "Ruled by Kevin 2026-09-05. A SIGNAL glyph (coverage fill, junction arc drawn as counts, read pileup, per-position 3'-end profile) is DATA ABOUT A SAMPLE, so when a panel compares samples its fills take layer-A roles (which sample the claim is about IS the argument). A single-sample signal is `subtle` grey. An ANNOTATION glyph (gene model, site marks, arcs drawn as annotation) is a molecule and stays in layer B. Plus/minus strand is mirrored above/below the axis in the same colour, never a hue.",
+  "cross_layer_separation": "MEASURED 2026-09-05: every B mark clears every A role at dE2000 >= 16.6 in normal, deuteranopia and protanopia (worst: match vs mod, deuteranopia). Five of the six A fills sit >= 17 L* LIGHTER than every B mark (A fills L* 46-71; B marks L* 23-40); the plum `control` (L* 35) is the exception and clears the marks by hue (>= 14.4) and by form instead. B marks share hue FAMILIES with A (a dark red beside vermillion, an indigo beside blue, a forest green beside green) because seven Okabe-Ito hues already occupy the hue circle; hue distance, lightness and form (mark vs fill) together are what stop a reader linking them -- DESIGN.md section 2 says why that is enough."
+ },
+ "palette": {
+  "semantic": {
+   "focal": "#D55E00",
+   "reference": "#0072B2",
+   "match": "#009E73",
+   "stratum_a": "#E69F00",
+   "stratum_b": "#56B4E9",
+   "control": "#853272",
+   "splice": "#1105BD",
+   "polya": "#950404",
+   "mod": "#036D43"
   },
-  "meaning": {
-    "_doc": "The semantic contract. Layer A: one colour = one argument role, per manuscript. Layer B: one colour = one molecular identity, forever.",
-    "focal": "LAYER A. The claim this manuscript makes -- the excluded register, the observed hits, the effect being argued. Never a plain category colour.",
-    "reference": "LAYER A. What FOCAL is measured against -- expectation under the null, the writer consensus, the reference rate, the control arm of a two-arm comparison.",
-    "match": "LAYER A. Sequence compatibility as an argument -- a motif that DOES fit (methylatable A, DRACH-compatible, MIG). Note the boundary: a modification MARK on a transcript glyph is layer B `mod`; 'the fraction of sites that are compatible' in a bar chart is `match`.",
-    "stratum_a": "LAYER A. First stratum of a split of one measurement (terminal vs interior introns; 293T vs HeLa; SMA vs control arm when neither is the claim).",
-    "stratum_b": "LAYER A. Second stratum of that same split. Greyscale twin of stratum_a (dL* 0.8) -- panels.bars hatches it, which is the declared cue.",
-    "control": "LAYER A. Composition / shuffle / perturbation controls. REPLACED 2026-09-05 (Kevin's ruling, option 'replace CONTROL, declare FOCAL/STRATUM_A'): 806's #CC79A7 measured dE2000 5.2 from `neutral` under deuteranopia and dL* 2.2 -- a deuteranope, and every reader of a mono printout, could not tell a control series from a denominator. #853272 was searched over hue 270-345 x saturation x lightness (1,639 survivors) for the candidate closest to the original purple that clears every A role, every B mark and every neutral at dE >= 14 in three visions with dL* >= 15 from `neutral`; worst pair is reference under protanopia at 14.4. 806_house_palette.py itself is unchanged; approved figures stay diff-able and adopt when next touched.",
-    "splice": "LAYER B. The splice as a molecule: 5'SS and 3'SS ticks, the branch point dot, a junction arc drawn as ANNOTATION (an arc drawn as counts per sample is a signal glyph and takes a layer-A role). Searched: worst dE 20.2 vs reference under deuteranopia; L* 23.",
-    "polya": "LAYER B. The 3' end as a molecule: the poly(A) / CPA / PAS site mark, a metaplot anchor line at the CPA. Searched: worst dE 21.5 vs ink under protanopia, 22.3 vs focal; L* 31. Drawn as a circle-headed lollipop so it separates from `splice` (dL* 7.3) and `mod` by form as well as hue.",
-    "mod": "LAYER B. An RNA modification mark (m6A, pseudouridine) on a transcript glyph, drawn as a diamond-headed lollipop. Searched: worst dE 16.6 vs match under deuteranopia (the two are related concepts -- a compatible motif and the modification on it -- so a family resemblance helps rather than misleads); L* 40.",
-    "ink": "806 INK 0.15: body text on figures, exon fills, TSS arrows, rails, panel letters.",
-    "hairline": "806 HAIRLINE 0.25: bar edges, axis spines, intron lines, the zero line of a mirrored track.",
-    "subtle": "806 SUBTLE 0.45: provenance footer, secondary annotation, single-sample coverage fill, aligned-read blocks.",
-    "neutral": "806 NEUTRAL: denominators, universes, 'not part of the argument' -- the recessive data series.",
-    "mute": "recessive: soft-clip blocks, dividers, 'other' categories, process arrows.",
-    "wash": "806 FLOOR_BAND 0.88: 'below this is not a measurement' shading, highlighted windows, panel wash.",
-    "focal_tint": "806 FOCAL_TINT: the band or fill under a FOCAL line (a CI ribbon), never a series on its own.",
-    "reference_tint": "806 REFERENCE_TINT: the band or fill under a REFERENCE line.",
-    "match_tint": "806 MATCH_TINT: the band or fill under a MATCH line.",
-    "tail": "LAYER B. The poly(A) tail on a READ -- the non-genomic A prefix of its 3' soft clip, drawn as a block past the aligned body's 3' end (and, in a coverage panel, as the tail coverage hanging past the 3' edge). Orientation and full-length-ness at a glance. Searched 2026-09-06 over hue 90-180 x saturation x value: the only green at L* 55-66 that clears every token at dE2000 >= 12 in normal / deuteranope / protanope vision except `match` (10.0, declared: the two never share a panel -- a tail is a block appended to a read, `match` a bar fill in a data panel). dE 6 from rbrowse's on-screen A green #3aa757, which itself measures 9.2 from `match` and could not be adopted. L* 66; contrast on paper 2.6; 25 from `mod`, 28 from `polya`."
-  },
-  "cooccurrence_sets": {
-    "_doc": "A single panel gets 2 neutrals + AT MOST 4 semantic accents. These are the sanctioned combinations, named for the panel type that uses them; the validator checks each set, not the whole vocabulary at once. Cross-layer sets (a browser view whose signal is coloured by sample) are listed explicitly so the A x B separations are validated where they actually meet.",
-    "data_claim_vs_reference": [
-      "ink",
-      "neutral",
-      "focal",
-      "reference"
-    ],
-    "data_strata": [
-      "ink",
-      "neutral",
-      "stratum_a",
-      "stratum_b",
-      "focal"
-    ],
-    "data_control": [
-      "ink",
-      "neutral",
-      "focal",
-      "reference",
-      "control"
-    ],
-    "data_match": [
-      "ink",
-      "neutral",
-      "match",
-      "focal",
-      "reference"
-    ],
-    "metaplot_anchor": [
-      "ink",
-      "neutral",
-      "focal",
-      "reference",
-      "polya"
-    ],
-    "browser_single_sample": [
-      "ink",
-      "hairline",
-      "subtle",
-      "splice",
-      "polya",
-      "mod",
-      "tail"
-    ],
-    "browser_by_sample": [
-      "ink",
-      "neutral",
-      "focal",
-      "reference",
-      "splice",
-      "polya"
-    ],
-    "browser_strata": [
-      "ink",
-      "neutral",
-      "stratum_a",
-      "stratum_b",
-      "splice",
-      "polya"
-    ],
-    "reads_compressed": [
-      "ink",
-      "hairline",
-      "subtle",
-      "mute",
-      "polya",
-      "splice",
-      "tail"
-    ],
-    "reads_by_sample": [
-      "ink",
-      "mute",
-      "focal",
-      "reference",
-      "tail",
-      "splice"
-    ],
-    "coverage_tails": [
-      "ink",
-      "mute",
-      "focal",
-      "reference",
-      "tail"
-    ]
-  },
-  "cvd_redundancy": {
-    "_doc": "A semantic pair that measures between roles.semantic.declarable_min_delta_e and min_delta_e under red-green CVD is admitted ONLY here, with the non-colour cue that carries the distinction named. The validator refuses a declaration below the declarable floor and refuses one without a `_cue_` note. Three states, as in greyscale_redundancy: declared (cue named), unreviewed (advisory), undeclared (FAIL).",
-    "data_strata": [
-      [
-        "focal",
-        "stratum_a"
-      ]
-    ],
-    "browser_strata": [
-      [
-        "focal",
-        "stratum_a"
-      ]
-    ],
-    "data_match": [
-      [
-        "match",
-        "neutral"
-      ]
-    ],
-    "_cue_focal_stratum_a": "Okabe-Ito vermillion vs amber measures dE2000 11.8 under deuteranopia (MAGESTIC replaced its `edit` for the same pair). Kept verbatim on Kevin's ruling (2026-09-05) because 806's own rule of use already supplies the cue: when stratum fills are present FOCAL is an ANNOTATION -- the fold arrow, the outline, the called-hit marker, the text -- and never a bar fill. panels.bars refuses role='focal' beside stratum fills unless kind='annotation'.",
-    "_cue_match_neutral": "Okabe-Ito green vs 806's #999999 measures dE2000 10.4 under deuteranopia. Cue: `neutral` is the recessive denominator series and panels.bars draws it with NO edge and at 0.85 alpha while `match` carries an ink edge; where both are lines, `neutral` is dashed.",
-    "reads_compressed": [
-      [
-        "tail",
-        "match"
-      ]
-    ],
-    "_cue_tail_match": "dE2000 10.0 (normal vision) -- the declarable floor. No sanctioned set holds both: `tail` is a block appended past a read body's 3' end (with the ink rule at the junction) in read views and a fill hanging past the 3' edge of a coverage panel; `match` is a bar / motif fill in a layer-A data panel. Form and panel type carry the distinction; the pair never meets on one axes."
-  },
-  "greyscale_redundancy": {
-    "_doc": "A distinction that ENCODES something must survive a mono printout. Where a sanctioned set holds a semantic pair below dL* 15, the pair is listed here ONLY if the drawing carries a non-colour cue, and the cue is named. 'unreviewed' means nobody has checked the figures that use that set -- advisory, not a pass. Measured L*: focal 54, reference 46, match 58, stratum_a 71, stratum_b 70, control 35, splice 23, polya 31, mod 40, tail 66.",
-    "data_strata": [
-      [
-        "stratum_a",
-        "stratum_b"
-      ],
-      [
-        "focal",
-        "stratum_a"
-      ],
-      [
-        "focal",
-        "stratum_b"
-      ]
-    ],
-    "_cue_stratum_a_stratum_b": "dL* 0.8 -- identical in mono. panels.bars applies a hatch to every stratum_b fill (and an open marker to stratum_b points); this is code-enforced, not per-figure effort.",
-    "browser_single_sample": [
-      [
-        "splice",
-        "polya"
-      ],
-      [
-        "polya",
-        "mod"
-      ],
-      [
-        "splice",
-        "mod"
-      ]
-    ],
-    "browser_by_sample": [
-      [
-        "splice",
-        "polya"
-      ],
-      [
-        "focal",
-        "reference"
-      ]
-    ],
-    "browser_strata": [
-      [
-        "splice",
-        "polya"
-      ],
-      [
-        "stratum_a",
-        "stratum_b"
-      ]
-    ],
-    "data_claim_vs_reference": "unreviewed",
-    "data_control": "unreviewed",
-    "data_match": "unreviewed",
-    "metaplot_anchor": "unreviewed",
-    "_cue_focal_stratum_a": "FOCAL is an annotation (arrow, outline, marker, text), never a fill, beside stratum fills (806's rule of use, code-enforced in panels.bars). An annotation against a bar is a form difference in any printout.",
-    "_cue_focal_stratum_b": "Same cue as focal/stratum_a: FOCAL is an annotation, never a fill, beside strata.",
-    "_cue_splice_polya": "Three different SHAPES by construction in tracks.mark: splice = tick with an inward triangle (or an arc), polya = circle-headed lollipop, mod = diamond-headed lollipop. A mark carries its identity by form; hue is the second channel.",
-    "_cue_polya_mod": "circle-headed vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
-    "_cue_splice_mod": "tick/arc vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
-    "_cue_focal_reference": "In a browser view tracks.coverage draws ONE sample per row, each row carrying its label, so two samples are separated by position and text, not by value. Two samples overlaid on one axes must take stratum_a / stratum_b (hatched), never focal / reference -- written into tracks.coverage's docstring.",
-    "reads_compressed": [
-      [
-        "splice",
-        "polya"
-      ]
-    ],
-    "reads_by_sample": [
-      [
-        "splice",
-        "polya"
-      ],
-      [
-        "focal",
-        "reference"
-      ],
-      [
-        "focal",
-        "tail"
-      ]
-    ],
-    "coverage_tails": [
-      [
-        "focal",
-        "reference"
-      ],
-      [
-        "focal",
-        "tail"
-      ]
-    ],
-    "_cue_focal_tail": "L* 54 vs 66 (dL* 12). Cue: POSITION -- a tail block sits past the body's 3' end, never inside it, and a 1-px ink rule marks the junction; in a coverage panel the tail fill begins where the body coverage steps down at the 3' edge."
-  },
-  "typography": {
-    "_doc": "Same family and floors as magestic-figure v1.1.0, so a Chanfreau figure and a MAGESTIC figure on one page share one type scale. Arial FIRST for the same measured reason (Helvetica Neue and Helvetica register at weight 400 only on this machine, so fontweight='bold' silently renders regular; Arial carries 700). 806's 7.0 pt base is BELOW the house floor: Kevin ruled three times after 806 was written (2026-09-01, 2026-09-03 x2) that the 6-9 pt scale renders too small, and the floor follows the later ruling. Nature's 5-7 pt is a MINIMUM, not a target.",
-    "family": [
-      "Arial",
-      "Helvetica Neue",
-      "Helvetica",
-      "sans-serif"
-    ],
-    "family_css": "Arial, 'Helvetica Neue', Helvetica, sans-serif",
-    "manuscript_pt": {
-      "panel_letter": 11.0,
-      "axis_label": 8.5,
-      "tick_label": 7.5,
-      "in_figure": 8.0,
-      "annotation": 7.5,
-      "legend": 9.0,
-      "provenance": 6.0
-    },
-    "slide_pt": {
-      "panel_letter": 20.0,
-      "axis_label": 16.0,
-      "tick_label": 14.0,
-      "in_figure": 14.0,
-      "annotation": 12.0,
-      "legend": 14.0,
-      "provenance": 9.0
-    },
-    "weights": {
-      "regular": 400,
-      "bold": 700
-    },
-    "conventions": {
-      "panel_letter": "bold lowercase a, b, c at the top-left of the axes (figure-standard owns this)",
-      "gene_names": "italic for gene names in every organism (PDH1, TMEM41B); roman for proteins (Rna15, Ysh1) and for RNA species (mRNA, snRNA)",
-      "strain_ids": "roman, never italic",
-      "coordinates": "chrXVI:558,219-560,137 with thousands separators; kb on a browser axis; 5' -> 3' left to right, so a minus-strand locus is drawn on a REVERSED x-axis",
-      "units": "thin space before unit; 'nt' for RNA lengths, 'bp' for genomic, 'kb' on axes",
-      "primes": "use U+2032 (′) for 5′ and 3′, never an apostrophe"
-    },
-    "cap_height_ratio": 0.717,
-    "cap_min_mm": 1.89,
-    "_family_doc": "Arial first for the bold-weight reason magestic-figure measured. 'DejaVu Sans' is NOT in this list (audit 879 F6.4: an rcParams entry that does nothing is a difference from magestic-figure for no reason) -- MEASURED 2026-09-05 on matplotlib 3.9.4: the rcParams family list does NOT fall through per glyph -- '★ ⊘ ▮ ⇢ ✱ ∼' rendered as tofu with this list in rcParams, with or without a trailing generic. Only an EXPLICIT per-Text list -- Text(..., fontfamily=['Arial', 'DejaVu Sans']) -- engages the fallback. So any Text that carries a glyph outside Arial/Helvetica (the isoform class glyphs, the spliced ruler's ~) must set fontfamily explicitly; rectify.visualize.pileup does. figure-qa's overlap gate cannot see tofu; its glyph_coverage check can."
-  },
-  "geometry": {
-    "_doc": "Stroke tiers and floor as magestic-figure v1.1.0 (STROKE_SCALE 1.6 promoted to the house default on 2026-09-03). Track geometry is in fractions of the track's unit height so a gene model looks the same in a 0.4 in strip and a 1.2 in panel.",
-    "stroke_pt": {
-      "primary": 1.6,
-      "secondary": 1.0,
-      "hairline": 0.6,
-      "emphasis": 2.4
-    },
-    "stroke_min_pt": 0.6,
-    "manuscript_width_mm": {
-      "single": 89,
-      "onehalf": 120,
-      "double": 183
-    },
-    "column_in": {
-      "single": 3.5,
-      "double": 7.2
-    },
-    "track": {
-      "exon_height": 0.6,
-      "utr_height_ratio": 0.5,
-      "intron_style": "line",
-      "chevron_spacing_in": 0.22,
-      "arrow_tip_fraction": 0.15,
-      "arrow_tip_max_bp": 400,
-      "min_gap_bp": 300,
-      "coverage_fill_alpha": 0.85,
-      "coverage_mirror_alpha": 0.85,
-      "arc_height_ratio": 0.55,
-      "mark_size_pt": 4.5,
-      "lollipop_stem_in": 0.1,
-      "tss_arrow_in": 0.12,
-      "merged_alpha_floor": 0.2,
-      "spliced_gap_bp": 60,
-      "spliced_seg_cap_bp": 500,
-      "tail_rule_alpha": 0.5,
-      "band_floor_mm": 0.8,
-      "pitch_floor_mm": 0.423,
-      "spliced_downstream_keep_bp": 3000,
-      "strip_row_mm": 1.6,
-      "survival_max_weight": 8
-    },
-    "callout": {
-      "style": "dashed",
-      "dash": [
-        2.5,
-        1.8
-      ],
-      "stroke": "hairline"
-    },
-    "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880. spliced_downstream_keep_bp: segments on a gene's 3' side that >= 1 % of reads cover keep their real width up to this budget (rbrowse DOWNSTREAM_KEEP_BP; Kevin 2026-08-16 'the read alignments look cut off'); without it every 3' end past the annotation piles onto a compression boundary (audit 879 F7.3). strip_row_mm: the row pitch of the replicate STRIP block (pileup.strip_rows) -- one majority strip per library at 1.6 mm, which is the smallest row a tail block and a body fraction still read at in print (planning/885b/885c: 6 and 16 rows); a 7.5 pt label is taller than the row, so strips carry GROUP labels with a hairline bracket, never a label per row. survival_max_weight: the cap on the truncation-survival inverse weight 1/S(d) (pileup.Survival): 8 = three half-lives; beyond it one observed read stands for more than eight molecules and the estimate is noise, so the cap is declared where the correction is applied (885d).",
-    "points": {
-      "spill_reach": 0.42,
-      "_doc": "reps-as-points (panels.reps_as_points; Chanfreau planning/885c, Kevin 2026-09-06 'a guard against spill over of data points'): the point CENTRES of one bar's replicate swarm are spread over at most spill_reach x the bar width to either side of the bar centre (0.42 = 84 % of the width), the marker area shrinks with n so the marker's edge stays inside the bar, and the layout is REFUSED (ValueError) when it cannot. A point drawn outside its own bar reads as the neighbour's. The group key is written above the axes, never on the data; figure-qa runs with include_data=True on a points panel."
-    }
-  },
-  "principles": {
-    "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",
-    "1_two_layers": "Argument roles on data panels; molecular identities on glyphs; never cross (layers.boundary_rule).",
-    "2_structure_is_grey": "Gene models, reads and single-sample signal are drawn in the grey ramp. Hue is spent on the three marks and on the argument.",
-    "3_one_role_per_hex": "A hex never changes meaning between figures of one manuscript (806's reason for existing).",
-    "4_form_is_the_second_channel": "Every distinction that encodes something survives a mono printout: hatch for stratum_b, shape for the three marks, annotation-not-fill for focal beside strata.",
-    "5_five_to_three": "A locus is read 5' -> 3' left to right; a minus-strand locus reverses the x-axis rather than mirroring the reader.",
-    "6_signal_is_data": "Coverage, arcs-as-counts and pileups belong to a SAMPLE and are coloured by the argument; annotation belongs to the molecule.",
-    "7_rank_visual_weight": "Three stroke tiers and a 2-neutral + <= 4-accent budget per panel."
-  },
-  "changelog": [
-    {
-      "version": "1.4.0",
-      "date": "2026-09-06",
-      "change": "`tail` token (#6cb06a, layer B): the poly(A) tail on a read is green (Kevin's ruling R9 -- orientation + full-length marker), the 3' site mark stays `polya`; sets reads_compressed/browser_single_sample gain tail, reads_by_sample swaps polya for tail, new coverage_tails; tail/match declared at the floor with a panel-type cue; focal/tail greyscale cue = position + ink rule. pileup.coverage_columns for the coverage overhang (889a).",
-      "affects": [
-        "new figures only",
-        "rectify.visualize.pileup: merged_reads / ribbon / reads-per-row / dense_pile draw tails in `tail`"
-      ]
-    },
-    {
-      "version": "1.3.0",
-      "date": "2026-09-06",
-      "change": "The read-view idioms settled on real reads (Chanfreau planning/881, 885) promoted into the standard: the dense pile, quantification windows, replicate strips, the compact block, the truncation-survival correction and reps-as-points with the spill guard. Three geometry keys: track.strip_row_mm 1.6, track.survival_max_weight 8, points.spill_reach 0.42. No colour changed.",
-      "affects": [
-        "new figures only",
-        "rectify.visualize.pileup: pile_stack / strip_rows / halflife_ladder / rep_values read strip_row_mm and survival_max_weight; panels.reps_as_points reads points.spill_reach"
-      ]
-    },
-    {
-      "version": "1.2.0",
-      "date": "2026-09-05",
-      "change": "Audit 879 integrated: `ramps` for heatmaps (section 7 rulings), `spliced_downstream_keep_bp` (the 3'-flank rule the port lacked), the inert DejaVu rc entry dropped (per-Text fallback lists keep it). No colour changed.",
-      "affects": [
-        "new figures only",
-        "rectify.visualize.pileup reads spliced_downstream_keep_bp (its code default was already 3000)"
-      ]
-    },
-    {
-      "version": "1.1.0",
-      "date": "2026-09-05",
-      "change": "rbrowse's read-alignment vocabulary integrated on the publication path: merged raster, ribbon wedge, union-exon axis, isoform chains (letters, never hues), junction arcs -- rectify.visualize.pileup. Two sets (reads_compressed, reads_by_sample) and four track geometry keys added; the read tail is the `polya` identity; no new colour.",
-      "affects": [
-        "new figures only",
-        "rectify.visualize.pileup (new); tracks.gene_model/mark/arc/coverage take xform= for spliced space"
-      ]
-    },
-    {
-      "version": "1.0.0",
-      "date": "2026-09-05",
-      "change": "Initial standard. Layer A seeded from 806_house_palette.py (control replaced after measurement); layer B marks searched; typography and floors aligned to magestic-figure v1.1.0; rectify/visualize made token-driven with the same file bundled as rna_tokens.json.",
-      "affects": [
-        "new figures only (retrofit policy: existing figures adopt when next touched)",
-        "rectify.visualize defaults: single-sample coverage is now subtle grey and strand is mirrored in one colour; GENE_TYPE_COLORS / EFFECT_DIRECTION_COLORS re-pointed to validated hexes, keys unchanged"
-      ]
-    }
-  ],
-  "ramps": {
-    "_doc": "Heatmap / matrix colormaps (SKILL.md section 7, audit 879 F5.1): a ramp of ONE layer-A role from paper to the role hex, chosen by what the matrix argues; `signed` is reference -> paper -> focal with zero at paper. Endpoints are token NAMES so the validator's structure check sees them; panels.ramp() builds the matplotlib colormap. Never a rainbow, never jet.",
-    "focal": [
-      "paper",
-      "focal"
-    ],
-    "reference": [
-      "paper",
-      "reference"
-    ],
-    "neutral": [
-      "paper",
-      "neutral"
-    ],
-    "signed": [
-      "reference",
-      "paper",
-      "focal"
-    ]
+  "structural": {
+   "ink": "#262626",
+   "hairline": "#404040",
+   "subtle": "#737373",
+   "neutral": "#999999",
+   "mute": "#C7C7C7",
+   "wash": "#E0E0E0",
+   "paper": "#FFFFFF",
+   "focal_tint": "#F3C9AE",
+   "reference_tint": "#B8D8EA",
+   "match_tint": "#B3E3D3"
   }
+ },
+ "roles": {
+  "_doc": "Every token has a role. The validator applies DIFFERENT rules per role.",
+  "semantic": {
+   "tokens": [
+    "focal",
+    "reference",
+    "match",
+    "stratum_a",
+    "stratum_b",
+    "control",
+    "splice",
+    "polya",
+    "mod"
+   ],
+   "rule": "Encodes an argument role (layer A) or a molecular identity (layer B). All nine must be mutually distinguishable under normal, deuteranopia and protanopia (dE2000 >= 12) and reach contrast >= 2.0 on paper. A pair between declarable_min_delta_e and 12 may be admitted ONLY with a named form cue in `cvd_redundancy`; below declarable_min_delta_e a declaration is refused and the hex must change (that is how `control` was replaced).",
+   "min_delta_e": 12.0,
+   "declarable_min_delta_e": 10.0,
+   "min_contrast_on_paper": 2.0
+  },
+  "structural": {
+   "tokens": [
+    "ink",
+    "hairline",
+    "subtle",
+    "neutral",
+    "mute"
+   ],
+   "rule": "806's grey ramp. Carries no meaning of its own: text, spines, rails, exon fills, intron lines, single-sample signal, denominators. `neutral` is 806's NEUTRAL (#999999, 'not part of the argument') and is allowed inside a data set as the recessive series; it is checked against the accents it sits beside like any other member of a set. The grey ramp is a HIERARCHY, not a set of categories: two greys are never asked to carry independent meaning against each other, so the validator does not score structural x structural pairs -- except `neutral`, the one grey that acts as a data series, which is scored against everything it sits beside.",
+   "min_contrast_on_paper": 1.5
+  },
+  "background": {
+   "tokens": [
+    "paper",
+    "wash",
+    "focal_tint",
+    "reference_tint",
+    "match_tint"
+   ],
+   "rule": "The ground and 806's three tints (fills that must not compete with the line or edge in the same role: a confidence band, a floor band, a highlighted window). Being near-invisible against paper is the function, so no contrast floor applies, and nothing may ever be encoded by one of these alone.",
+   "min_contrast_on_paper": 0.0
+  }
+ },
+ "meaning": {
+  "_doc": "The semantic contract. Layer A: one colour = one argument role, per manuscript. Layer B: one colour = one molecular identity, forever.",
+  "focal": "LAYER A. The claim this manuscript makes -- the excluded register, the observed hits, the effect being argued. Never a plain category colour.",
+  "reference": "LAYER A. What FOCAL is measured against -- expectation under the null, the writer consensus, the reference rate, the control arm of a two-arm comparison.",
+  "match": "LAYER A. Sequence compatibility as an argument -- a motif that DOES fit (methylatable A, DRACH-compatible, MIG). Note the boundary: a modification MARK on a transcript glyph is layer B `mod`; 'the fraction of sites that are compatible' in a bar chart is `match`.",
+  "stratum_a": "LAYER A. First stratum of a split of one measurement (terminal vs interior introns; 293T vs HeLa; SMA vs control arm when neither is the claim).",
+  "stratum_b": "LAYER A. Second stratum of that same split. Greyscale twin of stratum_a (dL* 0.8) -- panels.bars hatches it, which is the declared cue.",
+  "control": "LAYER A. Composition / shuffle / perturbation controls. REPLACED 2026-09-05 (Kevin's ruling, option 'replace CONTROL, declare FOCAL/STRATUM_A'): 806's #CC79A7 measured dE2000 5.2 from `neutral` under deuteranopia and dL* 2.2 -- a deuteranope, and every reader of a mono printout, could not tell a control series from a denominator. #853272 was searched over hue 270-345 x saturation x lightness (1,639 survivors) for the candidate closest to the original purple that clears every A role, every B mark and every neutral at dE >= 14 in three visions with dL* >= 15 from `neutral`; worst pair is reference under protanopia at 14.4. 806_house_palette.py itself is unchanged; approved figures stay diff-able and adopt when next touched.",
+  "splice": "LAYER B. The splice as a molecule: 5'SS and 3'SS ticks, the branch point dot, a junction arc drawn as ANNOTATION (an arc drawn as counts per sample is a signal glyph and takes a layer-A role). Searched: worst dE 20.2 vs reference under deuteranopia; L* 23.",
+  "polya": "LAYER B. The 3' end as a molecule: the poly(A) / CPA / PAS site mark, a metaplot anchor line at the CPA. Searched: worst dE 21.5 vs ink under protanopia, 22.3 vs focal; L* 31. Drawn as a circle-headed lollipop so it separates from `splice` (dL* 7.3) and `mod` by form as well as hue.",
+  "mod": "LAYER B. An RNA modification mark (m6A, pseudouridine) on a transcript glyph, drawn as a diamond-headed lollipop. Searched: worst dE 16.6 vs match under deuteranopia (the two are related concepts -- a compatible motif and the modification on it -- so a family resemblance helps rather than misleads); L* 40.",
+  "ink": "806 INK 0.15: body text on figures, exon fills, TSS arrows, rails, panel letters.",
+  "hairline": "806 HAIRLINE 0.25: bar edges, axis spines, intron lines, the zero line of a mirrored track.",
+  "subtle": "806 SUBTLE 0.45: provenance footer, secondary annotation, single-sample coverage fill, aligned-read blocks.",
+  "neutral": "806 NEUTRAL: denominators, universes, 'not part of the argument' -- the recessive data series.",
+  "mute": "recessive: soft-clip blocks, dividers, 'other' categories, process arrows.",
+  "wash": "806 FLOOR_BAND 0.88: 'below this is not a measurement' shading, highlighted windows, panel wash.",
+  "focal_tint": "806 FOCAL_TINT: the band or fill under a FOCAL line (a CI ribbon), never a series on its own.",
+  "reference_tint": "806 REFERENCE_TINT: the band or fill under a REFERENCE line.",
+  "match_tint": "806 MATCH_TINT: the band or fill under a MATCH line."
+ },
+ "cooccurrence_sets": {
+  "_doc": "A single panel gets 2 neutrals + AT MOST 4 semantic accents. These are the sanctioned combinations, named for the panel type that uses them; the validator checks each set, not the whole vocabulary at once. Cross-layer sets (a browser view whose signal is coloured by sample) are listed explicitly so the A x B separations are validated where they actually meet.",
+  "data_claim_vs_reference": [
+   "ink",
+   "neutral",
+   "focal",
+   "reference"
+  ],
+  "data_strata": [
+   "ink",
+   "neutral",
+   "stratum_a",
+   "stratum_b",
+   "focal"
+  ],
+  "data_control": [
+   "ink",
+   "neutral",
+   "focal",
+   "reference",
+   "control"
+  ],
+  "data_match": [
+   "ink",
+   "neutral",
+   "match",
+   "focal",
+   "reference"
+  ],
+  "metaplot_anchor": [
+   "ink",
+   "neutral",
+   "focal",
+   "reference",
+   "polya"
+  ],
+  "browser_single_sample": [
+   "ink",
+   "hairline",
+   "subtle",
+   "splice",
+   "polya",
+   "mod"
+  ],
+  "browser_by_sample": [
+   "ink",
+   "neutral",
+   "focal",
+   "reference",
+   "splice",
+   "polya"
+  ],
+  "browser_strata": [
+   "ink",
+   "neutral",
+   "stratum_a",
+   "stratum_b",
+   "splice",
+   "polya"
+  ],
+  "reads_compressed": [
+   "ink",
+   "hairline",
+   "subtle",
+   "mute",
+   "polya",
+   "splice"
+  ],
+  "reads_by_sample": [
+   "ink",
+   "mute",
+   "focal",
+   "reference",
+   "polya",
+   "splice"
+  ]
+ },
+ "cvd_redundancy": {
+  "_doc": "A semantic pair that measures between roles.semantic.declarable_min_delta_e and min_delta_e under red-green CVD is admitted ONLY here, with the non-colour cue that carries the distinction named. The validator refuses a declaration below the declarable floor and refuses one without a `_cue_` note. Three states, as in greyscale_redundancy: declared (cue named), unreviewed (advisory), undeclared (FAIL).",
+  "data_strata": [
+   [
+    "focal",
+    "stratum_a"
+   ]
+  ],
+  "browser_strata": [
+   [
+    "focal",
+    "stratum_a"
+   ]
+  ],
+  "data_match": [
+   [
+    "match",
+    "neutral"
+   ]
+  ],
+  "_cue_focal_stratum_a": "Okabe-Ito vermillion vs amber measures dE2000 11.8 under deuteranopia (MAGESTIC replaced its `edit` for the same pair). Kept verbatim on Kevin's ruling (2026-09-05) because 806's own rule of use already supplies the cue: when stratum fills are present FOCAL is an ANNOTATION -- the fold arrow, the outline, the called-hit marker, the text -- and never a bar fill. panels.bars refuses role='focal' beside stratum fills unless kind='annotation'.",
+  "_cue_match_neutral": "Okabe-Ito green vs 806's #999999 measures dE2000 10.4 under deuteranopia. Cue: `neutral` is the recessive denominator series and panels.bars draws it with NO edge and at 0.85 alpha while `match` carries an ink edge; where both are lines, `neutral` is dashed."
+ },
+ "greyscale_redundancy": {
+  "_doc": "A distinction that ENCODES something must survive a mono printout. Where a sanctioned set holds a semantic pair below dL* 15, the pair is listed here ONLY if the drawing carries a non-colour cue, and the cue is named. 'unreviewed' means nobody has checked the figures that use that set -- advisory, not a pass. Measured L*: focal 54, reference 46, match 58, stratum_a 71, stratum_b 70, control 35, splice 23, polya 31, mod 40.",
+  "data_strata": [
+   [
+    "stratum_a",
+    "stratum_b"
+   ],
+   [
+    "focal",
+    "stratum_a"
+   ],
+   [
+    "focal",
+    "stratum_b"
+   ]
+  ],
+  "_cue_stratum_a_stratum_b": "dL* 0.8 -- identical in mono. panels.bars applies a hatch to every stratum_b fill (and an open marker to stratum_b points); this is code-enforced, not per-figure effort.",
+  "browser_single_sample": [
+   [
+    "splice",
+    "polya"
+   ],
+   [
+    "polya",
+    "mod"
+   ],
+   [
+    "splice",
+    "mod"
+   ]
+  ],
+  "browser_by_sample": [
+   [
+    "splice",
+    "polya"
+   ],
+   [
+    "focal",
+    "reference"
+   ]
+  ],
+  "browser_strata": [
+   [
+    "splice",
+    "polya"
+   ],
+   [
+    "stratum_a",
+    "stratum_b"
+   ]
+  ],
+  "data_claim_vs_reference": "unreviewed",
+  "data_control": "unreviewed",
+  "data_match": "unreviewed",
+  "metaplot_anchor": "unreviewed",
+  "_cue_focal_stratum_a": "FOCAL is an annotation (arrow, outline, marker, text), never a fill, beside stratum fills (806's rule of use, code-enforced in panels.bars). An annotation against a bar is a form difference in any printout.",
+  "_cue_focal_stratum_b": "Same cue as focal/stratum_a: FOCAL is an annotation, never a fill, beside strata.",
+  "_cue_splice_polya": "Three different SHAPES by construction in tracks.mark: splice = tick with an inward triangle (or an arc), polya = circle-headed lollipop, mod = diamond-headed lollipop. A mark carries its identity by form; hue is the second channel.",
+  "_cue_polya_mod": "circle-headed vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
+  "_cue_splice_mod": "tick/arc vs diamond-headed lollipop (tracks.mark); see _cue_splice_polya.",
+  "_cue_focal_reference": "In a browser view tracks.coverage draws ONE sample per row, each row carrying its label, so two samples are separated by position and text, not by value. Two samples overlaid on one axes must take stratum_a / stratum_b (hatched), never focal / reference -- written into tracks.coverage's docstring.",
+  "reads_compressed": [
+   [
+    "splice",
+    "polya"
+   ]
+  ],
+  "reads_by_sample": [
+   [
+    "splice",
+    "polya"
+   ],
+   [
+    "focal",
+    "reference"
+   ]
+  ]
+ },
+ "typography": {
+  "_doc": "Same family and floors as magestic-figure v1.1.0, so a Chanfreau figure and a MAGESTIC figure on one page share one type scale. Arial FIRST for the same measured reason (Helvetica Neue and Helvetica register at weight 400 only on this machine, so fontweight='bold' silently renders regular; Arial carries 700). 806's 7.0 pt base is BELOW the house floor: Kevin ruled three times after 806 was written (2026-09-01, 2026-09-03 x2) that the 6-9 pt scale renders too small, and the floor follows the later ruling. Nature's 5-7 pt is a MINIMUM, not a target.",
+  "family": [
+   "Arial",
+   "Helvetica Neue",
+   "Helvetica",
+   "sans-serif"
+  ],
+  "family_css": "Arial, 'Helvetica Neue', Helvetica, sans-serif",
+  "manuscript_pt": {
+   "panel_letter": 11.0,
+   "axis_label": 8.5,
+   "tick_label": 7.5,
+   "in_figure": 8.0,
+   "annotation": 7.5,
+   "legend": 9.0,
+   "provenance": 6.0
+  },
+  "slide_pt": {
+   "panel_letter": 20.0,
+   "axis_label": 16.0,
+   "tick_label": 14.0,
+   "in_figure": 14.0,
+   "annotation": 12.0,
+   "legend": 14.0,
+   "provenance": 9.0
+  },
+  "weights": {
+   "regular": 400,
+   "bold": 700
+  },
+  "conventions": {
+   "panel_letter": "bold lowercase a, b, c at the top-left of the axes (figure-standard owns this)",
+   "gene_names": "italic for gene names in every organism (PDH1, TMEM41B); roman for proteins (Rna15, Ysh1) and for RNA species (mRNA, snRNA)",
+   "strain_ids": "roman, never italic",
+   "coordinates": "chrXVI:558,219-560,137 with thousands separators; kb on a browser axis; 5' -> 3' left to right, so a minus-strand locus is drawn on a REVERSED x-axis",
+   "units": "thin space before unit; 'nt' for RNA lengths, 'bp' for genomic, 'kb' on axes",
+   "primes": "use U+2032 (′) for 5′ and 3′, never an apostrophe"
+  },
+  "cap_height_ratio": 0.717,
+  "cap_min_mm": 1.89,
+  "_family_doc": "Arial first for the bold-weight reason magestic-figure measured. 'DejaVu Sans' is NOT in this list (audit 879 F6.4: an rcParams entry that does nothing is a difference from magestic-figure for no reason) -- MEASURED 2026-09-05 on matplotlib 3.9.4: the rcParams family list does NOT fall through per glyph -- '★ ⊘ ▮ ⇢ ✱ ∼' rendered as tofu with this list in rcParams, with or without a trailing generic. Only an EXPLICIT per-Text list -- Text(..., fontfamily=['Arial', 'DejaVu Sans']) -- engages the fallback. So any Text that carries a glyph outside Arial/Helvetica (the isoform class glyphs, the spliced ruler's ~) must set fontfamily explicitly; rectify.visualize.pileup does. figure-qa's overlap gate cannot see tofu; its glyph_coverage check can."
+ },
+ "geometry": {
+  "_doc": "Stroke tiers and floor as magestic-figure v1.1.0 (STROKE_SCALE 1.6 promoted to the house default on 2026-09-03). Track geometry is in fractions of the track's unit height so a gene model looks the same in a 0.4 in strip and a 1.2 in panel.",
+  "stroke_pt": {
+   "primary": 1.6,
+   "secondary": 1.0,
+   "hairline": 0.6,
+   "emphasis": 2.4
+  },
+  "stroke_min_pt": 0.6,
+  "manuscript_width_mm": {
+   "single": 89,
+   "onehalf": 120,
+   "double": 183
+  },
+  "column_in": {
+   "single": 3.5,
+   "double": 7.2
+  },
+  "track": {
+   "exon_height": 0.6,
+   "utr_height_ratio": 0.5,
+   "intron_style": "line",
+   "chevron_spacing_in": 0.22,
+   "arrow_tip_fraction": 0.15,
+   "arrow_tip_max_bp": 400,
+   "min_gap_bp": 300,
+   "coverage_fill_alpha": 0.85,
+   "coverage_mirror_alpha": 0.85,
+   "arc_height_ratio": 0.55,
+   "mark_size_pt": 4.5,
+   "lollipop_stem_in": 0.1,
+   "tss_arrow_in": 0.12,
+   "merged_alpha_floor": 0.2,
+   "spliced_gap_bp": 60,
+   "spliced_seg_cap_bp": 500,
+   "tail_rule_alpha": 0.5,
+   "band_floor_mm": 0.8,
+   "pitch_floor_mm": 0.423,
+   "spliced_downstream_keep_bp": 3000,
+   "strip_row_mm": 1.6,
+   "survival_max_weight": 8
+  },
+  "callout": {
+   "style": "dashed",
+   "dash": [
+    2.5,
+    1.8
+   ],
+   "stroke": "hairline"
+  },
+  "_track_doc_pileup": "merged_alpha_floor: a merged raster column with one read in n draws at this alpha, a full column at 1.0 (rbrowse drawMergedRow: 0.20 + 0.80 * fraction). spliced_gap_bp: the fixed width of a collapsed segment in union-exon space (rbrowse GAP_PX 20 px ~ 60 bp-units at a typical ppb). spliced_seg_cap_bp: a kept NON-exonic segment longer than this is compressed to this width and the ruler marks it (rbrowse SEG_CAP_BP). band_floor_mm: the smallest height ONE drawn cluster band may have on the page, 0.80 mm = rbrowse RIBBON_MIN_PX 4 layout px x FIG_PANEL_GAIN 1.8 at a 183 mm column -- below it a band is a hairline and reads as absent. pitch_floor_mm: the smallest per-read row pitch a squished stack may use, 0.423 mm = stroke_min_pt 0.6 drawn + 0.6 gap; at a 25.4 mm budget that is 60 reads, which is also rbrowse AUTO_DENSITY squished threshold. Chanfreau planning/880. spliced_downstream_keep_bp: segments on a gene's 3' side that >= 1 % of reads cover keep their real width up to this budget (rbrowse DOWNSTREAM_KEEP_BP; Kevin 2026-08-16 'the read alignments look cut off'); without it every 3' end past the annotation piles onto a compression boundary (audit 879 F7.3). strip_row_mm: the row pitch of the replicate STRIP block (pileup.strip_rows) -- one majority strip per library at 1.6 mm, which is the smallest row a tail block and a body fraction still read at in print (planning/885b/885c: 6 and 16 rows); a 7.5 pt label is taller than the row, so strips carry GROUP labels with a hairline bracket, never a label per row. survival_max_weight: the cap on the truncation-survival inverse weight 1/S(d) (pileup.Survival): 8 = three half-lives; beyond it one observed read stands for more than eight molecules and the estimate is noise, so the cap is declared where the correction is applied (885d).",
+  "points": {
+   "spill_reach": 0.42,
+   "_doc": "reps-as-points (panels.reps_as_points; Chanfreau planning/885c, Kevin 2026-09-06 'a guard against spill over of data points'): the point CENTRES of one bar's replicate swarm are spread over at most spill_reach x the bar width to either side of the bar centre (0.42 = 84 % of the width), the marker area shrinks with n so the marker's edge stays inside the bar, and the layout is REFUSED (ValueError) when it cannot. A point drawn outside its own bar reads as the neighbour's. The group key is written above the axes, never on the data; figure-qa runs with include_data=True on a points panel."
+  }
+ },
+ "principles": {
+  "_doc": "Carried over from 806 and magestic-figure; the RNA-specific ones were learned on the m6A set and the cryptic-intron set.",
+  "1_two_layers": "Argument roles on data panels; molecular identities on glyphs; never cross (layers.boundary_rule).",
+  "2_structure_is_grey": "Gene models, reads and single-sample signal are drawn in the grey ramp. Hue is spent on the three marks and on the argument.",
+  "3_one_role_per_hex": "A hex never changes meaning between figures of one manuscript (806's reason for existing).",
+  "4_form_is_the_second_channel": "Every distinction that encodes something survives a mono printout: hatch for stratum_b, shape for the three marks, annotation-not-fill for focal beside strata.",
+  "5_five_to_three": "A locus is read 5' -> 3' left to right; a minus-strand locus reverses the x-axis rather than mirroring the reader.",
+  "6_signal_is_data": "Coverage, arcs-as-counts and pileups belong to a SAMPLE and are coloured by the argument; annotation belongs to the molecule.",
+  "7_rank_visual_weight": "Three stroke tiers and a 2-neutral + <= 4-accent budget per panel."
+ },
+ "changelog": [
+  {
+   "version": "1.3.0",
+   "date": "2026-09-06",
+   "change": "The read-view idioms settled on real reads (Chanfreau planning/881, 885) promoted into the standard: the dense pile, quantification windows, replicate strips, the compact block, the truncation-survival correction and reps-as-points with the spill guard. Three geometry keys: track.strip_row_mm 1.6, track.survival_max_weight 8, points.spill_reach 0.42. No colour changed.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup: pile_stack / strip_rows / halflife_ladder / rep_values read strip_row_mm and survival_max_weight; panels.reps_as_points reads points.spill_reach"
+   ]
+  },
+  {
+   "version": "1.2.0",
+   "date": "2026-09-05",
+   "change": "Audit 879 integrated: `ramps` for heatmaps (section 7 rulings), `spliced_downstream_keep_bp` (the 3'-flank rule the port lacked), the inert DejaVu rc entry dropped (per-Text fallback lists keep it). No colour changed.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup reads spliced_downstream_keep_bp (its code default was already 3000)"
+   ]
+  },
+  {
+   "version": "1.1.0",
+   "date": "2026-09-05",
+   "change": "rbrowse's read-alignment vocabulary integrated on the publication path: merged raster, ribbon wedge, union-exon axis, isoform chains (letters, never hues), junction arcs -- rectify.visualize.pileup. Two sets (reads_compressed, reads_by_sample) and four track geometry keys added; the read tail is the `polya` identity; no new colour.",
+   "affects": [
+    "new figures only",
+    "rectify.visualize.pileup (new); tracks.gene_model/mark/arc/coverage take xform= for spliced space"
+   ]
+  },
+  {
+   "version": "1.0.0",
+   "date": "2026-09-05",
+   "change": "Initial standard. Layer A seeded from 806_house_palette.py (control replaced after measurement); layer B marks searched; typography and floors aligned to magestic-figure v1.1.0; rectify/visualize made token-driven with the same file bundled as rna_tokens.json.",
+   "affects": [
+    "new figures only (retrofit policy: existing figures adopt when next touched)",
+    "rectify.visualize defaults: single-sample coverage is now subtle grey and strand is mirrored in one colour; GENE_TYPE_COLORS / EFFECT_DIRECTION_COLORS re-pointed to validated hexes, keys unchanged"
+   ]
+  }
+ ],
+ "ramps": {
+  "_doc": "Heatmap / matrix colormaps (SKILL.md section 7, audit 879 F5.1): a ramp of ONE layer-A role from paper to the role hex, chosen by what the matrix argues; `signed` is reference -> paper -> focal with zero at paper. Endpoints are token NAMES so the validator's structure check sees them; panels.ramp() builds the matplotlib colormap. Never a rainbow, never jet.",
+  "focal": [
+   "paper",
+   "focal"
+  ],
+  "reference": [
+   "paper",
+   "reference"
+  ],
+  "neutral": [
+   "paper",
+   "neutral"
+  ],
+  "signed": [
+   "reference",
+   "paper",
+   "focal"
+  ]
+ }
 }
