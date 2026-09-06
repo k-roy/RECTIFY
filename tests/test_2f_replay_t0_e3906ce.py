@@ -125,6 +125,32 @@ def test_a_candidate_containing_the_reads_own_junction_is_never_ranked(monkeypat
     assert res['rescued_junction'][1:] == (15831568 - off, 15845378 - off)
 
 
+# ----------------------------------------------------------------------------------------------- invariant C-minimal
+@pytest.mark.parametrize('gate', ['report', 'refuse'])
+def test_1964c591_annotated_landing_fails_the_indel_burden_bound(gate, monkeypatch):
+    """ISSUE-026 (c): the 401-nt clip's anchored placement on the annotated
+    314-kb 76693087-77007275 carries an exon block whose I+D burden exceeds the
+    allowance (the block overruns the 105-bp exon by 173 nt into the next
+    annotated intron). The junction is TRUE — a three-junction 5' extension,
+    iteration-4 material — but this block is not evidence for it: the landing is
+    refused as a placement in both gate modes, no 76693087-77007275 N-op is
+    drawn, the aligner's own junctions survive, and the TSV names the refusal."""
+    from rectify.core.splice.splice_aware_5prime import ANNOTATED_INDEL_BURDEN_REFUSAL
+    row, res, rec, stock, off = _replay('1964c591', monkeypatch, gate)
+    nops = _real(_nops(rec), off)
+    assert (76693087, 77007275) not in nops, nops
+    assert all(n in nops for n in _real(_nops(stock), off)), (nops, _real(_nops(stock), off))
+    tokens = (row['five_prime_rescue_refused'], row.get('five_prime_novel_evidence') or '')
+    assert any(ANNOTATED_INDEL_BURDEN_REFUSAL in t for t in tokens), (tokens, res.get('rescue_type'))
+
+
+def test_annotated_indel_burden_refusal_is_registered():
+    from rectify.core.splice.splice_aware_5prime import (
+        ANNOTATED_INDEL_BURDEN_REFUSAL, NOVEL_EXON_REFUSALS, PLACEMENT_REFUSALS)
+    assert ANNOTATED_INDEL_BURDEN_REFUSAL in PLACEMENT_REFUSALS
+    assert ANNOTATED_INDEL_BURDEN_REFUSAL not in NOVEL_EXON_REFUSALS
+
+
 # ----------------------------------------------------------------------------------------------- decision: zero-clip trio
 @pytest.mark.parametrize('read8', ZERO_CLIP)
 def test_zero_clip_one_base_acceptor_ambiguity_is_not_a_rescue(read8, monkeypatch):

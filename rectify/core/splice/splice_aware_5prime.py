@@ -277,10 +277,37 @@ NOVEL_EXON_REFUSALS = ('novel_exon_matched_below_floor',
 # otherwise the read falls through to the structural Case-4 snap. The
 # annotated coordinate is the default; a slide has to earn its way off it.
 ANNOTATED_SLIDE_REFUSAL = 'annotated_slide_noncanonical_donor'
+# --- ISSUE-026 invariant C-minimal (2026-09-05): the indel-burden bound of the
+# novel-site verdict applies to EVERY landing, annotated included — as a
+# placement decision, in both gate modes. The floor and junction-side-gap parts
+# stay novel-only (RULING 1/2: an annotated landing keeps its acceptance except
+# for this sanity bound). T0 chrX 1964c591: a 401-nt clip landed on the
+# annotated 314-kb 76693087-77007275 with an exon block of 255M / 148I / 23D —
+# the junction is TRUE (a three-junction 5' extension; the clip's first 105
+# bases match that exon at ED 3.5 and the rest the exon AFTER the next
+# annotated intron) but the drawn block overran the 105-bp exon by 173 nt. The
+# honest fix is a bounded multi-junction extension — iteration 4; until then the
+# placement is refused and the read falls back as a refused novel placement does.
+#
+# The FRACTION is the one deviation from BRIEF_issue026_fixes.md, which named
+# the novel gate's max_edit_frac (0.2). Measured on the tester's bundles with the
+# bound disabled (I+D / matched of the annotated exon block): 1964c591 171/255 =
+# 0.67; the two VANISHED_FP_added_nov short blocks ac5225e1 7/6 and fb0cdd4e 7/11;
+# but also the TRUE annotated landings 2277f7b3 7/19 = 0.37 (VANISHED_TP_
+# rescue_annot — the baseline drew it), 7f41e755 17/55 = 0.31 (the 14-read
+# fixture) and 183b1e9e 7/31 = 0.23. At 0.2 the bound refuses 2277f7b3 and
+# 7f41e755 — contradicting the brief's own READY criterion (TP_rescue_annot >=
+# baseline minus the zero-clip trio) and the all-annotated fixture — so the
+# annotated SANITY bound is "more gap bases than half the matched bases": it
+# refuses 1964c591 with margin and keeps every true landing measured. One line
+# to retune (arbiter).
+ANNOTATED_INDEL_BURDEN_REFUSAL = 'annotated_exon_indel_burden'
+_ANNOTATED_EXON_INDEL_FRAC = 0.5
 # Tokens the wrapper turns into the '<token>>annotated|novel' trace when a
 # later path re-rescues the read (NOVEL_EXON_REFUSALS is the novel-site
 # verdict proper and stays as it is; tests pin its contents).
-PLACEMENT_REFUSALS = NOVEL_EXON_REFUSALS + (ANNOTATED_SLIDE_REFUSAL,)
+PLACEMENT_REFUSALS = NOVEL_EXON_REFUSALS + (ANNOTATED_SLIDE_REFUSAL,
+                                            ANNOTATED_INDEL_BURDEN_REFUSAL)
 
 # What the gate DOES with its verdict on a novel site (RECTIFY_2F_NOVEL_GATE):
 #   refuse — the sequence/snap rescue is refused; the token lands in
@@ -357,11 +384,24 @@ def _novel_exon_evidence_refusal(cigar_ops, placed_len: int, strand: str,
         return 'novel_exon_matched_below_floor'
     if junction_gap:
         return 'novel_exon_gap_at_junction'
-    allowance = max(_NOVEL_EXON_INDEL_ALLOWANCE,
-                    int(_math.ceil(max_edit_frac * matched)))
-    if indel > allowance:
+    if _exon_indel_burden_exceeded(cigar_ops, max_edit_frac):
         return 'novel_exon_indel_burden'
     return ''
+
+
+def _exon_indel_burden_exceeded(cigar_ops, max_edit_frac: float) -> bool:
+    """The indel-burden bound shared by the novel-site verdict and (ISSUE-026
+    invariant C-minimal) every annotated landing: I + D bases in the placed exon
+    block above ``max(_NOVEL_EXON_INDEL_ALLOWANCE, ceil(max_edit_frac * matched))``.
+    Without a CIGAR there is no block to bound (the novel verdict fails closed
+    on that separately)."""
+    if not cigar_ops:
+        return False
+    matched = sum(ln for op, ln in cigar_ops if op in (0, 7, 8))
+    indel = sum(ln for op, ln in cigar_ops if op in (1, 2))
+    allowance = max(_NOVEL_EXON_INDEL_ALLOWANCE,
+                    int(_math.ceil(max_edit_frac * matched)))
+    return indel > allowance
 
 # Scope — NOT the criterion — of the whole-read short-circuit in
 # rescue_3ss_truncation. A long low-complexity clip is where the wasted work is
@@ -1626,6 +1666,7 @@ def _terminal_peel_rescue(
     best_peel: Optional[Dict] = None
     best_depth: Optional[int] = None
     best_peel_norm = base_norm
+    _peel_refusal = ''   # ISSUE-026: a placement refusal seen at some depth
     for d in depths:
         if d <= 0 or d > n_query:
             continue
@@ -1639,6 +1680,8 @@ def _terminal_peel_rescue(
             annotated_keys=annotated_keys,
         )
         if not res.get('rescued'):
+            if res.get('clip_refused') in PLACEMENT_REFUSALS:
+                _peel_refusal = res['clip_refused']   # deepest refusal wins: the fullest segment
             continue
         ed = res.get('edit_distance', -1.0)
         if ed is None or ed < 0:
@@ -1653,6 +1696,15 @@ def _terminal_peel_rescue(
             best_depth = d
 
     if best_peel is None:
+        # ISSUE-026 (invariants A / C): the read's placement was REFUSED at a peel
+        # depth (the deeper segment was the one that reached the placement block)
+        # and no depth rescued. The baseline result is a token-less no-rescue;
+        # write the refusal into it so the TSV names why the read draws nothing
+        # (f53d770 fb0cdd4e: a 10-nt clip whose 20-nt peel landed on the
+        # annotated 153794334-153794673 with a 3M2I4M5D4M block).
+        if (_peel_refusal and not base_rescued
+                and not (baseline.get('clip_refused') or '')):
+            baseline['clip_refused'] = _peel_refusal
         return None
     # Screening: log the candidate (case-1 if baseline rescued, else new-rescue)
     # without changing output.
@@ -2100,6 +2152,10 @@ def _rescue_3ss_truncation_body(
     # directly to intron_end/-start based solely on the N-op evidence.
     _forced_snap_junction: Optional[Tuple[str, int, int]] = None
     _forced_snap_n_err: float = float('inf')  # N-op boundary error for best candidate
+    # ISSUE-026 invariant C-minimal: the annotated landing the sequence rescue
+    # refused for indel burden (None = none). Case 4 must not snap the read onto
+    # a SIBLING annotated intron sharing that landing's near site instead.
+    _burden_refused_key: Optional[Tuple[str, int, int]] = None
 
     # Splice-site boundary ambiguity: when bases flanking a donor/acceptor are
     # repeated (homopolymer runs, tandem dinucleotides, etc.), the local aligner
@@ -3220,6 +3276,21 @@ def _rescue_3ss_truncation_body(
                 best_junction = None
                 best_ed = -1.0
                 break
+            # --- ISSUE-026 invariant C-minimal: the indel-burden bound applies
+            # to an ANNOTATED landing too (see ANNOTATED_INDEL_BURDEN_REFUSAL).
+            # A placement decision in both gate modes; the read falls back
+            # exactly as a refused novel placement does (the token rides to the
+            # structural paths and the wrapper writes the trace). The floor and
+            # junction-gap parts of the verdict stay novel-only.
+            if _emitted_annotated and _exon_indel_burden_exceeded(
+                    _cigar_ops, _ANNOTATED_EXON_INDEL_FRAC):
+                _OI_COUNTERS['five_prime_annotated_indel_burden_refused'] = (
+                    _OI_COUNTERS.get('five_prime_annotated_indel_burden_refused', 0) + 1)
+                _novel_refused = ANNOTATED_INDEL_BURDEN_REFUSAL
+                _burden_refused_key = tuple(best_junction[:3])
+                best_junction = None
+                best_ed = -1.0
+                break
             if _novel_tok and novel_gate_mode() == 'refuse':
                 _novel_refused = _novel_tok
                 # Counted once per read, in the wrapper. Reset the score with
@@ -3342,6 +3413,20 @@ def _rescue_3ss_truncation_body(
         # 111735507-111755769 while the candidate was 111735507-111975273, the
         # same donor with a farther acceptor).
         if any(intron_start <= ns and ne <= intron_end for ns, ne in _n_intervals):
+            continue
+        # ISSUE-026 invariant C-minimal: the sequence rescue's RANKED landing on
+        # a candidate sharing this near site was refused for indel burden. Case
+        # 4's positional snap cannot tell sibling introns sharing the near site
+        # apart (it takes the shortest), so snapping onto one of them now is not
+        # a fallback but a guess that the sequence already argued against
+        # (T0 chrX 1964c591: four annotated introns share 76693087; the refused
+        # 314-kb landing is the TRUE one, and the snap would have drawn the
+        # 145-kb sibling 76693087-76837809 — a junction the baseline never had).
+        if (_burden_refused_key is not None and _burden_refused_key[0] == j_chrom
+                and ((_burden_refused_key[1] == intron_start) if strand == '-'
+                     else (_burden_refused_key[2] == intron_end))):
+            _OI_COUNTERS['five_prime_snap_after_annotated_burden_skipped'] = (
+                _OI_COUNTERS.get('five_prime_snap_after_annotated_burden_skipped', 0) + 1)
             continue
         # Snap to exon-1-side boundary.  five_prime_position is an inclusive
         # aligned-base coordinate, so the plus-strand upstream exon base is

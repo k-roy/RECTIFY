@@ -54,13 +54,17 @@ def test_no_emitted_junction_is_one_the_writer_reverts(key, monkeypatch):
 
 def test_the_vanished_reads_draw_again(monkeypatch):
     """The 23 true vanishes of f53d770 (11 TP + 12 FP by the tester's baseline classes) draw a junction again —
-    at the coordinates 2F reports. Two reads are not drawn, named here so the residue stays visible:
+    at the coordinates 2F reports. The reads that are NOT drawn are named here so the residue stays visible:
     38722d08 (VANISHED_TP_rescue_annot; 11-nt clip, 1 nt into exon 2) has no canonical shift left once the
     writer-guard is applied to the sweep and ends as a proximity-only row; c5d1c111 (VANISHED_FP_added_nov, listed
     twice) is the +4 decoy 154398398 the baseline DREW on 9 matched bases — invariant A refuses that slide off the
     annotated 154398394 as a placement without novel-site evidence (`novel_exon_matched_below_floor`, both gate
     modes), the unslid coordinate does not pass the exon-vs-intron acceptance, and the read starts exactly at the
-    acceptor so Case 4 cannot snap it: not drawing it removes the false positive."""
+    acceptor so Case 4 cannot snap it; ac5225e1 and fb0cdd4e (both VANISHED_FP_added_nov: the baseline drew a wrong
+    novel junction 4-5 nt off the annotated one) landed on the annotated site under invariant A with exon blocks of
+    `4I6M3D` (7 gap bases on 6 matched) and `3M2I4M5D4M` (7 on 11) — invariant C's sanity bound refuses those
+    blocks (`annotated_exon_indel_burden`), so they draw nothing rather than the baseline's false positive.
+    Every one of the 11 VANISHED_TP_rescue_annot reads except 38722d08 draws again at its annotated junction."""
     table = SB.load_bundle('f53d770')
     not_drawn, tokens = [], {}
     n_vanished = 0
@@ -73,6 +77,12 @@ def test_the_vanished_reads_draw_again(monkeypatch):
             not_drawn.append(key)
             tokens[key] = row['five_prime_rescue_refused']
     assert n_vanished >= 23, n_vanished
-    assert not_drawn == ['38722d08', 'c5d1c111', 'c5d1c111#2'], (not_drawn, tokens)
+    assert not_drawn == ['38722d08', 'ac5225e1', 'c5d1c111', 'c5d1c111#2', 'fb0cdd4e'], (not_drawn, tokens)
     assert tokens['c5d1c111'] == 'novel_exon_matched_below_floor', tokens
-    assert 'VANISHED_FP_added_nov' in table['c5d1c111']['classes'], table['c5d1c111']['classes']
+    assert tokens['ac5225e1'] == 'annotated_exon_indel_burden', tokens
+    assert tokens['fb0cdd4e'] == 'annotated_exon_indel_burden', tokens   # a terminal-peel refusal, carried to the TSV
+    for k in ('c5d1c111', 'ac5225e1', 'fb0cdd4e'):
+        assert 'VANISHED_FP_added_nov' in table[k]['classes'], (k, table[k]['classes'])
+    assert 'VANISHED_TP_rescue_annot' in table['38722d08']['classes']
+    tp_not_drawn = [k for k in not_drawn if 'VANISHED_TP_rescue_annot' in table[k]['classes']]
+    assert tp_not_drawn == ['38722d08'], tp_not_drawn

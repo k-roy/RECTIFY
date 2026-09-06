@@ -205,9 +205,16 @@ def test_novel_sequence_rescue_indel_riddled_placement(monkeypatch):
     monkeypatch.setenv('RECTIFY_2F_NOVEL_GATE', 'refuse')
     res = _novel(_clip_read(15))
     assert not res['rescued'] and res.get('clip_refused') == TOKEN
-    # The same spelling onto an ANNOTATED site is accepted in either mode.
-    res2 = _annotated(_clip_read(15))
-    assert res2['rescued'] and res2['landing_annotated'] is True and res2['novel_evidence'] == ''
+    # ISSUE-026 invariant C-minimal (2026-09-05): the same spelling onto an
+    # ANNOTATED site used to be accepted in either mode; the indel-burden SANITY
+    # bound now applies to every landing (10 I on 5 M is more gap than half the
+    # matches), as a placement decision in both modes, with its own token.
+    from rectify.core.splice.splice_aware_5prime import ANNOTATED_INDEL_BURDEN_REFUSAL
+    for mode in ('report', 'refuse'):
+        monkeypatch.setenv('RECTIFY_2F_NOVEL_GATE', mode)
+        res2 = _annotated(_clip_read(15))
+        assert not res2['rescued'], (mode, res2)
+        assert res2['clip_refused'] == ANNOTATED_INDEL_BURDEN_REFUSAL, (mode, res2)
 
 
 def test_novel_sequence_rescue_gap_at_the_junction(refuse, monkeypatch):
