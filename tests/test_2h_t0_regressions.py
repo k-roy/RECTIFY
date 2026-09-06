@@ -22,6 +22,11 @@ annotated GT-AG needing 5D.  A non-canonical unannotated winner now loses to an
 annotated canonical candidate that shares one boundary and lies within
 ``_ANNOT_ALT_DELTA`` on the other (``noncanon_dest_lost_to_annotated_alt``).
 
+F3 — the 2H decision counters reach the stats TSV: ``ProcessingStats.module_2h_counters``
+(the ``refine_bam_junctions`` stats dict) is written as ``module_2h_<key>`` rows
+right after ``module_2h_failed``, survives the parallel-driver JSON round trip
+and merge, and ``correct`` fills it in.
+
 The hermetic tests fake ``_score_junction`` (pattern:
 tests/test_2h_noncanon_preponderance.py); the replay tests run the tester's
 bundle through the real scorer with the bundled human DRS tables and skip when
@@ -310,10 +315,72 @@ class TestAnnotatedAlternative:
 
 
 # ---------------------------------------------------------------------------
+# F3 — the 2H counters reach the stats TSV
+# ---------------------------------------------------------------------------
+
+class TestModule2hCountersInStats:
+    COUNTERS = {
+        "n_op_reads": 20, "refined": 7, "noncanon_destination_refused": 3,
+        "noncanon_destination_refused_alternative_within_delta": 3,
+        "unrealizable_winner_skipped": 1, "noncanon_dest_lost_to_annotated_alt": 2,
+    }
+
+    @staticmethod
+    def _rows(path):
+        rows, order = {}, []
+        for line in Path(path).read_text().splitlines():
+            if line.startswith("#") or line.startswith("metric\t") or not line.strip():
+                continue
+            parts = line.split("\t")
+            rows[parts[0]] = parts
+            order.append(parts[0])
+        return rows, order
+
+    def test_rows_follow_module_2h_failed_with_dash_percent(self, tmp_path):
+        from rectify.core.bam.processing_stats import ProcessingStats, write_stats_tsv
+        stats = ProcessingStats()
+        stats.total_reads_in_bam = 10
+        stats.module_2h_failed = "RuntimeError: boom"
+        stats.module_2h_counters = dict(self.COUNTERS)
+        out = tmp_path / "x_stats.tsv"
+        write_stats_tsv(stats, str(out))
+        rows, order = self._rows(out)
+        for k, n in self.COUNTERS.items():
+            assert rows[f"module_2h_{k}"][1:3] == [str(n), "-"], k
+        keys = [f"module_2h_{k}" for k in sorted(self.COUNTERS)]
+        assert order[:1 + len(keys)] == ["module_2h_failed"] + keys
+        assert order[1 + len(keys)] == "total_reads_in_bam"
+
+    def test_no_rows_when_2h_did_not_run(self, tmp_path):
+        from rectify.core.bam.processing_stats import ProcessingStats, write_stats_tsv
+        out = tmp_path / "y_stats.tsv"
+        write_stats_tsv(ProcessingStats(), str(out))
+        rows, _ = self._rows(out)
+        assert not [k for k in rows if k.startswith("module_2h_")]
+
+    def test_merge_sums_and_parallel_round_trip_keeps_types(self):
+        import dataclasses
+        import json
+        from rectify.core.bam import parallel as par
+        from rectify.core.bam.processing_stats import ProcessingStats
+        a, b = ProcessingStats(), ProcessingStats()
+        a.module_2h_counters = {"refined": 1, "unrealizable_winner_skipped": 1}
+        b.module_2h_counters = {"refined": 2}
+        b.module_2h_failed = "ValueError: x"
+        a.merge(b)
+        assert a.module_2h_counters == {"refined": 3, "unrealizable_winner_skipped": 1}
+        assert a.module_2h_failed == "ValueError: x"
+        back = par._stats_from_dict(json.loads(json.dumps(a.to_dict())))
+        assert back.module_2h_counters == a.module_2h_counters
+        assert back.module_2h_failed == "ValueError: x"        # was int()-coerced before F3
+        json.dumps(dataclasses.asdict(a))                        # provenance path still serializes
+
+
+# ---------------------------------------------------------------------------
 # Replay of the tester's bundle (d4 format), skip-if-absent
 # ---------------------------------------------------------------------------
 
-BUNDLE = Path.home() / "work/rectify/dev/sumner_misplaced_panel_20260904/holdout/events/4f9102d"
+BUNDLE =Path.home() / "work/rectify/dev/sumner_misplaced_panel_20260904/holdout/events/4f9102d"
 PREFIX = "t0_4f9102d_regress"
 TABLES = RECTIFY_ROOT / "rectify/data/genomes/homo_sapiens/penalty_tables"
 _OPC = "MIDNSHP=X"

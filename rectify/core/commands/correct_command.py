@@ -1027,6 +1027,7 @@ def run(args):
         # It is now logged at ERROR and written to the stats TSV
         # (module_2h_failed); RECTIFY_2H_FAILURE_FATAL=1 makes it fatal.
         _module_2h_failed = ''
+        _refine_stats = None    # refine_bam_junctions' stats dict when 2H ran (F3: -> stats TSV)
         if not _has_junction_context:
             logger.info(
                 "Module 2H: SKIPPED (%s) — N-op junction boundaries are passed "
@@ -1494,6 +1495,15 @@ def run(args):
             stats.spikein_reads_filtered = spikein_stats.get('spikein_reads', 0)
         if _module_2h_failed:
             stats.module_2h_failed = _module_2h_failed   # ISSUE-025: loud in the sidecar
+        if _refine_stats:
+            # T0 4f9102d F3: the 2H decision counters (noncanon_destination_refused
+            # and its reasons, unrealizable_winner_skipped,
+            # noncanon_dest_lost_to_annotated_alt, ...) reach the stats TSV as
+            # module_2h_<key> rows; the log lines above are kept.
+            stats.module_2h_counters = {
+                str(k): int(v) for k, v in _refine_stats.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
 
         # Write processing statistics TSV
         if config['output_path']:

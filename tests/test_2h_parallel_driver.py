@@ -297,3 +297,8 @@ def test_correct_success_leaves_module_2h_failed_empty(tmp_path, genome_path, an
     _run_correct_restoring_env(_correct_args(INPUT_BAM, genome_path, annotation_path, out_tsv))
     rows = _stats_rows(out_tsv)
     assert 'module_2h_failed' not in rows
+    # T0 4f9102d F3: the refine_bam_junctions stats reach the TSV as module_2h_<key>
+    # rows (percent '-'), so the 2H counters are readable offline.
+    assert rows['module_2h_n_op_reads'][1:3] == [str(EXPECTED_N_OP_READS), '-']
+    assert rows['module_2h_refined'][1:3] == [str(EXPECTED_REFINED), '-']
+    assert 'module_2h_noncanon_destination_refused' in rows

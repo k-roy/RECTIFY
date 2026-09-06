@@ -9,7 +9,7 @@ Author: Kevin R. Roy
 Date: 2026-03-17
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict
 import logging
 
@@ -102,6 +102,15 @@ class ProcessingStats:
     # junction in this run is UNREFINED.
     module_2h_failed: str = ''
 
+    # Module 2H decision counters (T0 4f9102d F3): the stats dict that
+    # ``refine_bam_junctions`` returns (total / n_op_reads / refined / unchanged /
+    # errors plus every decision-level counter — noncanon_destination_refused
+    # and its per-reason keys, unrealizable_winner_skipped,
+    # noncanon_dest_lost_to_annotated_alt).  Empty when 2H did not run.  Written
+    # to the stats TSV as ``module_2h_<key>`` rows so the counters are readable
+    # offline instead of only in the log.
+    module_2h_counters: Dict[str, int] = field(default_factory=dict)
+
     # Position changes — both modes
     total_position_shifts: int = 0
 
@@ -131,11 +140,14 @@ class ProcessingStats:
             'confidence_low': self.confidence_low,
             'total_position_shifts': self.total_position_shifts,
             'module_2h_failed': self.module_2h_failed,
+            'module_2h_counters': dict(self.module_2h_counters),
         }
 
     def merge(self, other: 'ProcessingStats') -> None:
         """Merge another stats object into this one (for parallel processing)."""
         self.module_2h_failed = self.module_2h_failed or other.module_2h_failed
+        for key, n in (other.module_2h_counters or {}).items():
+            self.module_2h_counters[key] = self.module_2h_counters.get(key, 0) + int(n)
         self.total_reads_in_bam += other.total_reads_in_bam
         self.reads_unmapped += other.reads_unmapped
         self.reads_secondary += other.reads_secondary
@@ -302,6 +314,16 @@ def write_stats_tsv(
             f.write(
                 f"module_2h_failed\t1\t-\tModule 2H junction refinement FAILED and was "
                 f"skipped; all N-op junctions in this run are UNREFINED: {msg}\n"
+            )
+        # Module 2H decision counters (T0 4f9102d F3), right after the failure
+        # marker: one row per key of the refine_bam_junctions stats dict, so the
+        # gate / realizability / annotated-alternative counts the log lines carry
+        # are also readable offline.  Percent is '-' (denominators differ per key).
+        for key in sorted(stats.module_2h_counters or {}):
+            f.write(
+                f"module_2h_{key}\t{int(stats.module_2h_counters[key])}\t-\t"
+                f"Module 2H junction refinement counter '{key}' "
+                f"(refine_bam_junctions stats)\n"
             )
 
         # Input section

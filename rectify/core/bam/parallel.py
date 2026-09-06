@@ -236,7 +236,12 @@ def _stats_for_results(results: List[Dict]) -> ProcessingStats:
 def _stats_from_dict(values: Dict) -> ProcessingStats:
     stats = ProcessingStats()
     for key in stats.to_dict():
-        setattr(stats, key, int(values.get(key, 0) or 0))
+        if key == 'module_2h_failed':
+            setattr(stats, key, str(values.get(key, '') or ''))
+        elif key == 'module_2h_counters':
+            setattr(stats, key, {k: int(v) for k, v in (values.get(key) or {}).items()})
+        else:
+            setattr(stats, key, int(values.get(key, 0) or 0))
     return stats
 
 
