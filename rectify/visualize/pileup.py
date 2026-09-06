@@ -239,6 +239,30 @@ def coverage_columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xf
     return _columns(reads, x0, x1, nbins, xform)
 
 
+def tailed_coverage(ax, reads: Sequence[Read], x0: float, x1: float, nbins: Optional[int] = None, *,
+                    role: Optional[str] = None, xform: XForm = None, y0: float = 0.0, top: Optional[float] = None,
+                    alpha: float = 0.85, zorder: float = 3.0) -> dict:
+    """Coverage of ``reads`` across [x0, x1) with the poly(A) tails STACKED on the bodies they end:
+    the body fill in the sample's layer-A ``role`` (``subtle`` when None) from ``y0`` up, and the tail
+    counts as a ``polya`` fill from the body top to body + tail, so each 3' step of the pile carries its
+    tails as a shoulder attached to it. Never from the baseline -- drawn that way the tails sit as
+    isolated islands at the foot of the pile, detached from their reads (Kevin, Chanfreau planning/889a,
+    2026-09-06, R9: tails stay `polya`; form carries the marker). Heights are normalised to ``top``
+    (default max(body + tail)) so a corrected line can share the axis. Returns
+    ``{"body", "tail", "top", "artists"}``."""
+    nb = nbins or _nbins_for(ax, x0, x1)
+    body, tail, _clip = _columns(reads, x0, x1, nb, xform)
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    edges = np.linspace(lo, hi, nb + 1)
+    xc = 0.5 * (edges[:-1] + edges[1:])
+    tp = float(top if top is not None else max((body + tail).max(), 1.0))
+    a1 = ax.fill_between(xc, y0, y0 + body / tp, step="mid", color=_body_color(role), alpha=alpha, lw=0, zorder=zorder)
+    a2 = ax.fill_between(xc, y0 + body / tp, y0 + (body + tail) / tp, step="mid", color=TOK.color("polya"), lw=0,
+                         zorder=zorder + 0.5)
+    return {"body": body, "tail": tail, "top": tp, "artists": [a1, a2]}
+
+
 def _nbins_for(ax, x0, x1) -> int:
     fig = ax.figure
     width_px = ax.get_position().width * fig.get_figwidth() * fig.dpi
