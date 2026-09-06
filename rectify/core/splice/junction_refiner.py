@@ -234,7 +234,8 @@ _NONCANON_HP_RUN = 3              # ... of at least this length
 # Annotated-alternative rule (T0 4f9102d follow-on to RULING 3 (b)): a
 # non-canonical-class, unannotated winner that shares one boundary with an
 # annotated canonical-class candidate and lies within this many bases of it on
-# the other boundary loses to that candidate (see refine_read_junctions).
+# the other boundary loses to that candidate — redirected when the read can be
+# written there, refused otherwise (T0 4413bbd; see refine_read_junctions).
 _ANNOT_ALT_DELTA = 2
 NONCANON_REFUSALS = (
     'alternative_within_delta',
@@ -1290,13 +1291,23 @@ def refine_read_junctions(
         # 0.125, the preponderance gate refused it and the read FROZE 12 nt off)
         # and 7628e0dd (GT-AC incumbent; GT-CA 3D beat the annotated GT-AG 5D).
         # The alternative REPLACES the winner, so the R1 hold and the gate below
-        # judge an annotated canonical destination.  This is a REDIRECT and
-        # nothing else: when the alternative is the incumbent itself, or a scored
-        # incumbent outranks it, or the surgery cannot write it, the winner falls
-        # through unchanged to the R1 hold and the preponderance gate, whose
-        # refusal accounting (noncanon_destination_refused, the A/B off-switch)
-        # is untouched.  Off under motif_blind, like every other annotation prior
-        # in this function.
+        # judge an annotated canonical destination.  When the read CANNOT be
+        # redirected — the surgery cannot write the alternative, or a scored
+        # incumbent outranks it — the non-canonical winner is REFUSED, not let
+        # through: RULING 3 (b) is that such a destination needs no annotated /
+        # canonical alternative within delta, and the alternative's existence is
+        # what the read has just shown.  (T0 4413bbd: 16 GSB/WT reads at the
+        # chr1- CT..AT stock 183633152-183635514, tier 4, unannotated.  F1 skipped
+        # the annotated AT-AC 154-516 as unwritable and took the CT..AT 152-516
+        # two bases off it; this rule found 154-516, could not write it, fell
+        # through, and the R1 hold and the gate below were out of scope for a
+        # non-canonical incumbent — so a 0.185 score edge inside the noise floor
+        # moved 16 reads onto a non-canonical site.  Baseline behavior was to
+        # stay, because the unwritable annotated head was the winner.)  The one
+        # exemption stays: when the alternative is the incumbent itself the rule
+        # is silent and the preponderance gate decides, so its refusal accounting
+        # (noncanon_destination_refused, the A/B off-switch) keeps its meaning.
+        # Off under motif_blind, like every other annotation prior here.
         if (
             moves
             and not motif_blind
@@ -1306,14 +1317,19 @@ def refine_read_junctions(
             _alt = _annotated_alternative(
                 ranked, chrom, new_js, new_je, genome_seq, strand, annotated_set,
             )
-            if _alt is not None:
+            if _alt is not None and (_alt[5], _alt[6]) != (ns, ne):
                 _alt_js, _alt_je = _alt[5], _alt[6]
-                if (
-                    (_alt_js, _alt_je) != (ns, ne)
-                    and (incumbent_tuple is None or _alt < incumbent_tuple)
-                    and _realizable(read, cigar_idx, ns, ne, _alt_js, _alt_je,
-                                    genome_seq, strand, hp_pen, W)
-                ):
+                _alt_refusal = ''
+                if incumbent_tuple is not None and not (_alt < incumbent_tuple):
+                    _alt_refusal = 'outranked'
+                elif not _realizable(read, cigar_idx, ns, ne, _alt_js, _alt_je,
+                                     genome_seq, strand, hp_pen, W):
+                    _alt_refusal = 'unrealizable'
+                if _alt_refusal:
+                    moves = False
+                    _bump('noncanon_dest_refused_annotated_alt')
+                    _bump(f'noncanon_dest_refused_annotated_alt_{_alt_refusal}')
+                else:
                     _bump('noncanon_dest_lost_to_annotated_alt')
                     best_tuple = _alt
                     best_score_cmp = _alt[0]
@@ -1416,8 +1432,7 @@ def refine_read_junctions(
             if not (_win_annot and _win_tier < 4):
                 if best_score_cmp > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
                     moves = False
-                    if profile is not None:
-                        profile.inc('annotated_canonical_holds')
+                    _bump('annotated_canonical_holds')
 
         # --- Non-canonical-destination preponderance gate (ISSUE-018) ---------
         # The R1 hold above is a SCORE margin, and a stock D folded into the N

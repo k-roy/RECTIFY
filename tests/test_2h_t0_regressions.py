@@ -22,6 +22,18 @@ annotated GT-AG needing 5D.  A non-canonical unannotated winner now loses to an
 annotated canonical candidate that shares one boundary and lies within
 ``_ANNOT_ALT_DELTA`` on the other (``noncanon_dest_lost_to_annotated_alt``).
 
+T0 4413bbd follow-on (D1) — F2 is "redirect, else REFUSE".  Sixteen GSB/WT reads at
+the chr1- CT..AT stock 183633152-183635514 (tier 4, unannotated) tied three
+candidates at 0.815; F1 skipped the two annotated AT-AC both-boundary heads as
+unwritable and took the CT..AT single-boundary 152-516; F2 found the annotated
+154-516 two bases away, could not write it, fell through, and the R1 hold and
+the gate were out of scope for a non-canonical incumbent — 16 reads moved onto a
+non-canonical site on a 0.185 edge.  Now an annotated canonical alternative the
+read cannot be redirected to (unwritable, or outranked by a scored incumbent)
+REFUSES the winner (``noncanon_dest_refused_annotated_alt[_<reason>]``); the
+alternative-is-the-incumbent case stays the gate's.  ``TestRunnerUpIsJudged``
+pins that an F1 runner-up is still subject to the hold and the gate.
+
 F3 — the 2H decision counters reach the stats TSV: ``ProcessingStats.module_2h_counters``
 (the ``refine_bam_junctions`` stats dict) is written as ``module_2h_<key>`` rows
 right after ``module_2h_failed``, survives the parallel-driver JSON round trip
@@ -245,16 +257,75 @@ class TestAnnotatedAlternative:
         assert _refine(read, g, scores, annotated=[A], counters=counters) == [(idx, *S, *A)]
         assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
 
-    def test_a_scored_incumbent_that_outranks_the_alternative_falls_through(self, monkeypatch):
-        """No redirect when the incumbent ranks above A: W goes on to the gate,
-        which refuses it on its own terms (S is a canonical site 1 nt away)."""
+    def test_a_scored_incumbent_that_outranks_the_alternative_refuses_the_winner(self, monkeypatch):
+        """No redirect when the incumbent ranks above A — and no move either: W
+        has an annotated canonical alternative within delta, so it is refused by
+        this rule (``outranked``) before the gate sees it."""
         read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
         scores = {W: 0.4, S: 0.45, A: 0.5}
         _fake_scores(monkeypatch, scores)
         counters = Counter()
         assert _refine(read, g, scores, annotated=[A], counters=counters) == []
         assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
-        assert counters["noncanon_destination_refused_alternative_within_delta"] == 1
+        assert counters["noncanon_dest_refused_annotated_alt"] == 1
+        assert counters["noncanon_dest_refused_annotated_alt_outranked"] == 1
+        assert counters["noncanon_destination_refused"] == 0
+
+    @staticmethod
+    def _refuse_writing(monkeypatch, site):
+        real = jr._realizable
+
+        def fake(read, cigar_idx, ns, ne, js, je, *rest):
+            return False if (js, je) == site else real(read, cigar_idx, ns, ne, js, je, *rest)
+        monkeypatch.setattr(jr, "_realizable", fake)
+
+    def test_an_unwritable_alternative_refuses_the_winner(self, monkeypatch):
+        """T0 4413bbd, canonical incumbent: A within delta but the surgery cannot
+        write it -> W is refused (``unrealizable``), the read stays; the gate
+        never runs (its counter stays 0)."""
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5, S: 2.0}
+        _fake_scores(monkeypatch, scores)
+        self._refuse_writing(monkeypatch, A)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters) == []
+        assert counters["noncanon_dest_refused_annotated_alt"] == 1
+        assert counters["noncanon_dest_refused_annotated_alt_unrealizable"] == 1
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+        assert counters["noncanon_destination_refused"] == 0
+
+    @pytest.mark.parametrize("alt_writable", [False, True], ids=["alt_unwritable_stays", "alt_writable_redirects"])
+    def test_the_shape_of_the_sixteen(self, monkeypatch, alt_writable):
+        """The 4413bbd family: NON-canonical unannotated incumbent S (GT..CAT),
+        annotated canonical A = (ns, ne-3) and non-canonical W = (ns, ne-1) tied
+        on score.  In the tier-beats-alt branch A is the head; when the surgery
+        cannot write A, F1 skips it and takes W — and neither the R1 hold nor the
+        gate is scoped to a tier-4 incumbent, so before D1 W went through on a
+        sub-noise-floor edge.  Now: A unwritable -> W refused, the read stays;
+        A writable -> the read is redirected to A (the control)."""
+        read, g, idx, ns, ne = _locus(CLEAN, "CTA", plants=[(-6, "CAG"), (-3, "CAT")])
+        S, A, W = (ns, ne), (ns, ne - 3), (ns, ne - 1)
+        assert jr._canonical_tier(*S, g, "+") > _CANONICAL_TIER_MAX
+        assert jr._canonical_tier(*A, g, "+") <= _CANONICAL_TIER_MAX
+        assert jr._canonical_tier(*W, g, "+") > _CANONICAL_TIER_MAX
+        scores = {S: 1.0, A: 0.815, W: 0.815}
+        _fake_scores(monkeypatch, scores)
+        if not alt_writable:
+            self._refuse_writing(monkeypatch, A)
+        counters = Counter()
+        repl = _refine(read, g, scores, annotated=[A], counters=counters)
+        assert counters["noncanon_destination_refused"] == 0        # gate out of scope, and never reached
+        assert counters["annotated_canonical_holds"] == 0
+        if alt_writable:
+            assert repl == [(idx, *S, *A)]
+            assert counters["unrealizable_winner_skipped"] == 0
+            assert counters["noncanon_dest_refused_annotated_alt"] == 0
+            assert _apply(read, repl, g) == (True, "40M97N3D40M")
+        else:
+            assert repl == []
+            assert counters["unrealizable_winner_skipped"] == 1
+            assert counters["noncanon_dest_refused_annotated_alt_unrealizable"] == 1
+            assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
 
     def test_the_incumbent_as_alternative_is_the_gate_s_business(self, monkeypatch):
         """S annotated canonical, W 1 nt away: the only alternative is the
@@ -312,6 +383,56 @@ class TestAnnotatedAlternative:
         assert jr._annotated_alternative([tup(*A)], CHROM, *W, g, "+", annotated) == tup(*A)
         assert jr._annotated_alternative([tup(ns + 1, ne - 3)], CHROM, *W, g, "+", annotated) is None
         assert jr._annotated_alternative([tup(*W)], CHROM, *W, g, "+", annotated | {(CHROM, *W)}) is None
+
+
+# ---------------------------------------------------------------------------
+# T1 — an F1 runner-up is judged by the R1 hold and the gate like any winner
+# ---------------------------------------------------------------------------
+
+class TestRunnerUpIsJudged:
+    """H1 of the T0 4413bbd brief (the hold and the gate were evaluated for the
+    original winner, not the runner-up) is refuted by construction — both run
+    after F1 on the candidate finally taken — and pinned here.  Head W =
+    (ns+2, ne+2) is unwritable; runner-up R = (ns, ne-1) is non-canonical and
+    unannotated; the incumbent S is annotated canonical."""
+
+    @staticmethod
+    def _setup(monkeypatch, *, s_score, gate):
+        read, g, idx, ns, ne = _locus(CLEAN, "CTA", plants=[(-6, "CAG")])
+        S, W, R = (ns, ne), (ns + 2, ne + 2), (ns, ne - 1)
+        assert not jr._realizable(read, idx, ns, ne, *W, g, "+", 0.25, 15)
+        assert jr._realizable(read, idx, ns, ne, *R, g, "+", 0.25, 15)
+        assert jr._canonical_tier(*R, g, "+") > _CANONICAL_TIER_MAX
+        scores = {W: 0.0, R: 0.5, S: s_score}
+        _fake_scores(monkeypatch, scores)
+        monkeypatch.setattr(jr, "_NONCANON_PREPONDERANCE", gate)
+        return read, g, idx, S, W, R, scores
+
+    def test_the_runner_up_is_held_by_r1(self, monkeypatch):
+        """S 1.0 vs R 0.5: inside the 1.0 hold -> no move, one skip counted."""
+        read, g, idx, S, W, R, scores = self._setup(monkeypatch, s_score=1.0, gate=False)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[S], counters=counters) == []
+        assert counters["unrealizable_winner_skipped"] == 1
+        assert counters["annotated_canonical_holds"] == 1
+
+    def test_the_runner_up_moves_when_it_clears_the_hold(self, monkeypatch):
+        """Control: S 2.0 vs R 0.5 clears the hold; with the gate off R is written."""
+        read, g, idx, S, W, R, scores = self._setup(monkeypatch, s_score=2.0, gate=False)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[S], counters=counters) == [(idx, *S, *R)]
+        assert counters["annotated_canonical_holds"] == 0
+
+    def test_the_runner_up_is_gated(self, monkeypatch):
+        """Same, gate on: R is refused on its own terms (S is a canonical site
+        1 nt away).  The alternative within delta IS the incumbent, so the
+        annotated-alternative rule stays silent and the gate's counter moves."""
+        read, g, idx, S, W, R, scores = self._setup(monkeypatch, s_score=2.0, gate=True)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[S], counters=counters) == []
+        assert counters["unrealizable_winner_skipped"] == 1
+        assert counters["noncanon_dest_refused_annotated_alt"] == 0
+        assert counters["noncanon_destination_refused_alternative_within_delta"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +522,9 @@ def _n_ops(cig, rs):
     return out
 
 
-def _load_bundle():
+def _load_bundle(bundle=BUNDLE, prefix=PREFIX):
     reads, lib = {}, None
-    with open(BUNDLE / f"{PREFIX}.stock.sam") as fh:
+    with open(bundle / f"{prefix}.stock.sam") as fh:
         for line in fh:
             line = line.rstrip("\n")
             if not line:
@@ -418,7 +539,7 @@ def _load_bundle():
     for e in reads.values():
         e["stock"], e["baseline"], e["new"] = e["arms"]
     slices, cur = {}, None
-    with open(BUNDLE / f"{PREFIX}.slices.fa") as fh:
+    with open(bundle / f"{prefix}.slices.fa") as fh:
         for line in fh:
             line = line.strip()
             if line.startswith(">"):
@@ -429,14 +550,14 @@ def _load_bundle():
                 slices[cur].append(line.upper())
     slices = {k: "".join(v) for k, v in slices.items()}
     pool, annot = defaultdict(set), defaultdict(set)
-    with open(BUNDLE / f"{PREFIX}.pool.tsv") as fh:
+    with open(bundle / f"{prefix}.pool.tsv") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             key = (row["library"], row["read"])
             j = (row["chrom"], int(row["pool_start"]), int(row["pool_end"]))
             pool[key].add(j)
             if row["annotated"] == "1":
                 annot[key].add(j)
-    with open(BUNDLE / f"{PREFIX}.annotated.tsv") as fh:
+    with open(bundle / f"{prefix}.annotated.tsv") as fh:
         for row in csv.DictReader(fh, delimiter="\t"):
             key = (row["library"], row["read"])
             j = (row["chrom"], int(row["start"]), int(row["end"]))
@@ -445,13 +566,13 @@ def _load_bundle():
     return reads, slices, pool, annot
 
 
-def _replay(prefix):
+def _replay(prefix, bundle=BUNDLE, bundle_prefix=PREFIX):
     """``(replay N-ops, baseline N-ops, new N-ops, counters, local annotated set, tier fn)``
     for the read whose name starts with *prefix*, run through THIS tree with
     production parameters and the tester's candidate set."""
     from rectify.core.splice.hp_penalty import HpPenaltyTable
 
-    reads, slices, pool, annot = _load_bundle()
+    reads, slices, pool, annot = _load_bundle(bundle, bundle_prefix)
     name, e = next((n, e) for n, e in reads.items() if n.startswith(prefix))
     f = e["stock"]
     chrom, strand = f[2], ("-" if int(f[1]) & 16 else "+")
@@ -542,3 +663,57 @@ class TestBundleReplay:
         assert tier(149190531, 149197995) <= _CANONICAL_TIER_MAX
         assert (149190531, 149197995) in out_n
         assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Replay of the tester's T0 4413bbd bundle (17 reads), skip-if-absent
+# ---------------------------------------------------------------------------
+
+BUNDLE_4413 = Path.home() / "work/rectify/dev/sumner_misplaced_panel_20260904/holdout/events/4413bbd"
+PREFIX_4413 = "4413bbd_replay33"
+# The 16-read family: chr1-, stock CT..AT 183633152-183635514 (tier 4, unannotated).
+FAMILY_4413 = (
+    "5f511e6e", "1eedd1f8", "70d9b6b5", "ea57116d", "afe9bc0a", "e930670a", "e3a202ff",
+    "b5334588", "49aa0b21", "e6fe0af7", "fa8baeb5", "47c138aa", "aca51562", "2077a9b2",
+    "bcb5d9f7", "0b275ddd",
+)
+
+needs_bundle_4413 = pytest.mark.skipif(
+    not (BUNDLE_4413 / f"{PREFIX_4413}.stock.sam").exists()
+    or not (TABLES / "penalty_scores.tsv").exists(),
+    reason="tester's T0 4413bbd bundle (or the bundled human tables) not on this machine",
+)
+
+
+@needs_bundle_4413
+class TestBundleReplay4413bbd:
+    @pytest.mark.parametrize("prefix", FAMILY_4413)
+    def test_the_family_stays_at_its_stock_junction(self, prefix):
+        """D1: the two annotated AT-AC heads (154-516, 163-516) are unwritable and
+        skipped by F1; the CT..AT 152-516 that F1 then takes has the annotated
+        154-516 within delta, which cannot be written -> refused; the read stays
+        at the stock, as at 6485226.  Neither the hold nor the gate fires (the
+        incumbent is tier 4, unannotated)."""
+        out_n, base_n, new_n, counters, annotated, tier = _replay(
+            prefix, BUNDLE_4413, PREFIX_4413)
+        assert (183633152, 183635514) in base_n            # the baseline left it at the stock
+        assert (183633152, 183635516) in new_n             # 4413bbd moved it +2
+        assert tier(183633152, 183635516) > _CANONICAL_TIER_MAX
+        assert (183633154, 183635516) in annotated and tier(183633154, 183635516) <= _CANONICAL_TIER_MAX
+        assert out_n == base_n
+        assert counters["unrealizable_winner_skipped"] == 2
+        assert counters["noncanon_dest_refused_annotated_alt_unrealizable"] == 1
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+        assert counters["noncanon_destination_refused"] == 0
+
+    def test_bbc2d388_still_the_annotated_to_annotated_choice(self):
+        """Not F1/F2: flips at ee811b6 (the corrected window), 991 vs 995 both
+        annotated canonical inside the noise floor — the open ruling item,
+        pinned as-is (see TestBundleReplay.test_bbc2d388_...)."""
+        out_n, base_n, new_n, counters, annotated, tier = _replay(
+            "bbc2d388", BUNDLE_4413, PREFIX_4413)
+        assert (149190531, 149197991) in base_n and (149190531, 149197995) in new_n
+        assert (149190531, 149197995) in annotated
+        assert (149190531, 149197995) in out_n
+        assert counters["unrealizable_winner_skipped"] == 0
+        assert counters["noncanon_dest_refused_annotated_alt"] == 0
