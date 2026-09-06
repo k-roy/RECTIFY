@@ -368,6 +368,8 @@ class ArmView:
     clip_letters: Dict[int, str]
     #: best ungapped placement of the 5' clip against an annotated exon end within 5 kb
     clip_fit: Optional[dict] = None
+    #: boundary position -> the inserted bases (read orientation as stored in the BAM)
+    insertion_seqs: Dict[int, str] = field(default_factory=dict)
 
     @property
     def five_clip(self) -> int:
@@ -390,6 +392,7 @@ def _walk(a, genome: Genome):
     blocks: List[Block] = []
     aligned: Dict[int, str] = {}
     ins: Dict[int, int] = {}
+    ins_seq: Dict[int, str] = {}
     p, qi, cur = a.reference_start, 0, None
     ct = a.cigartuples or []
     for op, ln in ct:
@@ -420,6 +423,7 @@ def _walk(a, genome: Genome):
         elif op == 1:
             cur.I += ln
             ins[p] = ins.get(p, 0) + ln
+            ins_seq[p] = ins_seq.get(p, "") + q[qi:qi + ln].upper()
             qi += ln
         elif op == 2:
             cur.D += ln
@@ -436,7 +440,7 @@ def _walk(a, genome: Genome):
         clip_letters[a.reference_start - lead + k] = q[k].upper()
     for k in range(trail):
         clip_letters[a.reference_end + k] = q[len(q) - trail + k].upper()
-    return blocks, aligned, ins, lead, trail
+    return blocks, aligned, ins, lead, trail, ins_seq
 
 
 def _motif(genome: Genome, chrom: str, s: int, e: int, strand: str) -> str:
@@ -491,7 +495,7 @@ def arm_view(name: str, a, genome: Genome, ann: Annotation) -> ArmView:
     """The inspector's numbers for one alignment record."""
     strand = "-" if a.is_reverse else "+"
     chrom = a.reference_name
-    blocks, aligned, ins, lead, trail = _walk(a, genome)
+    blocks, aligned, ins, lead, trail, ins_seq = _walk(a, genome)
     introns = []
     for b1, b2 in zip(blocks, blocks[1:]):
         s, e = b1.re, b2.rs
@@ -506,7 +510,8 @@ def arm_view(name: str, a, genome: Genome, ann: Annotation) -> ArmView:
                    cigar=a.cigarstring or "", ref_start=a.reference_start, ref_end=a.reference_end,
                    lead_clip=lead, trail_clip=trail, blocks=blocks, introns=introns, aligned=aligned,
                    insertions=ins, clip_letters=clip_letters,
-                   clip_fit=_clip_fit(a, genome, ann, strand, lead, trail))
+                   clip_fit=_clip_fit(a, genome, ann, strand, lead, trail),
+                   insertion_seqs=ins_seq)
 
 
 def _manifest_arm_order(bundle_dir) -> List[str]:
@@ -874,13 +879,26 @@ def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann
             else:
                 ax.text(c + 0.5, y_body, L(b, strand), color=focal, fontweight="bold", zorder=4, **letter_kw)
                 ax.plot([c + 0.5, c + 0.5], [top - 0.26, top - 0.04], color=focal, lw=S["secondary"], solid_capstyle="butt", zorder=5)
-        # insertions: a raised half-height block at the boundary
+        # insertions: a raised half-height block at the boundary, with the inserted bases above it
+        # (Kevin 2026-09-06): < 10 bp -> the whole sequence; >= 10 bp -> first 5 + last 5 with the total
+        # length written above the letters. Letters follow the arm's orientation (L()).
         for pos, ln in v.insertions.items():
             bx = frame.boundary(pos)
             if bx is None:
                 continue
             ax.add_patch(Rectangle((bx - 0.24, top - 0.32), 0.48, 0.32, facecolor=stratum_a, edgecolor=focal,
                                    linewidth=S["hairline"], zorder=5))
+            seq = v.insertion_seqs.get(pos, "")
+            if not seq:
+                continue
+            if strand == "-":
+                seq = seq[::-1]                                   # 5'->3' left to right like the letters
+            shown = seq if len(seq) < 10 else f"{seq[:5]}…{seq[-5:]}"
+            label = "".join(L(b, strand) if b != "…" else b for b in shown)
+            if len(seq) >= 10:
+                label = f"{len(seq)} bp  {label}"                  # the arm pitch has room for ONE line above the block
+            ins_kw = dict(letter_kw)                               # same type size as the letters (floor 7.5 pt)
+            ax.text(bx, top - 0.55, label, color=focal, zorder=6, **ins_kw)
         # soft clips: a compact hatched block anchored at the alignment edge -- letters only within
         # CLIP_LETTERS of the edge (where they would fall ungapped), then `clip N` inside the block; never
         # continued across the frame, so a clip is never read as a placement

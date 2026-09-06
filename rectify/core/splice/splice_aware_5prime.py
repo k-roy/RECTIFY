@@ -351,8 +351,16 @@ _ANNOTATED_EXON_INDEL_FRAC = 0.5
 #   bits >= 20: 0.020 / 0.013   bits >= 22: 0.012 / 0.006   bits >= 24: 0.006 / 0.003
 # (the ~0.1 % point lies past the swept range, ~28 bits by the halving per
 # ~2 bits — extrapolated). One line to move it.
-E_IDENTITY = 0.8      # block identity floor
+E_IDENTITY = 0.8      # block identity floor (short blocks only — see E_IDENTITY_MAX_MATCHED)
 E_BITS = 18.0         # evidence-score floor, bits (= row A's family-wise rate)
+# ISSUE-032(a) (T0 i020e_5c952af, 2026-09-06): the identity floor was derived on SHORT blocks
+# (26f8fb45 9/32, 04b17fc6 11/26 — both also fail on bits). On a long block it refuses ordinary
+# ONT error: a7cb6487's 51-nt clip placed at 53.0 bits / identity 0.79 was refused by identity
+# alone. The bits already price every mismatch and gap, and the chance-match model showed the
+# identity term adds ~nothing at 18 bits (0.035/0.029 without vs 0.033/0.028 with). So the
+# identity floor applies only when the block has fewer than this many matched bases; longer
+# blocks are judged by bits alone. Env RECTIFY_2F_EVIDENCE_IDENTITY_MAX_MATCHED overrides.
+E_IDENTITY_MAX_MATCHED = 20
 EXON_IDENTITY_REFUSAL = 'exon_identity_below_floor'
 EXON_BITS_REFUSAL = 'exon_bits_below_floor'
 EVIDENCE_REFUSALS = (EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL)
@@ -389,7 +397,13 @@ def _evidence_floor_refusal(shape) -> str:
     if shape is None:
         return ''
     identity, bits = evidence_floor()
-    if shape.identity < identity:
+    # ISSUE-032(a): the identity floor judges SHORT blocks only; a long block is priced by bits.
+    _raw = os.environ.get('RECTIFY_2F_EVIDENCE_IDENTITY_MAX_MATCHED', '').strip()
+    try:
+        _max_matched = int(_raw) if _raw else E_IDENTITY_MAX_MATCHED
+    except ValueError:
+        _max_matched = E_IDENTITY_MAX_MATCHED
+    if shape.identity < identity and shape.matched < _max_matched:
         return EXON_IDENTITY_REFUSAL
     if shape.bits < bits:
         return EXON_BITS_REFUSAL
@@ -2009,7 +2023,11 @@ def rescue_3ss_truncation(
         read.cigartuples = _saved_cigartuples
         read.reference_start = _saved_reference_start
 
-    if _result.get('rescued'):
+    # ISSUE-032(b) (99141f82, T0 i020e_5c952af): the reanchor pre-pass is evidence-independent —
+    # it collapses a 5'-edge mismatch/indel cluster (e.g. the aligner's `8M210I…N`) into a soft
+    # clip. It used to be propagated only when a rescue was DRAWN, so an invariant-E refusal
+    # handed the writer the raw record and the fabricated junction came back. Propagate it always.
+    if _reanchor_clip_len:
         _result['reanchor_clip_len'] = _reanchor_clip_len
     # Refuse-mode bookkeeping (tester FAST 34d6852, defects a + c): a refused
     # novel rescue that was NOT re-rescued still names its attempted

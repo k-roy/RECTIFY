@@ -516,6 +516,9 @@ def correct_read_3prime(
             # (None = no block was placed for this read).
             _exon_identity = _3ss_result.get('exon_identity')
             _exon_bits = _3ss_result.get('exon_bits')
+            # ISSUE-032(b): the reanchor pre-pass propagates whether or not a rescue was drawn
+            # (the writer's `_apply_reanchor_from_clip_len` runs on reanchor_clip_len alone).
+            _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']

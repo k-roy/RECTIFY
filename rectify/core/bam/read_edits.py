@@ -1508,8 +1508,16 @@ def extend_read_5prime_for_junction_rescue(
         # query bases (minus the exon-2 prefix). Without extension it must consume exactly actual_sc.
         expected_query = actual_sc + effective_trim - k
         if exon_query_span != expected_query:
-            exon_ops = [(0, expected_query)]
-            exon_ref_span = expected_query
+            # ISSUE-030 (Kevin's review 2026-09-06: 26f8fb45 `2M` drawn as `32M` 9/32, 04b17fc6
+            # `26M` 11/26, 5cef5ebb `11M` 3/11, 166079f3 `21M` 11/21, 03c312ab `15M` 10/15): the
+            # flat-M fallback drew a block 2F never scored. A block with no score is not evidence
+            # (ISSUE-028); the writer REFUSES instead and the read keeps its record.
+            logger.debug(
+                "extend_read_5prime_for_junction_rescue: exon ops consume %d query bases, "
+                "expected %d for read %s — ISSUE-030, refusing (no flat-M fallback)",
+                exon_query_span, expected_query, read.query_name,
+            )
+            return False
         # New reference_start = five_prime_position - exon_ref_span + 1
         new_ref_start = five_prime_position - exon_ref_span + 1
 
@@ -1577,7 +1585,13 @@ def extend_read_5prime_for_junction_rescue(
         exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
         expected_query = actual_sc + effective_trim - k
         if exon_query_span != expected_query:
-            exon_ops = [(0, expected_query)]
+            # ISSUE-030 (minus-strand mirror): refuse rather than draw an unscored flat M.
+            logger.debug(
+                "extend_read_5prime_for_junction_rescue: exon ops consume %d query bases, "
+                "expected %d for read %s (minus) — ISSUE-030, refusing (no flat-M fallback)",
+                exon_query_span, expected_query, read.query_name,
+            )
+            return False
 
         # 🔴 Contig-edge REFUSAL (planning/719, mirror of the plus-strand
         # guard): the minus-strand rescue extends reference_end rightward,

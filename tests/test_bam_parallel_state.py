@@ -77,8 +77,14 @@ import pytest
 # Verified before re-recording (dev/todo_run_20260905/INVARIANT_E_LOG.md) that
 # stripping the two new keys reproduces the previous golden 231aeee1… exactly,
 # i.e. no correction semantics moved. Prior golden 231aeee1…
+# 2026-09-06 — re-recorded for ISSUE-032(b) (the 5'-edge reanchor pre-pass propagates
+# whether or not a rescue is drawn). A per-read diff of the 36 results HEAD vs working
+# tree (scratchpad golden_dump.py) shows exactly ONE row changed, 4e43165e:
+# reanchor_clip_len 0 -> 7 and five_prime_soft_clip_length 0 -> 7 (the reanchored
+# clip now reaches the writer on an unrescued read). No other field on any row moved.
+# Prior golden af5aeac6…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "af5aeac6435a8beae71e1673f3467b2d5efd77f9e3aba1f5e6399b50eae2bc91"
+    "ae45870bac35c6462a907348b996e6fbf2b06e9cb054d763d6c615736a56c01c"
 )
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation
