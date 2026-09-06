@@ -654,3 +654,60 @@ def test_spliced_axis_ignores_junctions_leaving_the_scope():
     a_good = P.SplicedAxis((900, 2400), good, [tx])
     a_bad = P.SplicedAxis((900, 2400), good + [bad], [tx])
     assert [(sg.s, sg.e) for sg in a_bad.segs] == [(sg.s, sg.e) for sg in a_good.segs]
+
+
+# ---------------------------------------------------------------------------
+# planning/885: the dense pile and the quantification windows
+# ---------------------------------------------------------------------------
+def _ends(pairs, strand="+"):
+    out = []
+    for i, (s, e) in enumerate(pairs):
+        out.append(P.Read(f"r{i}", strand, s, e, [(s, e - s)], tail=5 if i % 2 else 0))
+    return out
+
+
+def test_sort_reads_3p_groups_by_three_prime_then_five():
+    reads = _ends([(100, 900), (300, 900), (100, 700), (200, 700)])
+    o3 = [r.id for r in P.sort_reads(reads, "3p")]
+    assert o3 == ["r2", "r3", "r0", "r1"]            # 3' 700 before 900; 5' 100 before 200/300 within
+    o5 = [r.id for r in P.sort_reads(reads, "5p")]
+    assert o5 == ["r2", "r0", "r3", "r1"]            # 5' 100,100,200,300; ties by 3' end
+    minus = _ends([(100, 900), (300, 900), (100, 700)], strand="-")
+    om = [r.id for r in P.sort_reads(minus, "3p")]   # 3' end = start; transcript direction reversed
+    assert om[0] == "r1"                              # 3' 300 is the most proximal on the minus strand
+
+
+def test_dense_pile_rows_follow_the_strip_height_and_every_read_is_used():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    reads = _ends([(100 + i, 900 - i) for i in range(400)])      # spans 800 -> 2 bp, never empty
+    fig = plt.figure(figsize=(4, 2), dpi=150)
+    ax = fig.add_axes([0.1, 0.1, 0.8, 0.8])
+    ax.set_ylim(0, 10.0)                              # 10 data units over 0.8 * 2 in = 40.64 mm
+    ax.set_xlim(0, 1000)                              # no region: the pile bins the axes' own x-limits
+    im = P.dense_pile(ax, reads, y=0, h=10.0, nbins=200)
+    n_rows = im.get_array().shape[0]
+    assert 1 < n_rows <= 400 and n_rows == int(np.ceil(400 / int(np.ceil(400 / n_rows))))
+    assert n_rows >= 300                              # 40.64 mm / 0.0847 mm = 480 rows available, capped at 400
+    a = im.get_array()
+    assert a[..., 3].max() <= 1.0 and (a[..., 3] > 0).any()
+    # a strip too short for one row per read still draws every read: rows * per >= n
+    ax2 = fig.add_axes([0.1, 0.0, 0.8, 0.05]); ax2.set_ylim(0, 1); ax2.set_xlim(0, 1000)
+    im2 = P.dense_pile(ax2, reads, y=0, h=1.0, nbins=100)
+    r2 = im2.get_array().shape[0]
+    assert r2 < 400 and r2 * int(np.ceil(400 / r2)) >= 400
+    plt.close(fig)
+
+
+def test_windows_from_clusters_are_disjoint_and_lettered_by_position():
+    reads = _ends([(100, 700)] * 5 + [(100, 710)] * 2 + [(100, 900)] * 8 + [(100, 1200)] * 3)
+    keep = P.union_clusters([{"reads": reads}], win=32, k=4)
+    ws = P.windows_from_clusters(keep, strand="+", grow=50)
+    assert [w.letter for w in ws] == ["A", "B", "C"]
+    assert [w.anchor for w in ws] == [700, 900, 1200]      # transcript order, not rank
+    for a, b in zip(ws, ws[1:]):
+        assert a.hi < b.lo                                    # disjoint after growing
+    assert ws[0].lo == 650 and ws[0].hi <= (710 + 900) // 2 # grown by 50, bounded by the midpoint
+    counts = P.window_counts([{"name": "s", "reads": reads}], ws)["s"]
+    assert counts == {"A": 7, "B": 8, "C": 3, "other": 0, "total": 18}

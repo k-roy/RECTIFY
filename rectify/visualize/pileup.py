@@ -1443,3 +1443,154 @@ def _draw_stack_model(ax, model, keep: Sequence[Cluster], *, region, xform, heig
         if c.anchor is None:
             continue
         mark(ax, c.anchor, "polya", y=0.0, height=0.55, label=c.letter, xform=xform)
+
+
+# ============================================================================
+# the DENSE PILE -- rbrowse's merged density (drawBandRaster) on the publication path
+# ============================================================================
+def sort_reads(reads: Sequence[Read], order: str = "3p") -> List[Read]:
+    """rbrowse's row order. ``"5p"`` is the browser's flat merged default (``sortBy:
+    'five'``: rows by 5' end, 3' ends unsorted within); ``"3p"`` groups by 3' end first,
+    5' end within -- the order that turns the pile's 3' edge into the isoform staircase.
+    Both run in TRANSCRIPT direction so the most 5'-reaching read is on top either way."""
+    if order not in ("3p", "5p"):
+        raise ValueError("order must be '3p' or '5p'")
+    def k(r):
+        sgn = 1 if r.strand == "+" else -1
+        a, b = sgn * r.three_prime, sgn * r.five_prime
+        return (a, b) if order == "3p" else (b, a)
+    return sorted(reads, key=k)
+
+
+def dense_pile(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, role: Optional[str] = None,
+               region=None, xform: XForm = None, order: str = "3p", row_mm: Optional[float] = None,
+               nbins: Optional[int] = None, zorder: int = 3):
+    """rbrowse's **merged density** as a publication glyph: the reads in ``order`` are cut into
+    as many chunks as the strip has pixel rows, and each chunk is one row of the per-column
+    MAJORITY raster (:func:`merged_reads`). Every read contributes, nothing is sampled, and
+    a row is never thinner than a device pixel -- so 5,000 reads in a 12 mm strip draw as a
+    ~140-row density picture whose edges are the 5' and 3' end distributions
+    (rbrowse ``drawBandRaster``, HANDOFF.md:1961's fix for the overflowing per-read pile).
+
+    ``row_mm`` is the minimum row height on the page (default one 300-dpi pixel, 0.0847 mm);
+    :func:`merged_reads` is the ``n_rows == 1`` case. The pile carries no legible single read,
+    by design: what it shows is the shape of the population. Returns the ``AxesImage``.
+    """
+    from matplotlib.colors import to_rgb
+    r = _apply_xlim(ax, region)
+    x0, x1 = (r.start, r.end) if r is not None else sorted(ax.get_xlim())
+    n = len(reads)
+    if n == 0:
+        return None
+    nb = nbins or _nbins_for(ax, x0, x1)
+    fig = ax.figure
+    strip_mm = h / abs(np.diff(ax.get_ylim())[0]) * ax.get_position().height * fig.get_figheight() * MM_PER_IN \
+        if np.diff(ax.get_ylim())[0] else 0.0
+    rm = row_mm if row_mm is not None else 25.4 / 300.0
+    n_rows = int(max(1, min(n, np.floor(strip_mm / rm)))) if strip_mm > 0 else min(n, 200)
+    per = int(np.ceil(n / n_rows))
+    n_rows = int(np.ceil(n / per))
+    G = TOK.track_geometry()
+    body_rgb = np.array(to_rgb(_body_color(role)))
+    tail_rgb = np.array(to_rgb(TOK.color("polya")))
+    clip_rgb = np.array(to_rgb(TOK.color("mute")))
+    a0 = G.get("merged_alpha_floor", 0.2)
+    ordered = sort_reads(reads, order)
+    img = np.zeros((n_rows, nb, 4))
+    for k in range(n_rows):
+        chunk = ordered[k * per:(k + 1) * per]
+        m = len(chunk)
+        cb, ct, cc = _columns(chunk, x0, x1, nb, xform)
+        tail_wins = (ct > 0) & (ct * 4 >= cb)
+        clip_wins = (cc > 0) & (cc * 4 >= cb) & ~tail_wins
+        body = (cb > 0) & ~tail_wins & ~clip_wins
+        row = img[k]
+        row[tail_wins, :3] = tail_rgb; row[tail_wins, 3] = np.minimum(1, 0.35 + 0.65 * ct[tail_wins] / m)
+        row[clip_wins, :3] = clip_rgb; row[clip_wins, 3] = np.minimum(1, 0.25 + 0.55 * cc[clip_wins] / m)
+        row[body, :3] = body_rgb; row[body, 3] = np.minimum(1, a0 + (1 - a0) * cb[body] / m)
+    X = xform or (lambda p: p)
+    lo, hi = sorted((X(x0), X(x1)))
+    # row 0 (the most 5'-reaching reads) at the TOP of the strip, like the browser
+    im = ax.imshow(img, extent=(lo, hi, y, y + h), aspect="auto", interpolation="nearest",
+                   origin="upper", zorder=zorder)
+    if r is not None:
+        ax.set_xlim(*r.xlim())
+    return im
+
+
+# ============================================================================
+# quantification WINDOWS -- the studio's shaded bands, and what they count
+# ============================================================================
+@dataclass
+class Window:
+    """One quantification window: every 3' end in ``[lo, hi]`` (inclusive) counts for
+    ``letter``. rbrowse: "a letter is an INTERVAL, not a point" (rbrowse.js:17397)."""
+    letter: str
+    lo: int
+    hi: int
+    anchor: Optional[int] = None
+
+    def holds(self, r: Read) -> bool:
+        return self.lo <= r.three_prime <= self.hi
+
+
+def windows_from_clusters(keep: Sequence[Cluster], *, strand: str = "+", grow: int = 0,
+                          letters: str = "ABCDEFGHIJ", order: str = "position") -> List[Window]:
+    """Windows from the stack's kept clusters: each window is the cluster's own 3'-end extent
+    (``Cluster.span``), grown outward by ``grow`` bp but never past the midpoint to its
+    neighbour (rbrowse ``figUsage`` orphan absorption, without the annotation-class rule).
+    ``order="position"`` letters them in TRANSCRIPT order 5'->3' (the studio's
+    ``clusterOrder: 'position'``); ``"rank"`` keeps the pooled-count order the stack uses."""
+    cl = [c for c in keep if c.span is not None]
+    if not cl:
+        return []
+    if order == "position":
+        cl = sorted(cl, key=lambda c: c.anchor if strand == "+" else -c.anchor)
+    elif order != "rank":
+        raise ValueError("order must be 'position' or 'rank'")
+    spans = [list(c.span) for c in cl]
+    by_pos = sorted(range(len(cl)), key=lambda i: spans[i][0])
+    for k, i in enumerate(by_pos):
+        lo, hi = spans[i]
+        lo2 = lo - grow; hi2 = hi + grow
+        if k > 0:
+            j = by_pos[k - 1]; lo2 = max(lo2, (spans[j][1] + lo) // 2 + 1)
+        if k < len(by_pos) - 1:
+            j = by_pos[k + 1]; hi2 = min(hi2, (hi + spans[j][0]) // 2)
+        spans[i] = [min(lo, lo2), max(hi, hi2)]
+    return [Window(letters[i] if i < len(letters) else str(i), int(s[0]), int(s[1]), anchor=c.anchor)
+            for i, (c, s) in enumerate(zip(cl, spans))]
+
+
+def window_bands(ax, windows: Sequence[Window], *, y0: float, y1: float, xform: XForm = None,
+                 zorder: int = 1) -> list:
+    """The studio's shaded quantification windows over a read panel: a ``wash``-grey band
+    across ``[lo, hi]`` with a slightly stronger edge, a registration mark and never a data
+    colour (rbrowse.js:17397, Kevin 2026-08-13: "faint grey rectangles ... rather than a
+    single vertical line"). Draw BEHIND the reads (low ``zorder``)."""
+    X = xform or (lambda p: p)
+    S = TOK.stroke()
+    out = []
+    for w in windows:
+        a, b = sorted((X(w.lo), X(w.hi + 1)))
+        out.append(ax.add_patch(Rectangle((a, y0), b - a, y1 - y0, facecolor=TOK.color("neutral"), alpha=0.14,
+                                          edgecolor="none", zorder=zorder)))
+        for x in (a, b):
+            out.append(ax.plot([x, x], [y0, y1], color=TOK.color("neutral"), lw=S["hairline"], alpha=0.5,
+                               zorder=zorder)[0])
+    return out
+
+
+def window_counts(samples: Sequence[dict], windows: Sequence[Window]) -> Dict[str, Dict[str, int]]:
+    """``{sample name: {letter: n, "other": n, "total": n}}`` -- what each window counts in
+    each sample. Every read is counted exactly once (windows are disjoint by construction)."""
+    out: Dict[str, Dict[str, int]] = {}
+    for s in samples:
+        d = {w.letter: 0 for w in windows}
+        d["other"] = 0
+        for r in s.get("reads", ()):
+            hit = next((w for w in windows if w.holds(r)), None)
+            d[hit.letter if hit else "other"] += 1
+        d["total"] = len(s.get("reads", ()))
+        out[s.get("name", "")] = d
+    return out
