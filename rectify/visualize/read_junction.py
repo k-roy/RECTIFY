@@ -954,6 +954,12 @@ _MODEL_PITCH = 0.85
 _TAG_ROWS = 0.8     # the extra lane under a recommended arm's strip that carries the `fixer's pick` tag
 
 
+def _letter(k: int) -> str:
+    """Panel letters past h: a..z, then aa, ab, ... (a --all-junctions card can have 9+ panels)."""
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    return letters[k] if k < 26 else letters[k // 26 - 1] + letters[k % 26]
+
+
 def _col_mm(ax) -> float:
     """mm per x unit (one letter column) of a panel axes, for the box's rounding aspect."""
     fig = ax.figure
@@ -1072,7 +1078,7 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
         ax.axis("off")
         _draw_panel(ax, frame, views, G, A, letter_pt=letter_pt, recommend_arm=rec_arm)
         if len(frames) > 1:  # the panel letter sits in the margin above the panel, never inside the content
-            fig.text(_MARGIN_MM / width_mm, 1 - (y_top_mm - 0.8) / height_mm, "abcdefgh"[k], ha="left", va="bottom",
+            fig.text(_MARGIN_MM / width_mm, 1 - (y_top_mm - 0.8) / height_mm, _letter(k), ha="left", va="bottom",
                      fontsize=T["panel_letter"], fontweight="bold", color=color("ink"))
         axes.append(ax)
         y_top_mm += h_mm + panel_gap_mm
@@ -1122,7 +1128,7 @@ def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str]) 
     n = len(frames)
     parts = [f"Figure | read {read_id[:8]}, {len(arms)} arms, one junction per panel at base resolution."]
     for k, f in enumerate(frames):
-        call = f"({'abcdefgh'[k]}) " if n > 1 else ""
+        call = f"({_letter(k)}) " if n > 1 else ""
         s, e = f.junction
         parts.append(f"{call}{f.chrom}:{_fmt(s)}–{_fmt(e)} ({f.strand}), {f.half} letters each side of each end.")
     parts.append("Grey letters match, orange letters with a tick mismatch; orange notch = deletion, amber raised block = insertion, "
@@ -1166,7 +1172,7 @@ def _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, windo
     lines += ["## panels", ""]
     for k, f in enumerate(frames):
         s, e = f.junction
-        lines.append(f"- panel {'abcdefgh'[k]}: {f.chrom}:{s}-{e} ({f.strand}); segments {f.segments}")
+        lines.append(f"- panel {_letter(k)}: {f.chrom}:{s}-{e} ({f.strand}); segments {f.segments}")
     lines += ["", "## arms (the inspector's numbers)", ""]
     for n, v in views.items():
         lines.append(f"### {n}")
