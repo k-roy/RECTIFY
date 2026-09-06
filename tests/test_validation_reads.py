@@ -55,6 +55,10 @@ def _build_correct_cmd(bam_path: Path, genome_path: Path,
         '--genome', str(genome_path),
         '-o', str(out_tsv),
         '--emit-merged-tsv',  # Commit B: default is manifest-only; keep merged TSV for callers that read it directly
+        # ISSUE-022: pin the code path (a leaked LOKY_MAX_CPU_COUNT=1 from an
+        # in-process `correct` test sends the children down the sequential
+        # writer path, which is not byte-identical to the parallel one).
+        '--threads', '4',
     ]
     if annotation_path is not None:
         cmd += ['--annotation', str(annotation_path)]
@@ -136,6 +140,7 @@ def _run_correct_first_pipeline(
             '-o', str(out_tsv),
             '--write-corrected-bam', str(out_bam),
             '--emit-merged-tsv',  # Commit B: default is manifest-only; keep merged TSV for direct pandas reads
+            '--threads', '4',  # ISSUE-022: pin the code path (see _build_correct_cmd)
         ]
         if annotation_path is not None:
             cmd += ['--annotation', str(annotation_path)]
