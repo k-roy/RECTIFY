@@ -332,7 +332,12 @@ class TestPreponderance:
         """When the flipping bases differ, the general path must plant
         D(2)..N..I(2), and the surgery's own both-boundary indel invariant
         refuses that.  The gate does not count it -- the counter is strictly
-        this gate's refusals -- and the read stays put."""
+        this gate's refusals -- and the read stays put.
+
+        Since the T0 4f9102d fix (tests/test_2h_t0_regressions.py) the ranking
+        is over candidates the surgery can WRITE, so the unwritable destination
+        is skipped before the gate ever sees it (``unrealizable_winner_skipped``)
+        and the incumbent, next in rank, wins: no replacement is emitted."""
         read, g, idx, ns, ne = _locus(CLEAN, "CTA")             # g[ne:ne+2] != "GT"
         stock, dest = (ns, ne), (ns + 2, ne + 2)
         ts, td = _tiers(g, stock, dest)
@@ -341,8 +346,9 @@ class TestPreponderance:
         _fake_scores(monkeypatch, scores)
         counters = Counter()
         repl = _refine(read, g, scores, [stock], window=0, counters=counters)
-        assert repl == [(idx, *stock, *dest)]
+        assert repl == []
         assert counters["noncanon_destination_refused"] == 0
+        assert counters["unrealizable_winner_skipped"] == 1
         assert _apply(read, repl, g) == (False, "40M100N40M")
 
 

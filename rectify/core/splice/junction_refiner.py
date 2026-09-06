@@ -802,6 +802,35 @@ def _alternative_within_delta(
     return False
 
 
+def _realizable(
+    read: pysam.AlignedSegment,
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+    new_js: int,
+    new_je: int,
+    genome_seq: str,
+    strand: str,
+    hp_pen: float,
+    W: int,
+) -> bool:
+    """True when ``_apply_junction_replacement`` would WRITE the move
+    ``(ns, ne) -> (new_js, new_je)`` for *read* — a dry run on a copy.
+
+    The surgery refuses a move for structural reasons the scorer never sees
+    (boundary shift beyond the guard, reference/query span mismatch, a
+    both-boundary move that raises the read's indel burden).  A candidate it
+    refuses is not a placement this read can carry, so ``refine_read_junctions``
+    ranks only candidates that pass here.  Any exception counts as a refusal."""
+    try:
+        trial = read.__copy__()
+        return bool(_apply_junction_replacement(
+            trial, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand, hp_pen, W,
+        ))
+    except Exception:
+        return False
+
+
 def _noncanon_destination_refusal(
     read: pysam.AlignedSegment,
     cigar_idx: int,
@@ -1044,8 +1073,16 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
+        ranked: List[tuple] = []   # every candidate's (score_cmp, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
+        incumbent_tuple = None   # the incumbent's own ranking tuple (None when it is not a candidate)
+
+        def _bump(key: str) -> None:
+            """Count a decision-level event on the profile and the driver's counters."""
+            if profile is not None:
+                profile.inc(key)
+            if counters is not None:
+                counters[key] += 1
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
         # When the current junction is NOT a proper GT/GC..AG junction
@@ -1164,11 +1201,39 @@ def refine_read_junctions(
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
                 candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
-            if best_tuple is None or candidate_tuple < best_tuple:
-                best_tuple = candidate_tuple
+            ranked.append(candidate_tuple)
+            if is_alt == 0:
+                incumbent_tuple = candidate_tuple
 
-        if best_tuple is None:
+        if not ranked:
             continue
+
+        # --- Realizability: the ranking is over candidates the surgery can WRITE ---
+        # The winner used to be the best-scoring candidate, full stop; if the
+        # surgery then refused it (boundary-shift guard, span mismatch, the
+        # both-boundary indel invariant) the read silently kept its stock
+        # placement and the runner-up was never tried.  T0 read a138b2da
+        # (SMA_7.12): the corrected rescue window (ISSUE-021) let an annotated
+        # acceptor 19 nt DOWNSTREAM score 0.0 — the scorer's free-k prefix
+        # matched the read's own exon-2 bases as "intron tail", i.e. the
+        # incumbent alignment relabeled, not read evidence — the surgery refused
+        # the 18-nt relabel as an indel-burden rise, and the annotated 3-nt donor
+        # fix ranked second was discarded with it.  So: walk the ranking, dry-run
+        # the surgery on the head, and drop a candidate that cannot be written.
+        # The incumbent needs no surgery and always stops the walk.
+        ranked.sort()
+        best_tuple = None
+        for _tup in ranked:
+            _cjs, _cje = _tup[5], _tup[6]
+            if (_cjs, _cje) == (ns, ne):
+                best_tuple = _tup
+                break
+            if _realizable(read, cigar_idx, ns, ne, _cjs, _cje, genome_seq, strand, hp_pen, W):
+                best_tuple = _tup
+                break
+            _bump('unrealizable_winner_skipped')
+        if best_tuple is None:
+            continue    # nothing writable and the incumbent is not a candidate: stay
 
         # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
         # (the trailing `delta` is the scorer's applied slide, structurally 0;
@@ -1177,6 +1242,7 @@ def refine_read_junctions(
         _, _, _, _, _, new_js, new_je, _ = best_tuple
 
         moves = (new_js != ns or new_je != ne)
+
         # Move gate.  Two priors against a marginally-better-scoring displacement:
         #   * hold_margin      — a BLUNT prior: any move must beat the incumbent by it.
         #   * hp_drift_margin   — a TARGETED prior: only a move that slides a boundary
