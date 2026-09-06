@@ -97,6 +97,11 @@ class ProcessingStats:
     confidence_medium: int = 0
     confidence_low: int = 0
 
+    # Stage failures that were survived (ISSUE-025): '' when Module 2H ran (or
+    # was not requested); otherwise "<ExcType>: <message>" and every N-op
+    # junction in this run is UNREFINED.
+    module_2h_failed: str = ''
+
     # Position changes — both modes
     total_position_shifts: int = 0
 
@@ -125,10 +130,12 @@ class ProcessingStats:
             'confidence_medium': self.confidence_medium,
             'confidence_low': self.confidence_low,
             'total_position_shifts': self.total_position_shifts,
+            'module_2h_failed': self.module_2h_failed,
         }
 
     def merge(self, other: 'ProcessingStats') -> None:
         """Merge another stats object into this one (for parallel processing)."""
+        self.module_2h_failed = self.module_2h_failed or other.module_2h_failed
         self.total_reads_in_bam += other.total_reads_in_bam
         self.reads_unmapped += other.reads_unmapped
         self.reads_secondary += other.reads_secondary
@@ -288,6 +295,14 @@ def write_stats_tsv(
             "#\n"
         )
         f.write("metric\tcount\tpercent\tdescription\n")
+
+        # Survived stage failures first, so a reader cannot miss them (ISSUE-025).
+        if stats.module_2h_failed:
+            msg = stats.module_2h_failed.replace('\t', ' ').replace('\n', ' ')
+            f.write(
+                f"module_2h_failed\t1\t-\tModule 2H junction refinement FAILED and was "
+                f"skipped; all N-op junctions in this run are UNREFINED: {msg}\n"
+            )
 
         # Input section
         f.write(f"total_reads_in_bam\t{stats.total_reads_in_bam}\t100.00\tTotal reads in BAM file\n")
