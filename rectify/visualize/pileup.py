@@ -34,9 +34,11 @@ the same read fields the slicer emits, in the house tokens:
 
 THE COLOUR RULE HERE (tokens.json ``layers``): a read body is ``subtle`` grey,
 or the SAMPLE's layer-A role when samples are compared (signal rule); the
-poly(A) tail and the 3'-end anchor are the ``polya`` identity -- ONE hue for
-the 3' end, its mark and its tail (rbrowse paints tails base-A green on screen;
-the publication path keeps one identity per hue); the soft-clip remainder is
+3'-end anchor (the site mark, the ribbon's shared edge, the chain badge) is the
+``polya`` identity, and the poly(A) TAIL on a read is the ``tail`` identity -- the
+green rbrowse paints on screen, searched for print (tokens 1.4.0; Kevin's ruling R9,
+2026-09-06: a green tail at the 3' end of every read is the reader's marker of
+orientation and of a full RNA head to tail); the soft-clip remainder is
 ``mute``; isoform IDENTITY is a LETTER, never a hue (Kevin, rbrowse
 2026-08-12: "too many colors on the figure" -- the cluster palette left the
 figure and the letter is the sole cross-panel key); strand is position.
@@ -194,6 +196,14 @@ def _columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xform: XFo
     return np.cumsum(body)[:nbins], np.cumsum(tail)[:nbins], np.cumsum(clip)[:nbins]
 
 
+def coverage_columns(reads: Sequence[Read], x0: float, x1: float, nbins: int, xform: XForm = None):
+    """Per-bin (body, tail, clip) read counts across [x0, x1): the aligned bodies, the poly(A)
+    tails that hang PAST each read's 3' end, and the non-A clip remainder. The public form of
+    the raster's column accumulator, for a coverage panel that wants to draw the tails as a
+    ``tail`` fill beyond the 3' edge (R9; Chanfreau planning/889a)."""
+    return _columns(reads, x0, x1, nbins, xform)
+
+
 def _nbins_for(ax, x0, x1) -> int:
     fig = ax.figure
     width_px = ax.get_position().width * fig.get_figwidth() * fig.dpi
@@ -232,7 +242,7 @@ def merged_reads(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, r
         cb = np.minimum(float(n), _weighted_columns(reads, x0, x1, nb, survival, xform)[0])
     G = TOK.track_geometry()
     body_rgb = np.array(to_rgb(_body_color(role)))
-    tail_rgb = np.array(to_rgb(TOK.color("polya")))
+    tail_rgb = np.array(to_rgb(TOK.color("tail")))
     clip_rgb = np.array(to_rgb(TOK.color("mute")))
     img = np.zeros((1, nb, 4))
     tail_wins = (ct > 0) & (ct * 4 >= cb)
@@ -284,7 +294,7 @@ def ribbon(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, anchor:
     base = np.full(nb, y)
     out.append(ax.fill_between(edges[:-1], base, base + hb, step="post", color=body_col, lw=0, zorder=zorder))
     top_b = base + hb
-    out.append(ax.fill_between(edges[:-1], top_b, top_b + ht, step="post", color=TOK.color("polya"), lw=0,
+    out.append(ax.fill_between(edges[:-1], top_b, top_b + ht, step="post", color=TOK.color("tail"), lw=0,
                                zorder=zorder))
     # the body/tail junction rule: a 1-px ink line wherever a tail sits on a body
     has = ht > 0
@@ -1206,7 +1216,7 @@ def _squished_rows(ax, reads: Sequence[Read], plan: PanelPlan, *, role, region, 
     S = TOK.stroke()
     X = xform or (lambda p: p)
     col = _body_color(role)
-    tail_col = TOK.color("polya")
+    tail_col = TOK.color("tail")
     order = sorted(reads, key=lambda r: (r.three_prime, r.five_prime))
     for i, r in enumerate(order):
         y = plan.bands_mm - (i + 0.5) * plan.pitch_mm
@@ -1503,7 +1513,7 @@ def dense_pile(ax, reads: Sequence[Read], *, y: float = 0.0, h: float = 1.0, rol
     n_rows = int(np.ceil(n / per))
     G = TOK.track_geometry()
     body_rgb = np.array(to_rgb(_body_color(role)))
-    tail_rgb = np.array(to_rgb(TOK.color("polya")))
+    tail_rgb = np.array(to_rgb(TOK.color("tail")))
     clip_rgb = np.array(to_rgb(TOK.color("mute")))
     a0 = G.get("merged_alpha_floor", 0.2)
     ordered = sort_reads(reads, order)
