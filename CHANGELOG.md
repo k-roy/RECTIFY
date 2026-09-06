@@ -10,6 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F ranks 5' rescue candidates with the anchored placement model
+  (ISSUE-020)** (`splice/splice_aware_5prime.py`, `align/local_aligner.py`,
+  `bam/processing_stats.py`). The rescue RANKED candidates with an unanchored
+  sweep — the 5' segment compared by homopolymer-aware edit distance to a
+  genome window slid up to `junction_proximity_bp` (10) bases away from the
+  junction, an unpenalized junction-side gap — and then PLACED the winner with
+  the anchored affine aligner (`align_clip_to_exon`, junction end fixed). The
+  GTRAGT +5 GT decoy 4 nt into the intron won the ranking through that gap
+  freedom (the six residual "+4 by evidence" reads only at offsets 2/10/7/3/3;
+  at offset 0 the annotated window was better on all six) and the placement
+  then spent a `4D` at the junction. Now every candidate is scored, at its own
+  coordinate and at the best few nearby shifts, with the SAME Gotoh affine DP
+  the placement runs (`score_right_anchored` / `score_left_anchored`, same
+  constants, same reference window); the lowest deficit (`2*len - score`)
+  wins, the annotated-first and geometry tie-breakers follow it, and hp-ED
+  survives only as the shift prune. The compared segment always ends at the
+  junction: a 5' end inside the intron compares the soft clip PLUS the
+  intron-mapped bases (the string the placement aligns — the old clip-only
+  segment ended 1–3 bases short and the slide was compensating for it), and an
+  alignment that starts past the acceptor trims those exon-2 bases from the
+  READ, never slides the genome. Consistency invariant — the ranking score of
+  the chosen candidate is the score of the emitted placement and no scored
+  candidate did better — asserted by `tests/test_2f_anchored_ranking.py` and,
+  in debug mode `RECTIFY_2F_CHECK_CONSISTENCY=1`, inside the code. New result
+  keys `anchored_deficit` / `reranked_between_annotated`; new per-process
+  counters `five_prime_anchored_dps`, `exon2_trim_consumed_clip` and
+  `five_prime_reranked_between_annotated` (the anchored rank picked a
+  different annotated candidate than hp-ED would have; printed in the
+  `correct` stats block when nonzero). On the tester's 10-read bundle every
+  read lands on the annotated junction with no junction-side gap
+  (`novel_exon_gap_at_junction` stays as instrumentation and is 0 there);
+  the three within-1-nt reads the writer used to walk onto the decoy with a
+  compensating `3D` (ISSUE-023) now arrive annotated, so the repair has
+  nothing to move.
 - **Module 2F: the off-by-4 decoy placement (ISSUE-017) and candidate order
   (ISSUE-019)** (`splice/splice_aware_5prime.py`). On the Sumner human cohort
   106/160 near-annotated novel junctions sat exactly 4 nt into the intron, on

@@ -77,6 +77,11 @@ _GAP_EXTEND = -1   # penalty per base within a gap
 
 _NEG_INF = float('-inf')
 
+# Buffer (bp) added to the far side of the expected exon window by
+# align_clip_to_exon — and, since ISSUE-020, by the 2F ranking scorers, which
+# must see the SAME reference window as the placement.
+ANCHOR_MAX_INDEL = 5
+
 # CIGAR op codes (pysam / SAM convention)
 _OP_M = 0  # sequence match or mismatch
 _OP_I = 1  # insertion in query (gap in reference)
@@ -470,6 +475,100 @@ def score_left_anchored(query: str, ref: str) -> Tuple[float, int]:
     return best_score, j_best
 
 
+def score_right_anchored(query: str, ref: str) -> Tuple[float, str]:
+    """Best affine-gap score of a RIGHT-anchored semi-global alignment of
+    *query* against *ref* — the score :func:`_align_right_anchored` traces back,
+    without the traceback.
+
+    Query fully consumed; free prefix in *ref*; the alignment must end at
+    ``ref[-1]`` (the last exon-1 base before the donor on the plus strand).
+    Same recurrence, same boundary conditions, same four constants as
+    ``_align_right_anchored`` — so for a given (query, ref) this score is
+    exactly the score of the CIGAR ``align_clip_to_exon`` emits (the ISSUE-020
+    consistency invariant; ``tests/test_2f_anchored_ranking.py``). Rolling rows:
+    O(R) memory, no traceback matrices.
+
+    Returns ``(best_score, end_state)`` with *end_state* in ``'H'/'D'/'I'`` —
+    the state at the anchored end, ``'D'`` meaning the alignment closes with a
+    deletion at the junction (a junction-side gap). Ties are broken H, D, I,
+    as the traceback does.
+    """
+    Q, R = len(query), len(ref)
+    if Q == 0:
+        return 0.0, 'H'
+    if R == 0:
+        return _GAP_OPEN + Q * _GAP_EXTEND, 'I'
+    qu = query.upper()
+    ru = ref.upper()
+    go = _GAP_OPEN + _GAP_EXTEND
+    # Row 0: free prefix — the alignment may start at any ref column for free,
+    # in the match state or "already skipping" in the deletion state.
+    h_prev = [0.0] * (R + 1)
+    d_prev = [0.0] * (R + 1)
+    i_prev = [_NEG_INF] * (R + 1)
+    for i in range(1, Q + 1):
+        qi = qu[i - 1]
+        h_cur = [_NEG_INF] * (R + 1)
+        d_cur = [_NEG_INF] * (R + 1)
+        i_cur = [_NEG_INF] * (R + 1)
+        i_cur[0] = _GAP_OPEN + i * _GAP_EXTEND
+        for j in range(1, R + 1):
+            s = _MATCH if qi == ru[j - 1] else _MISMATCH
+            best_h = max(h_prev[j - 1], d_prev[j - 1], i_prev[j - 1])
+            if best_h > _NEG_INF:
+                h_cur[j] = best_h + s
+            hl = h_cur[j - 1]
+            dl = d_cur[j - 1]
+            d_open = hl + go if hl > _NEG_INF else _NEG_INF
+            d_ext = dl + _GAP_EXTEND if dl > _NEG_INF else _NEG_INF
+            d_cur[j] = d_open if d_open >= d_ext else d_ext
+            hu = h_prev[j]
+            iu = i_prev[j]
+            i_open = hu + go if hu > _NEG_INF else _NEG_INF
+            i_ext = iu + _GAP_EXTEND if iu > _NEG_INF else _NEG_INF
+            i_cur[j] = i_open if i_open >= i_ext else i_ext
+        h_prev, d_prev, i_prev = h_cur, d_cur, i_cur
+    end_h, end_d, end_i = h_prev[R], d_prev[R], i_prev[R]
+    best = max(end_h, end_d, end_i)
+    state = 'H' if end_h == best else ('D' if end_d == best else 'I')
+    return best, state
+
+
+def affine_cigar_score(ops: List[Tuple[int, int]], query: str, ref: str) -> float:
+    """Score an M/I/D CIGAR over *query* and *ref* (both fully consumed) with
+    this module's four constants — the quantity the anchored DPs maximize.
+
+    Each M/=/X base scores ``_MATCH`` or ``_MISMATCH``; each I or D run costs
+    ``_GAP_OPEN + len * _GAP_EXTEND`` (one gap event per run — the DPs never
+    place two gap runs of the same kind back to back, and ``_compress`` merges
+    adjacent ops, so a run IS an event). Used by the ISSUE-020 consistency
+    check: the emitted exon CIGAR scored this way must equal the ranking score.
+
+    Raises ``ValueError`` when the ops do not consume exactly *query* and *ref*.
+    """
+    qi = ri = 0
+    score = 0.0
+    for op, ln in ops:
+        if op in (_OP_M, 7, 8):
+            for k in range(ln):
+                score += _MATCH if query[qi + k].upper() == ref[ri + k].upper() else _MISMATCH
+            qi += ln
+            ri += ln
+        elif op == _OP_I:
+            score += _GAP_OPEN + ln * _GAP_EXTEND
+            qi += ln
+        elif op == _OP_D:
+            score += _GAP_OPEN + ln * _GAP_EXTEND
+            ri += ln
+        else:
+            raise ValueError(f"affine_cigar_score: unsupported op {op}")
+    if qi != len(query) or ri != len(ref):
+        raise ValueError(
+            f"affine_cigar_score: ops consume {qi} query / {ri} ref bases, "
+            f"sequences have {len(query)} / {len(ref)}")
+    return score
+
+
 def affine_score_to_edit_distance(score: float, query_len: int) -> float:
     """Convert an affine-gap alignment score to an approximate edit distance.
 
@@ -776,7 +875,7 @@ def align_clip_to_exon(
     intron_start: int,
     intron_end: int,
     strand: str,
-    max_indel: int = 5,
+    max_indel: int = ANCHOR_MAX_INDEL,
 ) -> Tuple[List[Tuple[int, int]], int]:
     """
     Align a 5' soft-clip to the upstream exon using semi-global affine-gap NW.
