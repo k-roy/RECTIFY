@@ -210,20 +210,20 @@ class TestDMergeIntoIntron:
 # ---------------------------------------------------------------------------
 
 class TestCompensatingInsertion:
-    """``40M100N4M1I36M`` -> acceptor +k.  The general path re-labels the
+    """``40M100N4M1I36M`` -> acceptor +k.  The general path could only re-label the
     boundary by planting I(k) right after the new N (the cohort's
-    ``1077N4M1I112M`` -> ``1080N3I1M1I112M``).  A +1 shift is caught before
-    the dry run: the canonical stock itself is a proper site within delta of
-    the destination.  A +3 shift reaches the dry run and is refused on the
-    planted insertion.
+    ``1077N4M1I112M`` -> ``1080N3I1M1I112M``).
+
+    ISSUE-031 (Kevin 2026-09-06, "never put a D next to an N"): the SURGERY now
+    refuses that shape for every move, so the realizability probe drops the
+    candidate at ranking time — before the preponderance gate ever sees it — and
+    the gate's counters stay at 0.  Turning the gate off changes nothing.
+    (Before 2026-09-06 the gate refused these with `alternative_within_delta` /
+    `adjacent_indel` and the gate-off arm wrote the compensating insertion.)
     """
 
-    @pytest.mark.parametrize("shift,token,moved_cigar", [
-        (1, "alternative_within_delta", "40M101N1I3M1I36M"),
-        (3, "adjacent_indel", "40M103N3I1M1I36M"),
-    ])
-    def test_refused_and_restored_with_the_gate_off(self, monkeypatch, shift, token,
-                                                    moved_cigar):
+    @pytest.mark.parametrize("shift", [1, 3])
+    def test_refused_by_the_surgery_before_the_gate(self, monkeypatch, shift):
         read, g, idx, ns, ne = _locus(I_SHAPE, "CTTA")
         stock, dest = (ns, ne), (ns, ne + shift)
         ts, td = _tiers(g, stock, dest)
@@ -233,13 +233,13 @@ class TestCompensatingInsertion:
 
         counters = Counter()
         assert _refine(read, g, scores, [stock], counters=counters) == []
-        assert counters["noncanon_destination_refused"] == 1
-        assert counters[f"noncanon_destination_refused_{token}"] == 1
+        assert counters["noncanon_destination_refused"] == 0
+        assert counters["unrealizable_winner_skipped"] == 1
 
         monkeypatch.setattr(jr, "_NONCANON_PREPONDERANCE", False)
-        repl = _refine(read, g, scores, [stock])
-        assert repl == [(idx, *stock, *dest)]
-        assert _apply(read, repl, g) == (True, moved_cigar)
+        assert _refine(read, g, scores, [stock]) == []
+        # and the surgery itself, asked directly, refuses without touching the read
+        assert _apply(read, [(idx, *stock, *dest)], g) == (False, read.cigarstring)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +248,15 @@ class TestCompensatingInsertion:
 
 class TestCanonicalDestinationsAreNotGated:
     """The gate's scope is destination-unannotated AND destination
-    non-canonical-class.  A canonical -> canonical move (the drift fixes 2H
-    exists for) must go through in every annotation configuration."""
+    non-canonical-class: a canonical -> canonical move never reaches it
+    (counter stays 0 in every annotation configuration).
+
+    ISSUE-031 (Kevin 2026-09-06): a canonical -> canonical move that can only be
+    realized by gluing ``6I`` to the N (``40M106N6I34M`` — the read never had the
+    six exon-2 bases) is refused by the SURGERY, whatever its annotation status;
+    the seven 2H T1 "drift fixes onto annotated" were exactly this shape.  The
+    candidate is dropped as unrealizable at ranking.  (Before 2026-09-06 this
+    test asserted the move went through and wrote the ``6I``.)"""
 
     @pytest.mark.parametrize("annotated", [
         pytest.param((), id="novel_to_novel"),
@@ -257,7 +264,7 @@ class TestCanonicalDestinationsAreNotGated:
         pytest.param(("stock", "dest"), id="isoform_swap"),
         pytest.param(("stock",), id="annotated_to_novel_canonical"),
     ])
-    def test_canonical_to_canonical_still_moves(self, monkeypatch, annotated):
+    def test_canonical_to_canonical_glued_indel_is_refused_not_gated(self, monkeypatch, annotated):
         read, g, idx, ns, ne = _locus(CLEAN, "ACGCAG")      # a second CAG 3 nt into exon 2
         stock, dest = (ns, ne), (ns, ne + 6)
         ts, td = _tiers(g, stock, dest)
@@ -267,9 +274,10 @@ class TestCanonicalDestinationsAreNotGated:
         annot = [{"stock": stock, "dest": dest}[k] for k in annotated]
         counters = Counter()
         repl = _refine(read, g, scores, annot, window=0, counters=counters)
-        assert repl == [(idx, *stock, *dest)]
+        assert repl == []
         assert counters["noncanon_destination_refused"] == 0
-        assert _apply(read, repl, g) == (True, "40M106N6I34M")
+        assert counters["unrealizable_winner_skipped"] == 1
+        assert _apply(read, [(idx, *stock, *dest)], g) == (False, "40M100N40M")
 
 
 def test_motif_blind_disables_the_gate(monkeypatch):

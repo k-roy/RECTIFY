@@ -38,7 +38,10 @@ ALIGNER_DIR = RECTIFY_ROOT / 'rectify' / 'data' / 'validation' / 'aligners'
 INPUT_BAM = ALIGNER_DIR / 'validation_reads_upf1d.mapPacBio.bam'
 # The sequential run on this bundle: 36 records, 20 with N-ops, 7 refined
 # (the number the ISSUE-025 repro recorded at 1 thread).
-EXPECTED_REFINED = 7
+# ISSUE-031 (2026-09-06): 7 -> 5. Three reads' moves added a glued boundary indel
+# (572cf65c 4->8, 9e2d47c3 20->22, fa816f03 4->5 / 4->12) and are now refused as
+# unrealizable; the validation suite's junction pins are unchanged (185 passed).
+EXPECTED_REFINED = 5
 
 
 def _bundle_or_skip():

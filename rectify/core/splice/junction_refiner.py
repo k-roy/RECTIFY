@@ -1847,14 +1847,39 @@ def _apply_junction_replacement(
     # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
     # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
     # (raw) placement — the conservative, correct outcome.
-    if delta_start != 0 and delta_end != 0:
-        old_indel = sum(l for op, l in cigar     if op in (_I, _D))
-        new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
-        if new_indel > old_indel:
+    #
+    # ISSUE-031 (Kevin, 2026-09-06, read-review cards 238d21ab/ede71fa4/3ceddb4b/8d1fe5ee/
+    # 8ef6e9c0/b3a48de3/dbcdfdd1 + control 0af7072a): "never put a D next to an N".  The
+    # single-boundary exemption above was the drift itself — on all seven "drift-fix" reads
+    # the annotated coordinate was reached only by gluing a 3–11-base D (or I) to the N while
+    # the stock junction had 11–12/12 clean bases on both flanks.  The arbiter's rule 4(a)
+    # ("no junction edit may raise the read's indel burden, single- or both-boundary") is
+    # now enforced for EVERY move, and in addition no move may leave an I/D adjacent to the
+    # N on either side unless that exact op was already adjacent before the move (a stock
+    # alignment's own indel is the aligner's record and is left alone, not "fixed").  The
+    # realizability probe (_move_realizable) dry-runs this function, so a refused move is
+    # skipped in the ranking and counted as unrealizable_winner_skipped.
+    old_indel = sum(l for op, l in cigar     if op in (_I, _D))
+    new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
+    if new_indel > old_indel:
+        logger.debug(
+            "refine_junction: move adds indel (%d → %d) for read %s — ISSUE-031, refusing",
+            old_indel, new_indel, read.query_name,
+        )
+        return False
+    for side in (-1, +1):
+        j_new, j_old = n_idx + side, cigar_idx + side
+        if not (0 <= j_new < len(new_cigar)):
+            continue
+        op_new = new_cigar[j_new]
+        if op_new[0] not in (_I, _D):
+            continue
+        op_old = cigar[j_old] if 0 <= j_old < len(cigar) else None
+        if op_old != op_new:
             logger.debug(
-                "refine_junction: both-boundary move adds compensating indel "
-                "(%d → %d) for read %s — unsupported relocation, refusing",
-                old_indel, new_indel, read.query_name,
+                "refine_junction: move leaves %s adjacent to the N for read %s — "
+                "ISSUE-031 (no I/D next to an N), refusing",
+                cigar_ops_to_str([op_new]), read.query_name,
             )
             return False
 

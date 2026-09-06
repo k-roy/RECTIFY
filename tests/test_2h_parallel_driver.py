@@ -44,7 +44,10 @@ INPUT_BAM = VAL_DIR / 'validation_reads_upf1d.mapPacBio.bam'
 ALIGNER_BAMS = [VAL_DIR / f'validation_reads_upf1d.{a}.bam' for a in ALIGNERS]
 
 EXPECTED_N_OP_READS = 20
-EXPECTED_REFINED = 7
+# ISSUE-031 (2026-09-06): 7 -> 5. Three reads' moves added a glued boundary indel
+# (572cf65c 4->8, 9e2d47c3 20->22, fa816f03 4->5 / 4->12) and are now refused as
+# unrealizable; the validation suite's junction pins are unchanged (185 passed).
+EXPECTED_REFINED = 5
 
 # 20 N-op reads -> 5 batches, so both workers really receive work (the default
 # batch_size=200 would hand everything to one worker).
