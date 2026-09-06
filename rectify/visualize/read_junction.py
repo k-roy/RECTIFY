@@ -761,7 +761,8 @@ _GUTTER_COLS = 6.5  # label gutter, in columns
 _MARGIN_MM = 4.0
 
 
-def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann: Annotation, *, letter_pt: float):
+def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann: Annotation, *, letter_pt: float,
+                recommend_arm: Optional[str] = None):
     """One panel: reference, coordinates, model, one read row + verdict per arm. y grows DOWNWARD
     (row units; the axes' y-axis is inverted by the caller)."""
     from matplotlib.patches import Rectangle
@@ -933,6 +934,15 @@ def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann
         # the verdict strip
         ax.text(-_GUTTER_COLS + 0.2, y + 1.38, verdict_line(v, genome, frame), ha="left", va="center",
                 fontsize=_type()["annotation"], color=ink, fontfamily=sym_fam)
+        if name == recommend_arm:  # the fixer's pick: a rounded focal box around the whole row + a tag in its own lane
+            from matplotlib.patches import FancyBboxPatch
+            y0, y1 = y - 0.32, y + 1.38 + 0.42 + _TAG_ROWS
+            ax.add_patch(FancyBboxPatch((-_GUTTER_COLS + 0.05, y0), frame.ncols + _GUTTER_COLS - 0.1, y1 - y0,
+                                        boxstyle="round,pad=0,rounding_size=0.45", mutation_aspect=_ROW / _col_mm(ax),
+                                        facecolor="none", edgecolor=focal, linewidth=1.2, zorder=6))
+            ax.text(frame.ncols - 0.3, y + 1.38 + 0.42 + _TAG_ROWS / 2, "fixer's pick", ha="right", va="center",
+                    fontsize=_type()["annotation"], color=focal, fontweight="bold", zorder=7)
+            y += _TAG_ROWS
         y += _ARM_PITCH
     return y
 
@@ -941,13 +951,30 @@ _ARM_PITCH = 2.15
 _MODEL_PITCH = 0.85
 
 
-def _rows_per_panel(n_arms: int, n_models: int = 1) -> float:
-    return 2.1 + _MODEL_PITCH * max(1, n_models) + 0.55 + _ARM_PITCH * n_arms + 0.2
+_TAG_ROWS = 0.8     # the extra lane under a recommended arm's strip that carries the `fixer's pick` tag
+
+
+def _col_mm(ax) -> float:
+    """mm per x unit (one letter column) of a panel axes, for the box's rounding aspect."""
+    fig = ax.figure
+    w_in = ax.get_position().width * fig.get_figwidth()
+    x0, x1 = ax.get_xlim()
+    return w_in * 25.4 / abs(x1 - x0)
+
+
+def _rows_per_panel(n_arms: int, n_models: int = 1, extra: float = 0.0) -> float:
+    return 2.1 + _MODEL_PITCH * max(1, n_models) + 0.55 + _ARM_PITCH * n_arms + extra + 0.2
 
 
 def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optional[Sequence[str]] = None,
-                window: int = 32, junction_index="auto", sidecar: bool = True) -> dict:
+                window: int = 32, junction_index="auto", sidecar: bool = True, recommend: Optional[str] = None,
+                sidecar_note: Optional[str] = None) -> dict:
     """Render the per-read junction PNG. Returns ``{"png", "panels", "junctions", "arms", "floors_ok"}``.
+
+    ``recommend``: an arm name -> a rounded ``focal`` box around that arm's whole row in every panel and a
+    ``fixer's pick`` tag at the row's right end; ``'none:<text>'`` -> a ``focal`` banner under the header
+    ("none of the arms is what the fixer recommends: <text>") and no box. ``sidecar_note`` is written into
+    the .md sidecar.
 
     ``junction_index``: ``'auto'`` (the junction(s) the arms disagree about, else the 5'-most),
     ``'all'`` (one panel per junction in any arm), or an int index into the ``'all'`` list.
@@ -966,6 +993,14 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     chroms = {a.reference_name for a in recs.values()}
     A = gtf if isinstance(gtf, Annotation) else Annotation(gtf, chroms=chroms)
     views = {n: arm_view(n, a, G, A) for n, a in recs.items()}
+    rec_arm, rec_none = None, None
+    if recommend:
+        if recommend.startswith("none:"):
+            rec_none = recommend[len("none:"):].strip()
+        elif recommend in views:
+            rec_arm = recommend
+        else:
+            raise ValueError(f"--recommend {recommend!r}: not an arm of this bundle ({list(views)}); use none:<text>")
     if junction_index == "all":
         groups = select_junctions(views, "all", window)
     elif junction_index == "auto":
@@ -985,8 +1020,11 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     width_mm = width_in * 25.4
     n_arms = len(views)
     n_models = max(1, max(len(A.models_in(f.chrom, f.segments, f.junction)) for f in frames))
-    panel_rows = _rows_per_panel(n_arms, n_models)
+    panel_rows = _rows_per_panel(n_arms, n_models, _TAG_ROWS if rec_arm else 0.0)
     title_mm = 9.0 + (4.0 if len(frames) > 1 else 0.0)   # room for panel letter `a` under the arm line
+    banner_lines = textwrap.wrap("none of the arms is what the fixer recommends: " + rec_none, 105) if rec_none is not None else []
+    banner_mm = (len(banner_lines) * 4.0 + 2.5) if banner_lines else 0.0
+    title_mm += banner_mm
     panel_gap_mm = 6.5
     ncols = max(f.ncols for f in frames)
     # legend + footer band (measured on a probe when figstyle is available)
@@ -1011,6 +1049,15 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     arm_line = " · ".join(_arm_summary(n, v) for n, v in views.items())
     fig.text(_MARGIN_MM / width_mm, 1 - (_MARGIN_MM + 4.2) / height_mm, arm_line, ha="left", va="top",
              fontsize=T["annotation"], color=color("hairline"))
+    if banner_lines:
+        from matplotlib.patches import Rectangle as _Rect
+        b_top = _MARGIN_MM + 9.0
+        fig.patches.append(_Rect((_MARGIN_MM / width_mm, 1 - (b_top + banner_mm - 1.0) / height_mm),
+                                 (width_mm - 2 * _MARGIN_MM) / width_mm, (banner_mm - 1.0) / height_mm,
+                                 transform=fig.transFigure, facecolor=color("focal_tint"), edgecolor=color("focal"),
+                                 linewidth=1.2, zorder=0))
+        fig.text((_MARGIN_MM + 1.5) / width_mm, 1 - (b_top + 1.0) / height_mm, "\n".join(banner_lines), ha="left",
+                 va="top", fontsize=T["in_figure"], color=color("focal"), fontweight="bold", linespacing=1.35)
 
     # ---- panels
     usable_mm = width_mm - 2 * _MARGIN_MM
@@ -1023,7 +1070,7 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
         ax.set_xlim(-_GUTTER_COLS, ncols)
         ax.set_ylim(panel_rows, 0)
         ax.axis("off")
-        _draw_panel(ax, frame, views, G, A, letter_pt=letter_pt)
+        _draw_panel(ax, frame, views, G, A, letter_pt=letter_pt, recommend_arm=rec_arm)
         if len(frames) > 1:  # the panel letter sits in the margin above the panel, never inside the content
             fig.text(_MARGIN_MM / width_mm, 1 - (y_top_mm - 0.8) / height_mm, "abcdefgh"[k], ha="left", va="bottom",
                      fontsize=T["panel_letter"], fontweight="bold", color=color("ink"))
@@ -1051,7 +1098,8 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=300)
     if sidecar:
-        _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, window)
+        _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, window, recommend=recommend,
+                       note=sidecar_note)
     result = dict(png=out_png, panels=len(frames), junctions=[f.junction for f in frames], arms=list(views),
                   floors_ok=ok, fig=fig)
     return result
@@ -1098,7 +1146,7 @@ def _figstyle():
         return None
 
 
-def _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, window):
+def _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, window, recommend=None, note=None):
     """The figure-standard .md sidecar next to the PNG. Refuses to overwrite a file it did not write."""
     path = os.path.splitext(out_png)[0] + ".md"
     marker = "<!-- rectify.visualize.read_junction sidecar -->"
@@ -1109,6 +1157,10 @@ def _write_sidecar(out_png, read_id, man, views, frames, G, A, bundle_dir, windo
     lines = [marker, f"# {read_id[:8]} — per-read junction PNG", "",
              f"- read: `{read_id}`", f"- bundle: `{bundle_dir}`", f"- genome: `{G.path}`", f"- annotation: `{A.path}`",
              f"- window: {window} letters per junction end", f"- rendered: {datetime.datetime.now():%Y-%m-%d %H:%M}", ""]
+    if recommend:
+        lines += ["## fixer's recommendation", "", f"- {recommend}", ""]
+    if note:
+        lines += ["## note", "", note, ""]
     if man:
         lines += ["## manifest row", ""] + [f"- {k}: {v}" for k, v in man.items() if v] + [""]
     lines += ["## panels", ""]
@@ -1149,10 +1201,13 @@ def main(argv=None) -> int:
     ap.add_argument("--all-junctions", action="store_true", help="one panel per junction present in any arm")
     ap.add_argument("--junction", default=None, help="index into the --all-junctions list (0 = 5'-most)")
     ap.add_argument("--no-sidecar", action="store_true")
+    ap.add_argument("--recommend", default=None,
+                    help="an arm name (focal box around its row + `fixer's pick` tag) or none:<text> (a focal banner, no box)")
+    ap.add_argument("--sidecar-note", default=None, help="free text written into the .md sidecar")
     a = ap.parse_args(argv)
     mode = "all" if a.all_junctions else ("auto" if a.junction is None else int(a.junction))
     res = render_read(a.bundle, a.read, a.genome, a.gtf, a.out, arms=a.arms, window=a.window, junction_index=mode,
-                      sidecar=not a.no_sidecar)
+                      sidecar=not a.no_sidecar, recommend=a.recommend, sidecar_note=a.sidecar_note)
     print(f"{res['png']}  panels {res['panels']}  junctions {res['junctions']}  arms {res['arms']}  floors {'OK' if res['floors_ok'] else 'BELOW'}")
     return 0 if res["floors_ok"] else 1
 
