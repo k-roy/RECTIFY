@@ -2675,7 +2675,8 @@ def _rescue_3ss_truncation_body(
             # op than five_prime_soft_clip_length and make the writer fall back
             # to a flat M block.
             _five_prime_in_intron = _intron_start <= align_5prime < _intron_end
-            if _five_prime_in_intron and _intronic_seq:
+            _align_from_intronic = bool(_five_prime_in_intron and _intronic_seq)
+            if _align_from_intronic:
                 _align_seq = _intronic_seq
             elif rescue_type_candidate == 'softclip':
                 _align_seq = rescue_seq
@@ -2715,8 +2716,17 @@ def _rescue_3ss_truncation_body(
             #     AND the read bases at those query positions equal both.
             _upstream_trim = 0
             _MAX_K = 10
+            # When the 5' end sits INSIDE the intron, `_intronic_seq` already
+            # carries every body base mapped past the boundary (the overshoot
+            # IS the intron-mapped run), and the icp gate routes the read to
+            # `reroute`, which demands exon_q == n_intronic_q. Borrowing the
+            # overshoot again here counted the same base twice: the exon CIGAR
+            # consumed clip + 2·overshoot query bases, `extend` fell back to a
+            # flat M block and the evidence ops never reached the BAM (bundle-1
+            # reads 5b20c72a / a5a5a1bb / 31fab950 at 3834686).
             if (
                 rescue_type_candidate == 'softclip'
+                and not _align_from_intronic
                 and strand == '-'
                 and read.reference_end is not None
             ):
@@ -2763,6 +2773,7 @@ def _rescue_3ss_truncation_body(
             # BAM (intron_len collapses to `intron_end - intron_start`).
             elif (
                 rescue_type_candidate == 'softclip'
+                and not _align_from_intronic
                 and strand == '+'
                 and read.reference_start is not None
             ):

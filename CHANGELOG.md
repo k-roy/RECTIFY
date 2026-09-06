@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first, then coordinate; Case 4 by snap distance) so no outcome depends on
   set order (PYTHONHASHSEED-invariant, tested). Replayed reads flip from the
   decoy to the annotated junction at the clip's own edit distance.
+  Follow-up (ISSUE-023b): when the 5' end sits inside the rescued intron the
+  equivalence extension no longer borrows the overshoot base(s) a second
+  time — the exon CIGAR consumed clip + 2·overshoot query bases, so the BAM
+  writer's `extend` fell back to a flat M block and the evidence ops never
+  reached the BAM. The exon CIGAR now consumes exactly the intron-mapped
+  run the writer converts (tested on the Sumner replay bundle).
 - **Module 2F: provenance-aware evidence gate for novel landing sites
   (ISSUE-017)** (`splice/splice_aware_5prime.py`, `bam/bam_processor.py`).
   On the 16-library Sumner cohort 83 % of RECTIFY's false junctions were 2F
