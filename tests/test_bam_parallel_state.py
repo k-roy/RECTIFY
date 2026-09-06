@@ -71,8 +71,14 @@ import pytest
 # re-recording that stripping the two new keys reproduces the previous golden
 # 5195e1c0… exactly, i.e. no correction semantics moved (report mode draws
 # every rescue exactly as before). Prior golden 5195e1c0…
+# 2026-09-06 — re-recorded for ISSUE-028 (2F invariant E). A pure SCHEMA addition:
+# `five_prime_exon_identity` and `five_prime_exon_bits` joined the result dict
+# (None on every row here — no annotation, so no 5' block is ever placed).
+# Verified before re-recording (dev/todo_run_20260905/INVARIANT_E_LOG.md) that
+# stripping the two new keys reproduces the previous golden 231aeee1… exactly,
+# i.e. no correction semantics moved. Prior golden 231aeee1…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "231aeee14e467bdbcac7bb51307830c93ac91a215ea47c81be6c751a363c827e"
+    "af5aeac6435a8beae71e1673f3467b2d5efd77f9e3aba1f5e6399b50eae2bc91"
 )
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation

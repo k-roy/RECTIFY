@@ -822,6 +822,20 @@ class TestRescue3SSTruncation:
 
     # ---- Plus strand: MPB forced-mismatch at exon2 start ----
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "ISSUE-028 invariant E exposed what kept this fixture green: the reanchor "
+            "pre-pass collapses the 10 mismatched exon-1 bases into a 10S clip at 210, "
+            "ISSUE-020 (b) then trims the `dist` = 10 junction-side clip bases that lie "
+            "over exon-2 POSITIONS (unconditionally, by ruling), and the whole clip is "
+            "gone; the read was 'rescued' only by a 12-base terminal peel whose trimmed "
+            "remainder was a 2-base `2M` block (4 bits) — not evidence. A mapPacBio "
+            "forced-mismatch read that starts exactly at the acceptor with its exon-1 "
+            "bases aligned over exon 2 is unrescuable under the 020 trim; ruling needed "
+            "(logged in dev/todo_run_20260905/INVARIANT_E_LOG.md)."
+        ),
+    )
     def test_plus_mpb_forced_mismatch_rescued(self):
         """No explicit soft-clip; first 10 aligned bases are all mismatches (A reads
         as C in MPB output against G-rich exon2), but the query bytes are 'A'*10
@@ -1235,12 +1249,14 @@ class TestRescue3SSTruncationExtended:
 
     def test_plus_canonical_gt_beats_non_canonical(self):
         """
-        Two junctions; exon1 is A*50 for both → same edit distance for A*8 clip.
+        Two junctions; exon1 is A*50 for both → same edit distance for A*10 clip.
         Junction at intron_start=50 has GT donor (canonical).
         Junction at intron_start=150 has AA donor (non-canonical).
         GT should win. (Both introns end in AG; ISSUE-026 invariant D refuses
         the AA-AG placement outright — the writer would revert it — so the GT
         junction is the only placement left, which is the same verdict.)
+        The clip is 10 nt (ISSUE-028 invariant E: an 8-nt block is 16 bits at
+        best, under the 18-bit evidence floor by construction).
         """
         genome = {'chrC': 'A' * 50 + 'GT' + 'N' * 96 + 'AG' + 'AA' + 'N' * 96 + 'AG' + 'A' * 50}
         junctions = {
@@ -1252,8 +1268,8 @@ class TestRescue3SSTruncationExtended:
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 8 + 'N' * 50,
-            cigartuples=[(4, 8), (0, 50)],
+            query_sequence='A' * 10 + 'N' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1262,7 +1278,8 @@ class TestRescue3SSTruncationExtended:
     # ---- GC donor is canonical (minor spliceosome) ----
 
     def test_plus_gc_donor_is_canonical(self):
-        """GC donor is accepted as canonical and preferred over AA."""
+        """GC donor is accepted as canonical and preferred over AA (10-nt clip:
+        ISSUE-028 invariant E's 18-bit floor is out of reach for an 8-mer)."""
         genome = {'chrGC': 'A' * 50 + 'GC' + 'N' * 96 + 'AG' + 'AA' + 'N' * 96 + 'AG' + 'A' * 50}
         junctions = {
             ('chrGC', 50, 150),   # GC donor → canonical
@@ -1273,8 +1290,8 @@ class TestRescue3SSTruncationExtended:
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 8 + 'N' * 50,
-            cigartuples=[(4, 8), (0, 50)],
+            query_sequence='A' * 10 + 'N' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True

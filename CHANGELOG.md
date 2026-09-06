@@ -25,8 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rate of the clean-run rule it replaces; 22 bits ~1 %), overridable with
   `RECTIFY_2F_EVIDENCE_BITS` / `RECTIFY_2F_EVIDENCE_IDENTITY`. Refusal tokens
   `exon_identity_below_floor` / `exon_bits_below_floor`; two new trailing TSV
-  columns `five_prime_exon_identity` and `five_prime_exon_bits`. WIP checkpoint:
-  the validation suites have not yet been run on this change.
+  columns `five_prime_exon_identity` and `five_prime_exon_bits`. The Case-4
+  snap's re-placed block is judged when the aligner placed >= 10 query bases
+  BEFORE the leading-indel strip (a `5I6M` -> `5S6M` block is 11 placed bases,
+  12 bits: refused). True-positive cost, reported not loosened: the bundled
+  yeast validation read cat3_plus_1 (10-nt clip, one homopolymer over-call,
+  `4M1I5M`, identity 1.00, 15.5 bits) is no longer rescued — the four
+  `TestCategory3JunctionRescue[cat3_plus_1]` tests fail pending Kevin's ruling
+  on the floor (the full list is `LOST_TP_AT_18` in
+  `dev/todo_run_20260905/INVARIANT_E_LOG.md`).
 
 - **Module 2F ranks 5' rescue candidates with the anchored placement model
   (ISSUE-020)** (`splice/splice_aware_5prime.py`, `align/local_aligner.py`,

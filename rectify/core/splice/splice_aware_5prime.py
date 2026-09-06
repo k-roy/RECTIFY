@@ -3622,14 +3622,18 @@ def _rescue_3ss_truncation_body(
         # end sits inside an annotated intron and the bases favor exon 1 over
         # the intron, tested above) exactly as it always has, and the novel-
         # site verdict still governs a novel intron below. The length is the
-        # PLACED QUERY span (M + I), not the aligned columns: f53d770 166079f3's
-        # `1M12I1M1I6M` has 8 aligned columns on 21 placed bases (5.5 bits).
+        # PLACED QUERY span (M + I) of the aligner's block BEFORE the strip, not
+        # the aligned columns and not the post-strip remainder: f53d770
+        # 166079f3's `1M12I1M1I6M` has 8 aligned columns on 21 placed bases
+        # (5.5 bits), and 2586f261's `5I6M` -> `5S6M` keeps 6 placed bases of an
+        # 11-base segment (12 bits) — the segment the snap tried to place is
+        # the sequence test, whatever the strip turned into S.
+        _placed4 = sum(ln for op, ln in (_cigar_ops4 or []) if op in (0, 1, 7, 8))
         _cigar_ops4, _exon_cigar_str4, _shape4 = _place_and_measure(
             _cigar_ops4, _intronic_seq4 or '', genome_seq, intron_start, intron_end, strand)
         if _shape4 is not None:
             _last_shape = _shape4
         _e_tok4 = ''
-        _placed4 = sum(ln for op, ln in (_cigar_ops4 or []) if op in (0, 1, 7, 8))
         if _shape4 is not None and _placed4 >= min_informative_clip_bp():
             _e_tok4 = _evidence_floor_refusal(_shape4)
         if _e_tok4:
@@ -3686,6 +3690,33 @@ def _rescue_3ss_truncation_body(
         else:
             dist = intron_start - align_5prime
         if 0 <= dist <= junction_proximity_bp:
+            # ISSUE-029: proximity must not outrank a SCORED clip. An
+            # informative 5' clip (>= min_informative_clip_bp()) was ranked by
+            # the sequence loop above against every candidate; if no landing
+            # met the floors (invariants A / C / E) the read is a no-rescue that
+            # names its refusal, not a proximity row that attaches this intron
+            # without aligning the clip (f53d770 5cef5ebb: a 12-nt clip whose
+            # best placement anywhere is 15 bits). Case 3 stays for the zero /
+            # sub-floor clip (no sequence test exists) and for the rare clip
+            # that IS evidence at this donor yet was not emitted above.
+            if (five_clip >= min_informative_clip_bp()
+                    and rescue_type_candidate == 'softclip' and rescue_seq):
+                try:
+                    from ..align.local_aligner import align_clip_to_exon
+                    _ops3, _ = align_clip_to_exon(
+                        rescue_seq, genome_seq, intron_start, intron_end, strand)
+                    _ops3, _, _shape3 = _place_and_measure(
+                        _ops3, rescue_seq, genome_seq, intron_start, intron_end, strand)
+                except Exception as _e3:
+                    logger.debug("Case 3 evidence check failed for read %s: %s",
+                                 read.query_name, _e3)
+                    _shape3 = None
+                # (The TSV keeps the LAST block the sequence loop / peel judged;
+                # this check's block is not that record.)
+                if _shape3 is None or _evidence_floor_refusal(_shape3):
+                    _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
+                        _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)
+                    continue
             return {
                 'rescued': False,
                 'rescue_type': 'proximity',
@@ -3695,6 +3726,11 @@ def _rescue_3ss_truncation_body(
                 'query_bp': 0,
                 'five_prime_exon_cigar': '',
                 'five_prime_upstream_trim': 0,
+                # ISSUE-029: the provenance of the junction this row NAMES (it
+                # is not drawn) — membership in the annotated set, not a
+                # constant False that contradicted an annotated coordinate.
+                'landing_annotated': (annotated_keys is None
+                                      or (j_chrom, intron_start, intron_end) in annotated_keys),
                 'displaced_canonical_refused': _displaced_any,
                 'clip_refused': _novel_refused,
                 # ISSUE-028: the shape of the block that was refused, if any.

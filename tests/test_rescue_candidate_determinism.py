@@ -68,5 +68,6 @@ def test_body_sorts_candidates_before_use():
     """The production sort is present at the narrowing site, not just in theory."""
     src = open(os.path.join(
         REPO, "rectify/core/splice/splice_aware_5prime.py")).read()
-    assert "_nearby_junctions.sort(key=lambda _j: (_j[0], _j[1], _j[2]))" in src
+    # ISSUE-019 (3834686): annotated candidates sort first, then coordinates — still a total order.
+    assert "_nearby_junctions.sort(key=lambda _j: (not _is_ann(_j), _j[0], _j[1], _j[2]))" in src
     assert "key=lambda x: (x[0], x[1][0], x[1][1], x[1][2])" in src
