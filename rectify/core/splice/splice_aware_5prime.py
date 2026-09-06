@@ -2070,6 +2070,7 @@ def _rescue_3ss_truncation_body(
     best_in_amb = False          # tiebreaker 2: shift within ambiguity window
     best_shift_abs = 999         # tiebreaker 3: smallest |shift|
     best_acceptor_priority = 4   # tiebreaker 4: 3'SS quality (AG=0..AT=3..other=4)
+    best_intronic_depth = 0      # ISSUE-026 B, tiebreaker 5: bases of the 5' end inside the intron
     # ISSUE-020: state of the anchored rank (see the strand blocks below).
     best_deficit: float = float('inf')  # 2*len(segment) - affine score of the winner
     best_rank_seg = ''                  # the ranking segment the winner was scored on
@@ -2381,6 +2382,20 @@ def _rescue_3ss_truncation_body(
                     # filter out junctions that are farther than proximity_bp
                     # even accounting for the unaligned clip length.
                     continue
+                # ISSUE-026 invariant B: a candidate whose intron CONTAINS one of
+                # the read's own N-ops (other than an approximation of itself —
+                # the forced-snap match above) cannot be this read's 5' junction:
+                # the read is spliced INSIDE it, from a nearby donor to a closer
+                # acceptor, and the writer would have to delete that junction to
+                # draw the candidate. The same containment test Case 4 applies.
+                _depth = max(0, intron_end - align_5prime)   # bases of the 5' end inside the intron
+                if any(intron_start <= _ns and _ne <= intron_end
+                       and not (abs(_ns - intron_start) <= junction_proximity_bp
+                                and abs(_ne - intron_end) <= junction_proximity_bp)
+                       for _ns, _ne in _n_intervals):
+                    _OI_COUNTERS['five_prime_candidate_contains_read_nop'] = (
+                        _OI_COUNTERS.get('five_prime_candidate_contains_read_nop', 0) + 1)
+                    continue
                 # Dynamic shift range from run-length at the annotated donor:
                 #   r_amb = consecutive intron bases (going right) equal to last exon base
                 #   l_amb = consecutive exon bases (going left) equal to first intron base
@@ -2624,6 +2639,19 @@ def _rescue_3ss_truncation_body(
                     # filter out junctions that are farther than proximity_bp
                     # even accounting for the unaligned clip length.
                     continue
+                # ISSUE-026 invariant B (mirror): never a candidate whose intron
+                # contains one of the read's own N-ops. T0 chrX 771560c4: three
+                # annotated candidates shared the far site 15845378; the nearest
+                # (15831568) tied on ED with 15827372, whose intron contains the
+                # read's own 15827374-15831447 AND its terminal exon.
+                _depth = max(0, align_5prime - intron_start + 1)   # bases of the 5' end inside the intron
+                if any(intron_start <= _ns and _ne <= intron_end
+                       and not (abs(_ns - intron_start) <= junction_proximity_bp
+                                and abs(_ne - intron_end) <= junction_proximity_bp)
+                       for _ns, _ne in _n_intervals):
+                    _OI_COUNTERS['five_prime_candidate_contains_read_nop'] = (
+                        _OI_COUNTERS.get('five_prime_candidate_contains_read_nop', 0) + 1)
+                    continue
                 # Dynamic shift range for the minus-strand 5'SS boundary at intron_end:
                 #   r_amb = consecutive exon bases (right of intron_end) equal to last intron base
                 #   l_amb = consecutive intron bases (left of intron_end) equal to first exon base
@@ -2831,12 +2859,17 @@ def _rescue_3ss_truncation_body(
                     or (j_chrom, intron_start, intron_end) in annotated_keys)
                 # ISSUE-020: the primary key is the ANCHORED deficit (the
                 # placement model's own score); ed_exon (hp-ED) is reported.
+                # ISSUE-026 invariant B: intronic depth (how far the 5' end sits
+                # inside the candidate intron) breaks an otherwise exact tie
+                # AHEAD of coordinate order — among annotated candidates sharing
+                # the far site the NEAREST near site wins (771560c4: 15831568,
+                # 1 nt in, over 15828200 / 15827372, thousands of nt in).
                 _cur_outer  = (_best_local_deficit, not _cand_annotated, not _best_in_amb,
                                not _best_local_canonical,
-                               _best_local_shift_abs, _acceptor_priority)
+                               _best_local_shift_abs, _acceptor_priority, _depth)
                 _best_outer = (best_deficit, not best_candidate_annotated, not best_in_amb,
                                not best_is_canonical,
-                               best_shift_abs, best_acceptor_priority)
+                               best_shift_abs, best_acceptor_priority, best_intronic_depth)
                 _overall_update = (best_ed < 0 or _cur_outer < _best_outer)
                 # ISSUE-020 (e): what the pre-020 hp-ED rank would have picked,
                 # approximated by each candidate's prune-best window (same tuple
@@ -2870,6 +2903,7 @@ def _rescue_3ss_truncation_body(
                     best_in_amb = _best_in_amb
                     best_shift_abs = _best_local_shift_abs
                     best_acceptor_priority = _acceptor_priority
+                    best_intronic_depth = _depth
                     # Update 5' end using the effective donor/acceptor position
                     if strand == '+':
                         best_junction = (j_chrom, _eff_intron_start, intron_end)

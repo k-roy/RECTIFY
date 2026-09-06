@@ -9,10 +9,14 @@ the remnant with the new N, silently deleting every junction in between: read
 eca6079d had a 1,241 bp N cut to 755 bp and merged into a 97,213 bp AG-AG
 "intron" that replaced six real junctions.
 
-The guard is keyed on the N being CUT (``op == 3 and trim < length``), not on the
-terminal op being N — the latter would break Case 5. `grep -rn n_boundary_adjust`
-found only the two code comments, so nothing else covers that case; the abutting
-test below is the first.
+The guard was keyed on the N being CUT (``op == 3 and trim < length``), not on
+the terminal op being N — the latter would break Case 5. `grep -rn
+n_boundary_adjust` found only the two code comments, so nothing else covers that
+case; the abutting test below is the first. ISSUE-026 invariant B (2026-09-05)
+widened the guard to ``op == 3``: an N wholly inside the trimmed run is refused
+too (a 5' rescue may never remove an aligner-called N-op). Case 5's abutting N
+still merges — it ends exactly at ``clip_boundary`` and the trim loop breaks
+before ever reaching it.
 
 Run with:
     pytest tests/test_2f_reroute_n_merge.py -v
@@ -125,16 +129,51 @@ class TestPlusStrand:
         assert read.reference_start == before_start
         assert _n_ops(read) == [(130, 330)]
 
-    def test_intact_n_fully_inside_the_trimmed_region_still_works(self):
-        """An N the trim consumes ENTIRELY (trim == length) is not a cut, so the
-        surgery proceeds — this is the `_get_intronic_query_bases` pass-through
-        case for a spurious micro-junction inside the target intron."""
+    def test_intact_n_fully_inside_the_trimmed_region_is_refused(self):
+        """ISSUE-026 invariant B (2026-09-05): an N the trim would consume
+        ENTIRELY (trim == length) is refused too — a 5' rescue may never remove
+        an aligner-called N-op. (Until B this was the `_get_intronic_query_bases`
+        pass-through for a "spurious micro-junction inside the target intron";
+        T0 chrX 771560c4 showed the same geometry deleting a REAL 4,073-nt
+        annotated junction and its 123-nt terminal exon — an exon-skip collapse.)"""
         read = self._read()
+        before_cigar, before_start = read.cigartuples, read.reference_start
         assert reroute_intronic_tail_5prime_via_junction(
             read, clip_boundary=330, five_prime_position=49,
-            exon_cigar_str='30M', strand='+') is True
-        assert (130, 330) not in _n_ops(read)
-        assert read.reference_start == 20        # 49 - 30 + 1
+            exon_cigar_str='30M', strand='+') is False
+        assert read.cigartuples == before_cigar and read.reference_start == before_start
+        assert _n_ops(read) == [(130, 330)]
+
+
+class TestInvariantBNeverRemovesAnAlignerN:
+    """ISSUE-026 invariant B: neither writer helper may delete an aligner-called
+    N-op, whether the boundary CUTS it (ISSUE-007) or the re-placed run CONTAINS
+    it whole. The minus-strand shape is T0 chrX 771560c4: read 50M 200N 30M at
+    100 (junction 150-350, terminal exon 350-380), candidate intron 120-500 —
+    clip_boundary 120 sits before the read's own junction."""
+
+    def test_minus_reroute_refuses_a_contained_junction(self):
+        read = _make_read(100, [(0, 50), (3, 200), (0, 30)], '-')
+        before = read.cigartuples
+        assert reroute_intronic_tail_5prime_via_junction(
+            read, clip_boundary=120, five_prime_position=500,
+            exon_cigar_str='60M', strand='-') is False
+        assert read.cigartuples == before
+        assert _n_ops(read) == [(150, 350)]
+
+    def test_minus_softclip_refuses_a_contained_junction(self):
+        read = _make_read(100, [(0, 50), (3, 200), (0, 30)], '-')
+        before = read.cigartuples
+        assert softclip_intronic_tail_5prime(read, clip_boundary=120, strand='-') is False
+        assert read.cigartuples == before
+        assert _n_ops(read) == [(150, 350)]
+
+    def test_plus_softclip_refuses_a_contained_junction(self):
+        read = _make_read(100, [(0, 30), (3, 200), (0, 50)], '+')
+        before = read.cigartuples
+        assert softclip_intronic_tail_5prime(read, clip_boundary=360, strand='+') is False
+        assert read.cigartuples == before
+        assert _n_ops(read) == [(130, 330)]
 
 
 class TestNoQueryCorruption:

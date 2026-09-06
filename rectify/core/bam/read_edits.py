@@ -933,7 +933,7 @@ def softclip_intronic_tail_5prime(
             op, length = cigar[-1]
             if op in _REF_CONSUMING:
                 trim = min(length, excess_ref)
-                if op == 3 and trim < length:
+                if op == 3:
                     # ISSUE-007, second call site: clip_boundary falls INSIDE a
                     # junction the aligner already called, and soft-clipping to
                     # it would SHORTEN that junction — the read would silently
@@ -943,6 +943,15 @@ def softclip_intronic_tail_5prime(
                     # not see because both edges are still CT-AC. Refuse; the
                     # caller leaves the read unmodified, which is correct — no
                     # 5' surgery is defensible when it costs a real junction.
+                    #
+                    # ISSUE-026 invariant B (2026-09-05): the same holds when the
+                    # N-op lies WHOLLY inside the tail (trim == length) — a 5'
+                    # rescue may never remove an aligner-called N-op. T0 chrX
+                    # 771560c4: the candidate 15827372-15845378 contained the
+                    # read's own 15827374-15831447 and its terminal exon; the
+                    # writer re-placed the whole run and the aligner's junction
+                    # vanished. An N that ends exactly at clip_boundary never
+                    # reaches here (the loop breaks on cur_end <= clip_boundary).
                     return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
@@ -1005,9 +1014,10 @@ def softclip_intronic_tail_5prime(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
-                if op == 3 and trim < length:
+                if op == 3:
                     # Mirror of the minus-strand guard above (ISSUE-007): never
-                    # shorten a junction the aligner already called.
+                    # shorten a junction the aligner already called — and
+                    # (ISSUE-026 invariant B) never remove one whole either.
                     return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
@@ -1141,7 +1151,7 @@ def reroute_intronic_tail_5prime_via_junction(
             excess = cur_end - clip_boundary
             if op in _REF_CONSUMING:
                 trim = min(length, excess)
-                if op == 3 and trim < length:
+                if op == 3:
                     # clip_boundary falls INSIDE a junction the aligner already
                     # called. Continuing would shorten that N and the merge block
                     # below would then fuse the remnant with the new N, silently
@@ -1150,8 +1160,16 @@ def reroute_intronic_tail_5prime_via_junction(
                     # replaced six real junctions). Refuse instead — the writer
                     # falls back to softclip_intronic_tail_5prime.
                     #
-                    # Keyed on the N being CUT, not on the terminal op being N:
-                    # the legitimate Case-5 `n_boundary_adjust` merge has a FULLY
+                    # ISSUE-026 invariant B (2026-09-05): a junction that lies
+                    # WHOLLY inside the re-placed run (trim == length) is refused
+                    # too — a 5' rescue may never remove an aligner-called N-op.
+                    # T0 chrX 771560c4 (- strand): the candidate 15827372-15845378
+                    # contained the read's own 15827374-15831447 plus its 123-nt
+                    # terminal exon; the reroute re-placed all 141 query bases as
+                    # the exon block across an 18,006-nt N and the aligner's
+                    # junction was gone (exon-skip collapse).
+                    #
+                    # The legitimate Case-5 `n_boundary_adjust` merge has a FULLY
                     # INTACT N ending exactly at clip_boundary, which never
                     # reaches here because the loop breaks on cur_end <=
                     # clip_boundary first.
@@ -1240,13 +1258,14 @@ def reroute_intronic_tail_5prime_via_junction(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
-                if op == 3 and trim < length:
+                if op == 3:
                     # Mirror of the minus-strand guard above (ISSUE-007):
                     # clip_boundary falls inside an aligner-called junction, and
                     # the merge below would fuse its remnant with the new N,
-                    # deleting every junction in between. The legitimate Case-5
-                    # abutting merge has an INTACT N and breaks out of the loop
-                    # before reaching this branch.
+                    # deleting every junction in between; ISSUE-026 invariant B:
+                    # a junction wholly inside the re-placed run is refused too.
+                    # The legitimate Case-5 abutting merge has an INTACT N and
+                    # breaks out of the loop before reaching this branch.
                     return False
                 cigar[0] = (op, length - trim)
                 if cigar[0][1] == 0:

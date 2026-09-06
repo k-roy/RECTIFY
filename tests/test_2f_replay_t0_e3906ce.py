@@ -95,6 +95,36 @@ def test_slide_refusal_is_a_placement_decision_not_a_token():
     assert set(NOVEL_EXON_REFUSALS) <= set(PLACEMENT_REFUSALS)
 
 
+# ----------------------------------------------------------------------------------------------- invariant B
+@pytest.mark.parametrize('gate', ['report', 'refuse'])
+def test_771560c4_keeps_its_own_junction_and_gains_the_annotated_one(gate, monkeypatch):
+    """ISSUE-026 (b-i): three annotated candidates share the far site 15845378;
+    the 13-nt clip scores the identical window on all three. The nearest near
+    site (15831568, 1 nt inside) must win — 15827372's intron contains the
+    read's own 15827374-15831447 and its terminal exon, and drawing it deleted
+    that junction (exon-skip collapse). Both aligner N-ops survive, the
+    annotated 15831568-15845378 is added, the collapse junction never appears."""
+    row, res, rec, stock, off = _replay('771560c4', monkeypatch, gate)
+    nops = _real(_nops(rec), off)
+    assert (15827374, 15831447) in nops, nops          # the aligner's own junction, kept
+    assert (15831568, 15845378) in nops, nops          # the annotated one, gained
+    assert (15827372, 15845378) not in nops, nops      # never the exon-skip collapse
+    assert all(n in nops for n in _real(_nops(stock), off)), (nops, _real(_nops(stock), off))
+    assert res['rescued'] and res['rescued_junction'][1:] == (15831568 - off, 15845378 - off)
+    assert row['five_prime_rescue_refused'] == ''
+
+
+def test_a_candidate_containing_the_reads_own_junction_is_never_ranked(monkeypatch):
+    """The sequence loop skips 15827372-15845378 (and 15828200-15845378 is not
+    the read's junction either): the counter fires and the winner is the
+    nearest near site."""
+    from rectify.core.splice.splice_aware_5prime import _OI_COUNTERS
+    before = _OI_COUNTERS.get('five_prime_candidate_contains_read_nop', 0)
+    row, res, rec, stock, off = _replay('771560c4', monkeypatch)
+    assert _OI_COUNTERS.get('five_prime_candidate_contains_read_nop', 0) > before
+    assert res['rescued_junction'][1:] == (15831568 - off, 15845378 - off)
+
+
 # ----------------------------------------------------------------------------------------------- decision: zero-clip trio
 @pytest.mark.parametrize('read8', ZERO_CLIP)
 def test_zero_clip_one_base_acceptor_ambiguity_is_not_a_rescue(read8, monkeypatch):
