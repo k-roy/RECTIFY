@@ -944,10 +944,28 @@ def refine_read_junctions(
     q = read.query_sequence
     if not q:
         return []
+    # ISSUE-021: ``_iter_n_ops`` counts ``q_split`` from the first ALIGNED query
+    # base — a LEADING soft clip is excluded by design — but ``q`` is pysam's
+    # ``query_sequence``, which INCLUDES the soft-clipped bases.  Indexing ``q``
+    # with the raw ``q_split`` started every rescue window ``len(clip)`` bases
+    # too early, inside exon 1 (a 71-nt clip put the whole 30-nt window in
+    # exon 1), so every N-op of a soft-clipped read was scored on the wrong
+    # bases.  Add the clip length ONCE here so that every consumer below
+    # (``_score_junction``, ``_positional_signal``) indexes ``query_sequence``
+    # in one coordinate system.  ``query_alignment_start`` is exactly the
+    # leading-S length (H is not in ``query_sequence``; a leading I is not a
+    # clip and is already counted by ``_iter_n_ops``).  Chosen over switching
+    # ``q`` to ``query_alignment_sequence`` because that would also drop a
+    # TRAILING clip, changing the window after a short last exon for every
+    # trailing-clipped read — a different behavior from the one this fixes.
+    # The surgery (``_apply_junction_replacement``) walks the CIGAR and never
+    # indexes ``q``, so the preponderance gate's dry run needs no change.
+    q_clip = read.query_alignment_start
 
     replacements = []
 
     for cigar_idx, ns, ne, q_split in _iter_n_ops(read):
+        q_split += q_clip   # index into query_sequence (see ISSUE-021 above)
         if profile is not None:
             profile.inc('n_ops_examined')
         # Filter: only score junctions where there is alignment evidence of a
