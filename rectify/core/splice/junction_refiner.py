@@ -1883,15 +1883,22 @@ def _run_parallel(
     drift_positional_gate: float = 0.0,
     profile: Optional[JunctionRefineProfile] = None,
 ) -> None:
-    """Parallel junction refinement using multiprocessing.Pool (Linux fork).
+    """Parallel junction refinement using a multiprocessing Pool.
 
     Phase 1: Read all reads; write pass-throughs immediately; collect N-op
              reads as SAM strings.
-    Phase 2: Process N-op batches in parallel workers (fork-inherited state).
+    Phase 2: Process N-op batches in parallel workers.  The shared state
+             (header, pool index, annotated set, genome, scoring kwargs) is
+             installed in every worker by the pool INITIALIZER, so the driver
+             is start-method independent (ISSUE-025): under ``fork`` the
+             initargs are inherited zero-copy, under ``spawn`` they are
+             pickled once per worker.
     Phase 3: Apply replacements in main process and write to output BAM.
-    """
-    import multiprocessing as mp
 
+    A worker or pool failure is re-raised as a RuntimeError naming the start
+    method and worker count, so the caller cannot mistake "2H did nothing"
+    for "2H had nothing to do".
+    """
     # Phase 1: separate pass-through reads from N-op reads, write pass-throughs
     _t_scan = time.perf_counter() if profile is not None else 0.0
     n_op_sams: List[str] = []
@@ -1915,34 +1922,41 @@ def _run_parallel(
                 bam_out.write(read)
         return
 
-    # Populate worker state before Pool() creation so workers inherit it via fork
-    _WORKER_POOL_STATE.clear()
-    _WORKER_POOL_STATE['header'] = pysam.AlignmentHeader.from_dict(header_dict)
-    _WORKER_POOL_STATE['junctions_idx'] = junctions_idx
-    _WORKER_POOL_STATE['annotated_set'] = annotated_set
-    _WORKER_POOL_STATE['genome'] = genome
-    _WORKER_POOL_STATE['kwargs'] = {
-        'hp_pen': hp_pen, 'W': W, 'max_slide': max_slide,
-        'search_radius': search_radius,
-        'max_boundary_shift': max_boundary_shift,
-        'boundary_error_window': boundary_error_window,
-        'max_junction_size': max_junction_size,
-        'max_candidates_per_nop': max_candidates_per_nop,
-        'penalty_table': penalty_table,
-        'motif_blind': motif_blind,
-        'hold_margin': hold_margin,
-        'hp_drift_margin': hp_drift_margin,
-        'hp_drift_min_run': hp_drift_min_run,
-        'microhom_drift_margin': microhom_drift_margin,
-        'microhom_threshold': microhom_threshold,
-        'drift_near_tie_cap': drift_near_tie_cap,
-        'drift_positional_gate': drift_positional_gate,
+    # Worker state travels through the pool initializer (ISSUE-025).  The
+    # header goes as its dict (pysam.AlignmentHeader is rebuilt in the worker);
+    # everything else is plain Python / picklable.  Under 'fork' none of this
+    # is pickled — the initargs are inherited copy-on-write exactly as the old
+    # module-global was — so Linux production keeps its zero-copy behavior.
+    worker_state = {
+        'header_dict': header_dict,
+        'junctions_idx': junctions_idx,
+        'annotated_set': annotated_set,
+        'genome': genome,
+        'kwargs': {
+            'hp_pen': hp_pen, 'W': W, 'max_slide': max_slide,
+            'search_radius': search_radius,
+            'max_boundary_shift': max_boundary_shift,
+            'boundary_error_window': boundary_error_window,
+            'max_junction_size': max_junction_size,
+            'max_candidates_per_nop': max_candidates_per_nop,
+            'penalty_table': penalty_table,
+            'motif_blind': motif_blind,
+            'hold_margin': hold_margin,
+            'hp_drift_margin': hp_drift_margin,
+            'hp_drift_min_run': hp_drift_min_run,
+            'microhom_drift_margin': microhom_drift_margin,
+            'microhom_threshold': microhom_threshold,
+            'drift_near_tie_cap': drift_near_tie_cap,
+            'drift_positional_gate': drift_positional_gate,
+        },
+        'penalty_table_set': penalty_table_set,
+        'profile_enabled': profile is not None,
+        'profile_sample_rate': profile.sample_rate if profile is not None else 1,
     }
-    _WORKER_POOL_STATE['penalty_table_set'] = penalty_table_set
-    _WORKER_POOL_STATE['profile_enabled'] = profile is not None
-    _WORKER_POOL_STATE['profile_sample_rate'] = profile.sample_rate if profile is not None else 1
 
-    # Trigger numba JIT compilation before forking so workers inherit compiled code
+    # Trigger numba JIT compilation before the pool starts: forked workers
+    # inherit the compiled code; spawned workers reload it from numba's
+    # on-disk cache, and any JIT failure surfaces here, in the parent.
     if _NUMBA_AVAILABLE:
         _warmup_numba_dp()
 
@@ -1951,20 +1965,35 @@ def _run_parallel(
     all_results: List[Tuple[str, List]] = []
 
     # Phase 2: parallel scoring
+    ctx = _get_refiner_mp_context()
     _t_workers = time.perf_counter() if profile is not None else 0.0
-    with mp.Pool(n_workers) as pool:
-        for batch_results in pool.imap_unordered(_refine_read_batch, batches):
-            if isinstance(batch_results, dict):
-                all_results.extend(batch_results.get('results', []))
-                if profile is not None:
-                    profile.merge(batch_results.get('profile'))
-                for key, n in (batch_results.get('counters') or {}).items():
-                    stats[key] = stats.get(key, 0) + int(n)
-            else:
-                all_results.extend(batch_results)
+    try:
+        with ctx.Pool(n_workers, initializer=_init_worker_pool_state,
+                      initargs=(worker_state,)) as pool:
+            for batch_results in pool.imap_unordered(_refine_read_batch, batches):
+                if isinstance(batch_results, dict):
+                    all_results.extend(batch_results.get('results', []))
+                    if profile is not None:
+                        profile.merge(batch_results.get('profile'))
+                    for key, n in (batch_results.get('counters') or {}).items():
+                        stats[key] = stats.get(key, 0) + int(n)
+                else:
+                    all_results.extend(batch_results)
+    except Exception as exc:
+        logger.error(
+            "refine_bam_junctions: parallel driver failed (start method %s, %d workers): %s",
+            ctx.get_start_method(), n_workers, exc,
+        )
+        raise RuntimeError(
+            f"Module 2H parallel driver failed (start method "
+            f"{ctx.get_start_method()!r}, {n_workers} workers): {exc!r}"
+        ) from exc
     _profile_time(profile, 'parallel_worker_scoring', _t_workers)
-
-    _WORKER_POOL_STATE.clear()
+    if len(all_results) != len(n_op_sams):
+        raise RuntimeError(
+            f"Module 2H parallel driver returned {len(all_results)} results for "
+            f"{len(n_op_sams)} N-op reads"
+        )
 
     # Phase 3: write all output (pass-throughs first, then N-op results)
     _t_write = time.perf_counter() if profile is not None else 0.0
@@ -2016,15 +2045,45 @@ def _warmup_numba_dp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Parallel worker state (populated by refine_bam_junctions before Pool fork)
+# Parallel worker state (installed in each worker by the pool initializer)
 # ---------------------------------------------------------------------------
-# On Linux the default multiprocessing start method is 'fork'.  Worker
-# processes inherit the parent's memory via copy-on-write, so large objects
-# (genome dict, junctions_idx, penalty_table) are shared at zero cost without
-# pickling.  _WORKER_POOL_STATE is populated in the parent before Pool() is
-# created and cleared after the pool exits.
+# ISSUE-025: this used to be filled in the PARENT before a bare mp.Pool() and
+# read in the worker, which only works when the start method is 'fork'.  On a
+# 'spawn' platform (macOS) every worker saw an empty dict, raised
+# KeyError('header'), and `correct` skipped Module 2H as "non-fatal" — 2H did
+# nothing at >= 2 threads.  The state is now handed to ctx.Pool(initializer=
+# _init_worker_pool_state, initargs=(state,)): zero-copy under fork, pickled
+# once per worker under spawn.  The start method follows the platform default
+# (fork on Linux, spawn on macOS); RECTIFY_2H_MP_START_METHOD overrides it.
 
 _WORKER_POOL_STATE: dict = {}
+
+
+def _get_refiner_mp_context():
+    """Multiprocessing context for the 2H worker pool.
+
+    Default = the interpreter's start method for this platform
+    (``fork`` on Linux — the copy-on-write sharing production relies on;
+    ``spawn`` on macOS, where fork after threads/htslib use is unsafe).
+    ``RECTIFY_2H_MP_START_METHOD`` (fork | spawn | forkserver) overrides it,
+    e.g. to test the spawn path on Linux or fork on a Mac."""
+    import multiprocessing as mp
+    method = os.environ.get('RECTIFY_2H_MP_START_METHOD', '').strip().lower()
+    valid = set(mp.get_all_start_methods())
+    if method and method not in valid:
+        logger.warning(
+            "Invalid RECTIFY_2H_MP_START_METHOD=%r; using the platform default %r "
+            "(available: %s)", method, mp.get_start_method(), ', '.join(sorted(valid)),
+        )
+        method = ''
+    return mp.get_context(method or mp.get_start_method())
+
+
+def _init_worker_pool_state(state: dict) -> None:
+    """Pool initializer: install the shared 2H state in this worker process."""
+    _WORKER_POOL_STATE.clear()
+    _WORKER_POOL_STATE.update(state)
+    _WORKER_POOL_STATE['header'] = pysam.AlignmentHeader.from_dict(state['header_dict'])
 
 
 def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
@@ -2032,11 +2091,15 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
 
     Reads *sam_strings*, calls :func:`refine_read_junctions` on each, and
     returns ``(sam_str, replacements)`` pairs.  All shared state
-    (junctions_idx, annotated_set, genome, header, scoring kwargs) is
-    inherited from the parent via fork() and stored in
-    :data:`_WORKER_POOL_STATE`.
+    (junctions_idx, annotated_set, genome, header, scoring kwargs) was
+    installed by :func:`_init_worker_pool_state` in :data:`_WORKER_POOL_STATE`.
     """
     state = _WORKER_POOL_STATE
+    if not state:
+        raise RuntimeError(
+            "Module 2H worker state was not initialised — _refine_read_batch must "
+            "run in a pool built with initializer=_init_worker_pool_state (ISSUE-025)"
+        )
     header = state['header']
     junctions_idx = state['junctions_idx']
     annotated_set = state['annotated_set']

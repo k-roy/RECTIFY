@@ -1022,6 +1022,11 @@ def run(args):
         # Per-chromosome sorted junction index for Module 2F pool lookup.
         # Built from the prescan pool if available; otherwise None (GFF-only mode).
         _pool_chrom_index = None
+        # ISSUE-025: a Module 2H failure used to be a WARNING and nothing else —
+        # the outputs carried no marker that a whole module had been skipped.
+        # It is now logged at ERROR and written to the stats TSV
+        # (module_2h_failed); RECTIFY_2H_FAILURE_FATAL=1 makes it fatal.
+        _module_2h_failed = ''
         if not _has_junction_context:
             logger.info(
                 "Module 2H: SKIPPED (%s) — N-op junction boundaries are passed "
@@ -1219,9 +1224,16 @@ def run(args):
                     )
                     logger.info(f"[TIMING] Junction refinement: {_time.perf_counter() - _t_refine:.1f}s")
             except Exception as _exc:
-                logger.warning(
-                    "Module 2H junction refinement failed (non-fatal, continuing): %s", _exc
+                _module_2h_failed = f"{type(_exc).__name__}: {_exc}"
+                logger.error(
+                    "Module 2H junction refinement FAILED — N-op junctions are passed "
+                    "through UNREFINED (recorded as module_2h_failed in the stats TSV; "
+                    "set RECTIFY_2H_FAILURE_FATAL=1 to abort instead): %s",
+                    _module_2h_failed,
                 )
+                import os as _os
+                if _os.environ.get('RECTIFY_2H_FAILURE_FATAL', '').strip().lower() in ('1', 'true', 'yes'):
+                    raise
             finally:
                 # Explicitly release the genome dict to free ~500 MB RAM
                 # before the main correction loads its own copy.
@@ -1480,6 +1492,8 @@ def run(args):
         # Propagate spike-in count into stats
         if spikein_stats:
             stats.spikein_reads_filtered = spikein_stats.get('spikein_reads', 0)
+        if _module_2h_failed:
+            stats.module_2h_failed = _module_2h_failed   # ISSUE-025: loud in the sidecar
 
         # Write processing statistics TSV
         if config['output_path']:
