@@ -350,7 +350,12 @@ class SplicedAxis:
                 introns.append((s, e))
         for r in reads:
             for s, l in r.junctions or []:
-                cuts.add(s); cuts.add(s + l)
+                # only junctions INSIDE the scope cut the axis -- the same rule chain_clusters
+                # applies (`_scoped_junctions`). A cDNA alignment can carry a spurious intron
+                # from the 3' end to tens of kb away; its start cut the 3' flank into 14
+                # segments inside 100 bp at RPL24B while the chains ignored it (planning/881d)
+                if s >= self.scope[0] and s + l <= self.scope[1]:
+                    cuts.add(s); cuts.add(s + l)
         pts = sorted(p for p in cuts if self.scope[0] <= p <= self.scope[1])
         segs = [Segment(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
         for sg in segs:
@@ -458,12 +463,21 @@ class SplicedAxis:
     def xlim(self) -> Tuple[float, float]:
         return (0.0, self.t_end)
 
-    def ruler(self, ax, *, y: float = 0.0, height: float = 0.25, label_kb: bool = True):
+    def ruler(self, ax, *, y: float = 0.0, height: float = 0.25, label_kb: bool = True,
+              min_label_gap: Optional[float] = None):
         """A segment strip under the axis: exonic segments as ink bars, kept non-exonic as
         hairline bars, a '~' at every collapse, a break mark on every compressed segment,
-        and the genome coordinate at each kept segment's start. Returns the artists."""
+        and the genome coordinate at each kept segment's start. Returns the artists.
+
+        ``min_label_gap`` (display units; default 7 % of the axis) thins the coordinate
+        labels: a segment whose start lies closer than that to the last labelled start gets
+        no label. Deep real data cuts the 3' flank at every read end ≥ 1 % of the reads
+        (RPL24B: 14 segments inside 100 bp), and a label per segment overprinted itself
+        (planning/881d, render 2)."""
         S = TOK.stroke(); T = TOK.typography()
         out = []
+        gap = (0.07 * self.t_end) if min_label_gap is None else min_label_gap
+        last_label_t = None
         for sg in self.segs:
             if not sg.keep:
                 if sg.t1 > sg.t0:
@@ -485,9 +499,10 @@ class SplicedAxis:
             if sg.compressed:
                 out.append(ax.plot([sg.t0, sg.t1], [y - 0.02, y - 0.02], color=TOK.color("polya"), lw=S["hairline"],
                                    ls=(0, (2, 1.5)))[0])
-            if label_kb:
+            if label_kb and (last_label_t is None or sg.t0 - last_label_t >= gap):
                 out.append(ax.annotate(f"{sg.s / 1000:,.1f}", xy=(sg.t0, y), xytext=(0, -2), textcoords="offset points",
                                        ha="left", va="top", fontsize=T["tick_label"], color=TOK.color("subtle")))
+                last_label_t = sg.t0
         ax.set_xlim(*self.xlim)
         return out
 
@@ -754,7 +769,7 @@ def isoform_rows(ax, chains: Sequence[Chain], axis: SplicedAxis, *, top: int = 6
         # the class glyphs (★ ⊘ ▮ ⇢ ✱ ≈) are not in Arial/Helvetica: they go in their own Text
         # with an explicit DejaVu fallback so they never render as tofu, whatever the rc family
         glyph = ("★" if c.dominant else "") + (c.glyph if c.glyph else "")
-        chip = f"{c.label}" + (f" ({c.tx_name})" if c.tx_name else "") + f" · n={c.n}{share}"
+        chip = f"{c.label}" + (f" ({c.tx_name})" if c.tx_name else "") + f" · n={c.n:,}{share}"
         # the letter sits left of the first COVERED segment (a block can start before the reads)
         x_first = min((kept[i].t0 for i in cov), default=axis.to_t(lo))
         ax.annotate(letter, xy=(x_first, y), xytext=(-6, 0), textcoords="offset points", ha="right",
@@ -807,7 +822,7 @@ def junction_arcs(ax, counts: Dict[Interval, int], *, y: float = 0.0, height: Op
             continue
         lw = lw_range[0] + (lw_range[1] - lw_range[0]) * (n / mx)
         out += arc(ax, X(s), X(e), y=y, height=height, role=role or "neutral", lw=lw,
-                   label=str(n) if label else None, direction=direction)
+                   label=f"{n:,}" if label else None, direction=direction)
     for s, e in annotated:
         if (s, e) not in counts:
             out += arc(ax, X(s), X(e), y=y, height=height, lw=TOK.stroke()["hairline"], direction=direction,

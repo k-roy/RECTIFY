@@ -622,3 +622,35 @@ def test_isoform_rows_chip_stays_inside_the_scope(tmp_path):
     xs = [t.get_position()[0] for t in ax.texts]
     assert xs and max(xs) <= xmax, "a chip was placed past the axis (to_t of an out-of-scope end)"
     plt.close(fig)
+
+
+def test_ruler_thins_crowded_coordinate_labels():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    # sixteen alternative donors 6 bp apart: sixteen cut points, sixteen 6-bp kept segments
+    reads = []
+    for i in range(16):
+        d = 1400 + 6 * i
+        for k in range(4):
+            reads.append(P.Read(f"r{i}_{k}", "+", 1050, 2150, [(1050, d - 1050), (1800, 350)]))
+    axis = P.SplicedAxis((900, 2400), reads, [tx])
+    assert sum(1 for sg in axis.segs if sg.keep) >= 16
+    fig, ax = plt.subplots()
+    arts = axis.ruler(ax, y=0.0, height=0.25)
+    labels = [a for a in arts if hasattr(a, "get_text") and a.get_text() and a.get_text() != "∼"]
+    assert len(labels) <= int(1 / 0.07) + 2, f"{len(labels)} coordinate labels on one ruler"
+    plt.close(fig)
+
+
+def test_spliced_axis_ignores_junctions_leaving_the_scope():
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    good = [P.Read(f"g{i}", "+", 1050, 2150, [(1050, 350), (1800, 350)]) for i in range(5)]
+    # a spurious intron from inside the 3' exon to 40 kb away: it must not cut the axis
+    bad = P.Read("bad", "+", 1050, 42100, [(1050, 350), (1800, 300), (42000, 100)])
+    a_good = P.SplicedAxis((900, 2400), good, [tx])
+    a_bad = P.SplicedAxis((900, 2400), good + [bad], [tx])
+    assert [(sg.s, sg.e) for sg in a_bad.segs] == [(sg.s, sg.e) for sg in a_good.segs]
