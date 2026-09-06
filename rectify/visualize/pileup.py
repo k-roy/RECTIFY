@@ -739,6 +739,10 @@ def isoform_rows(ax, chains: Sequence[Chain], axis: SplicedAxis, *, top: int = 6
                 if r.has_bases_in(sg.s, sg.e):
                     cov.add(i)
         lo = min(min(r.start, r.end) for r in c.reads); hi = max(max(r.start, r.end) for r in c.reads)
+        # clip to the scope: a cDNA alignment can run tens of kb past it through a spurious
+        # intron, and `to_t` extends linearly beyond the scope, which put the chip off the
+        # axis (planning/881d, render 1: the FL row had no visible chip)
+        lo, hi = max(lo, axis.scope[0]), min(hi, axis.scope[1])
         ax.plot([axis.to_t(lo), axis.to_t(hi)], [y, y], color=TOK.color("hairline"), lw=S["hairline"], zorder=2)
         for i in cov:
             sg = kept[i]
@@ -856,6 +860,16 @@ class Cluster:
     @property
     def n(self) -> int:
         return len(self.reads)
+
+    @property
+    def span(self) -> Optional[Interval]:
+        """(min, max) 3' end over the members -- the cluster's real extent. Clusters are
+        single-linkage chains, so a member can sit further than ``win`` from the modal
+        anchor (RPL24B, planning/881: two CPA sub-sites 60 nt apart chain into one cluster)."""
+        if not self.reads:
+            return None
+        ends = [r.three_prime for r in self.reads]
+        return (min(ends), max(ends))
 
 
 @dataclass
@@ -976,12 +990,18 @@ def _panel_bands(reads: Sequence[Read], keep: Sequence[Cluster], *, win: int) ->
     """Split one sample's reads over the stack's kept clusters plus one `other`."""
     assigned: List[Cluster] = [Cluster(anchor=c.anchor, letter=c.letter) for c in keep]
     other = Cluster(anchor=None, letter=None, pooled=True)
+    spans = [c.span for c in keep]
     for r in reads:
         tp = r.three_prime
         best, bestd = None, None
-        for slot, c in zip(assigned, keep):
+        for slot, c, sp in zip(assigned, keep, spans):
             d = abs(tp - c.anchor)
-            if d <= win and (bestd is None or d < bestd):
+            # a read belongs to a kept cluster when its 3' end lies inside the cluster's
+            # EXTENT (the chain it was pooled into) -- not only within `win` of the modal
+            # anchor. Membership by anchor +- win disagreed with single-linkage clustering
+            # and pooled 50 % of RPL24B's reads into `other` (planning/881d, render 1).
+            inside = sp is not None and sp[0] <= tp <= sp[1]
+            if (inside or d <= win) and (bestd is None or d < bestd):
                 best, bestd = slot, d
         (best or other).reads.append(r)
     return assigned, other

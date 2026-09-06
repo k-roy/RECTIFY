@@ -569,3 +569,56 @@ def test_shave_cannot_overflow_when_the_floors_exactly_fill_the_budget(stack_sam
     assert all(b.capped for b in plan.bands)       # the cut is DECLARED, not silent
     assert plan.used_mm == pytest.approx(budget, abs=1e-9)
     check_panel_budget(plan, floor_mm=floor)
+
+
+# ---------------------------------------------------------------------------
+# planning/881: band membership follows the cluster's EXTENT, not anchor +- win
+# ---------------------------------------------------------------------------
+def _ends_reads(ends, strand="+"):
+    out = []
+    for i, e in enumerate(ends):
+        if strand == "+":
+            out.append(P.Read(f"r{i}", "+", e - 300, e, [(e - 300, 300)]))
+        else:
+            out.append(P.Read(f"r{i}", "-", e, e + 300, [(e, 300)]))
+    return out
+
+
+def test_band_membership_follows_the_chained_cluster_extent():
+    # two CPA sub-sites 60 nt apart, bridged by a few ends 20 nt apart: ONE single-linkage
+    # cluster (win 32) whose modal anchor is the first site
+    ends = [1000] * 10 + [1020] * 2 + [1040] * 2 + [1060] * 8
+    reads = _ends_reads(ends)
+    keep = P.union_clusters([{"reads": reads}], win=32, k=4)
+    assert len(keep) == 1 and keep[0].anchor == 1000 and keep[0].span == (1000, 1060)
+    assigned, other = P._panel_bands(reads, keep, win=32)
+    assert other.n == 0, "members 60 nt from the anchor were pooled into `other`"
+    assert assigned[0].n == len(reads)
+
+
+def test_band_membership_still_uses_anchor_window_without_members():
+    reads = _ends_reads([500] * 5 + [540] * 3)
+    keep = [P.Cluster(anchor=500, letter="A")]          # a caller-made cluster: no reads, no span
+    assigned, other = P._panel_bands(reads, keep, win=32)
+    assert assigned[0].n == 5 and other.n == 3
+
+
+def test_isoform_rows_chip_stays_inside_the_scope(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from rectify.visualize.tracks import Transcript
+    tx = Transcript("G", "chrI", "+", exons=[(1000, 1400), (1800, 2200)])
+    good = [P.Read(f"g{i}", "+", 1050, 2150, [(1050, 350), (1800, 350)]) for i in range(6)]
+    # one read whose alignment runs 40 kb past the scope through a spurious intron
+    far = P.Read("far", "+", 1050, 42200, [(1050, 350), (1800, 350), (42000, 200)])
+    reads = good + [far]
+    scope = (900, 2300)
+    axis = P.SplicedAxis(scope, reads, [tx])
+    chains, summ = P.chain_clusters(reads, scope, tx, annotated=[tx])
+    fig, ax = plt.subplots()
+    P.isoform_rows(ax, chains, axis, top=3)
+    xmax = ax.get_xlim()[1]
+    xs = [t.get_position()[0] for t in ax.texts]
+    assert xs and max(xs) <= xmax, "a chip was placed past the axis (to_t of an out-of-scope end)"
+    plt.close(fig)
