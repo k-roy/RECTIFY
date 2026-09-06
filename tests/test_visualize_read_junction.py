@@ -104,7 +104,7 @@ def test_data_model_matches_the_planted_edits(bundle):
     assert s.five_clip == 20 and not s.introns
     assert s.clip_fit and s.clip_fit["exon_end"] == IN_S and s.clip_fit["matches"] == 20 and s.clip_fit["offset"] == 0
     line = RJ.verdict_line(v, G, RJ.Frame("chrT", "+", (IN_S, IN_E), 16))
-    assert "GT-AG" in line and "MQ 60" in line and "run 20|10" in line
+    assert "GT-AG drawn" in line and "MQ 60" in line and "run 20|10" in line and "3′ " in line
 
 
 def test_junction_selection_auto_is_the_disagreement(bundle):

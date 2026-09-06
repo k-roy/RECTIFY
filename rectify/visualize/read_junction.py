@@ -12,8 +12,8 @@ about, ONE panel with the same x-window for every arm:
   in the direction of transcription, every annotated exon end inside the window as a
   ``splice`` tick;
 * one row per arm: the read as LETTERS where it is aligned (``subtle`` = match, an ``ink``
-  letter with a one-column tick = mismatch), a NOTCHED body for a deletion, a RAISED
-  half-height block for an insertion, the soft clip as hatched letters continuing ungapped
+  letter with a one-column tick = mismatch, in ``focal``), a ``focal`` NOTCHED body for a deletion,
+  a RAISED ``stratum_a`` half-height block for an insertion, the soft clip as hatched letters continuing ungapped
   from the aligned end, the N-op as a thin ``hairline`` connector across the intron gap;
 * a numbers-only verdict strip per arm (Kevin adjudicates; no verdict words): that arm's
   junction nearest the panel and its motif, the 5' block's matched/aligned and identity, its
@@ -35,8 +35,11 @@ used when this tree has it; a tree that predates the token layer reads ``$RNA_FI
 or ``~/.claude/skills/rna-figure/tokens.json`` (the same file). The exon / intron glyph is
 drawn here with the tokens' track geometry (``tracks.gene_model``'s conventions: ``ink`` exon,
 ``hairline`` intron, chevrons; no colour argument anywhere) because ``tracks`` is not on every
-branch this module has to run on. Per rna-figure section 7: bases are letters in ``ink``, a
-mismatch is one ``ink`` tick, strand is position, never a hue.
+branch this module has to run on. Bases are letters, strand is position, never a hue. DEVIATIONS ARE COLOURED (Kevin's explicit
+request for this review tool, 2026-09-06, overriding rna-figure section 7's "one ink tick" ruling
+so they stand out on a phone): a mismatch letter and its tick are ``focal``, a deletion notch is
+``focal``, an insertion block is ``stratum_a`` with a ``focal`` outline -- layer-A roles from the
+tokens, never base colours; matched letters stay ``subtle`` and the soft clip stays hatched grey.
 
 WINDOW. The house type floor (7.5 pt = 1.89 mm cap) caps a 7.2-in figure at ~75 letter
 columns, so ``window`` is the number of letters per junction END (default 32: 16 each side of
@@ -707,18 +710,38 @@ def _fmt(n: int) -> str:
     return f"{n:,}"
 
 
+def adjacent_blocks(view: ArmView, j: Tuple[int, int], within: int) -> Tuple[Optional[Block], Optional[Block]]:
+    """The arm's blocks on the 5' and the 3' side (RNA order) of junction ``j``: the block whose end sits
+    within ``within`` of the intron start and the block whose start sits within ``within`` of the intron end."""
+    left = next((b for b in view.blocks if abs(b.re - j[0]) <= within), None)
+    right = next((b for b in view.blocks if abs(b.rs - j[1]) <= within), None)
+    return (left, right) if view.strand == "+" else (right, left)
+
+
+def _blk(b: Optional[Block]) -> str:
+    return f"{b.M}/{b.aligned} {b.identity:.0f} %" if b else "–"
+
+
 def verdict_line(view: ArmView, genome: Genome, frame: Frame) -> str:
-    """Numbers only. ``J start-end motif · 5′ M/aligned id% · I D · run 5′|3′ · clip n fit m/n @pos±off · MQ``."""
+    """Numbers only. ``J start-end motif drawn|absent · blk 5′ M/aligned id% | 3′ M/aligned id% · I D · run 5′|3′ ·
+    clip n fit m/n @pos (±off) · MQ``. ``drawn`` / ``absent`` is re-derived from the arm's BAM record (its N-ops),
+    never from the manifest."""
     near = _nearest_junction(view, frame.junction, frame.half)
     if near is not None:
-        jtxt = f"J {_fmt(near.start)}–{_fmt(near.end)} {near.motif}" + ("" if near.annotated else " novel")
+        jtxt = f"J {_fmt(near.start)}–{_fmt(near.end)} {near.motif}" + ("" if near.annotated else " novel") + " drawn"
         l5, l3 = _clean_run(view, genome, (near.start, near.end))
         run = f"run {l5}|{l3}"
+        b5, b3 = adjacent_blocks(view, (near.start, near.end), 0)
+        blk = f"blk 5′ {_blk(b5)} | 3′ {_blk(b3)} · I{(b5 or b3).I} D{(b5 or b3).D}" if (b5 or b3) else "blk –"
     else:
-        jtxt = "J none"
+        jtxt = "J absent"
         run = "run –"
-    b = view.five_block
-    blk = f"5′ {b.M}/{b.aligned} {b.identity:.0f} % · I{b.I} D{b.D}" if b else "5′ –"
+        b5, b3 = adjacent_blocks(view, frame.junction, frame.half)
+        if b5 or b3:
+            blk = f"blk 5′ {_blk(b5)} | 3′ {_blk(b3)} · I{(b5 or b3).I} D{(b5 or b3).D}"
+        else:
+            b = view.five_block
+            blk = f"5′ blk {b.M}/{b.aligned} {b.identity:.0f} % · I{b.I} D{b.D}" if b else "5′ blk –"
     if view.five_clip:
         f = view.clip_fit
         if f:
@@ -732,6 +755,8 @@ def verdict_line(view: ArmView, genome: Genome, frame: Frame) -> str:
 
 # ----------------------------------------------------------------------------- drawing
 _ROW = 3.4          # mm per row unit
+_CLIP_LETTERS = 8   # clip letters drawn either side of the alignment edge
+_CLIP_LABEL_COLS = 5  # columns of the hatched block that carry the `clip N` label
 _GUTTER_COLS = 6.5  # label gutter, in columns
 _MARGIN_MM = 4.0
 
@@ -742,6 +767,7 @@ def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann
     from matplotlib.patches import Rectangle
     S = _stroke()
     ink, hair, subtle, mute, wash, splice = (color(n) for n in ("ink", "hairline", "subtle", "mute", "wash", "splice"))
+    focal, stratum_a = color("focal"), color("stratum_a")   # Kevin's override for THIS tool: deviations in colour
     chrom, strand = frame.chrom, frame.strand
     letter_kw = dict(ha="center", va="center", fontsize=letter_pt)
     fam = tokens()["typography"]["family"]
@@ -840,36 +866,63 @@ def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann
         for c, (pos, b) in cols.items():
             ref = genome.fetch(chrom, pos, pos + 1) or "N"
             if b == "-":
-                ax.plot([c, c + 1], [y_body, y_body], color=ink, lw=S["secondary"], solid_capstyle="butt", zorder=3)
+                ax.plot([c, c + 1], [y_body, y_body], color=focal, lw=S["secondary"], solid_capstyle="butt", zorder=3)
                 continue
             if b == ref:
                 ax.text(c + 0.5, y_body, L(b, strand), color=subtle, zorder=4, **letter_kw)
             else:
-                ax.text(c + 0.5, y_body, L(b, strand), color=ink, fontweight="bold", zorder=4, **letter_kw)
-                ax.plot([c + 0.5, c + 0.5], [top - 0.26, top - 0.04], color=ink, lw=S["secondary"], solid_capstyle="butt", zorder=5)
+                ax.text(c + 0.5, y_body, L(b, strand), color=focal, fontweight="bold", zorder=4, **letter_kw)
+                ax.plot([c + 0.5, c + 0.5], [top - 0.26, top - 0.04], color=focal, lw=S["secondary"], solid_capstyle="butt", zorder=5)
         # insertions: a raised half-height block at the boundary
         for pos, ln in v.insertions.items():
             bx = frame.boundary(pos)
             if bx is None:
                 continue
-            ax.add_patch(Rectangle((bx - 0.22, top - 0.3), 0.44, 0.3, facecolor=ink, edgecolor="none", zorder=5))
-        # soft clip letters, hatched, continued ungapped from the aligned end
-        clip_cols = []
-        for pos, b in v.clip_letters.items():
-            c = frame.col(pos)
-            if c is None:
+            ax.add_patch(Rectangle((bx - 0.24, top - 0.32), 0.48, 0.32, facecolor=stratum_a, edgecolor=focal,
+                                   linewidth=S["hairline"], zorder=5))
+        # soft clips: a compact hatched block anchored at the alignment edge -- letters only within
+        # CLIP_LETTERS of the edge (where they would fall ungapped), then `clip N` inside the block; never
+        # continued across the frame, so a clip is never read as a placement
+        for side, ln in (("lead", v.lead_clip), ("trail", v.trail_clip)):
+            if not ln:
                 continue
-            clip_cols.append(c)
-            ref = genome.fetch(chrom, pos, pos + 1) or "N"
-            if b == ref:
-                ax.text(c + 0.5, y_body, L(b, strand), color=subtle, zorder=4, **letter_kw)
-            else:
-                ax.text(c + 0.5, y_body, L(b, strand), color=ink, fontweight="bold", zorder=4, **letter_kw)
-                ax.plot([c + 0.5, c + 0.5], [top - 0.26, top - 0.04], color=ink, lw=S["secondary"], solid_capstyle="butt", zorder=5)
-        if clip_cols:
-            c0, c1 = min(clip_cols), max(clip_cols) + 1
-            ax.add_patch(Rectangle((c0, top), c1 - c0, body_h, facecolor="none", edgecolor=mute, hatch="////",
+            edge = v.ref_start if side == "lead" else v.ref_end          # the aligned base the clip hangs from
+            step = -1 if side == "lead" else +1
+            seg = next((k for k, (a_, b_) in enumerate(frame.segments) if a_ <= (edge if side == "trail" else edge - 1) < b_), None)
+            if seg is None:
+                continue                                                 # the edge is outside this panel: nothing to draw
+            a_, b_ = frame.segments[seg]
+            letter_cols = []
+            for k in range(min(ln, _CLIP_LETTERS)):
+                pos = edge - 1 - k if side == "lead" else edge + k
+                if not (a_ <= pos < b_):
+                    break
+                c = frame.col(pos)
+                letter_cols.append(c)
+                b = v.clip_letters[pos]
+                ref = genome.fetch(chrom, pos, pos + 1) or "N"
+                if b == ref:
+                    ax.text(c + 0.5, y_body, L(b, strand), color=subtle, zorder=4, **letter_kw)
+                else:
+                    ax.text(c + 0.5, y_body, L(b, strand), color=focal, fontweight="bold", zorder=4, **letter_kw)
+                    ax.plot([c + 0.5, c + 0.5], [top - 0.26, top - 0.04], color=focal, lw=S["secondary"],
+                            solid_capstyle="butt", zorder=5)
+            if not letter_cols:
+                continue
+            # the label lane: up to _CLIP_LABEL_COLS more columns in the same segment, away from the alignment
+            outward = frame.boundary(edge)                               # x of the alignment edge
+            far = max(letter_cols) + 1 if (max(letter_cols) + 0.5) > outward else min(letter_cols)
+            direction = 1 if far > outward else -1
+            seg_lo, seg_hi = frame.offsets[seg], frame.offsets[seg] + (b_ - a_)
+            room = (seg_hi - far) if direction > 0 else (far - seg_lo)
+            lane = min(_CLIP_LABEL_COLS, room)
+            x0, x1 = (min(letter_cols), far + lane) if direction > 0 else (far - lane, max(letter_cols) + 1)
+            ax.add_patch(Rectangle((x0, top), x1 - x0, body_h, facecolor="none", edgecolor=mute, hatch="////",
                                    linewidth=0, zorder=1))
+            if lane >= _CLIP_LABEL_COLS:
+                xl = far + lane / 2 if direction > 0 else far - lane / 2
+                ax.text(xl, y_body, f"clip {ln}", ha="center", va="center", fontsize=_type()["annotation"], color=ink,
+                        zorder=4, bbox=dict(facecolor=color("paper"), edgecolor="none", pad=0.6))
         # N-op connectors (any intron of this arm touching the frame)
         for i in v.introns:
             x0 = frame.boundary_clipped(i.start) if strand == "+" else frame.boundary_clipped(i.end)
@@ -933,8 +986,8 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     n_arms = len(views)
     n_models = max(1, max(len(A.models_in(f.chrom, f.segments, f.junction)) for f in frames))
     panel_rows = _rows_per_panel(n_arms, n_models)
-    title_mm = 9.0
-    panel_gap_mm = 5.0
+    title_mm = 9.0 + (4.0 if len(frames) > 1 else 0.0)   # room for panel letter `a` under the arm line
+    panel_gap_mm = 6.5
     ncols = max(f.ncols for f in frames)
     # legend + footer band (measured on a probe when figstyle is available)
     legend = _legend_text(read_id, man, frames, list(views))
@@ -971,9 +1024,9 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
         ax.set_ylim(panel_rows, 0)
         ax.axis("off")
         _draw_panel(ax, frame, views, G, A, letter_pt=letter_pt)
-        if len(frames) > 1:
-            ax.text(-_GUTTER_COLS, 0.55, "abcdefgh"[k], ha="left", va="center", fontsize=T["panel_letter"],
-                    fontweight="bold", color=color("ink"))
+        if len(frames) > 1:  # the panel letter sits in the margin above the panel, never inside the content
+            fig.text(_MARGIN_MM / width_mm, 1 - (y_top_mm - 0.8) / height_mm, "abcdefgh"[k], ha="left", va="bottom",
+                     fontsize=T["panel_letter"], fontweight="bold", color=color("ink"))
         axes.append(ax)
         y_top_mm += h_mm + panel_gap_mm
 
@@ -1024,9 +1077,10 @@ def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str]) 
         call = f"({'abcdefgh'[k]}) " if n > 1 else ""
         s, e = f.junction
         parts.append(f"{call}{f.chrom}:{_fmt(s)}–{_fmt(e)} ({f.strand}), {f.half} letters each side of each end.")
-    parts.append("Grey letters match, dark letters with a tick mismatch; notch = deletion, raised block = insertion, "
+    parts.append("Grey letters match, orange letters with a tick mismatch; orange notch = deletion, amber raised block = insertion, "
                  "hatched = soft clip continued ungapped, thin line = N-op; blue ticks = annotated exon ends. "
-                 "Per arm: junction and motif · 5′ block matched/aligned · I, D · clean run 5′|3′ of the junction · "
+                 "Per arm: the N-op at this junction drawn or absent in that arm's record · matched/aligned of the blocks on the "
+                 "5′ and 3′ side of the junction (the 5′ block when neither is adjacent) · I, D · clean run 5′|3′ · "
                  "5′ clip fit to the nearest annotated exon end within 5 kb · MAPQ.")
     return " ".join(parts)
 
