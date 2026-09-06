@@ -65,8 +65,19 @@ def test_the_vanished_reads_draw_again(monkeypatch):
     `4I6M3D` (7 gap bases on 6 matched) and `3M2I4M5D4M` (7 on 11) — invariant C's sanity bound refuses those
     blocks (`annotated_exon_indel_burden`), so they draw nothing rather than the baseline's false positive.
     Every one of the 11 VANISHED_TP_rescue_annot reads except 38722d08 draws again at its annotated junction."""
+    # ISSUE-028 invariant E (2026-09-06) re-pinned this test. The placed block must be evidence for EVERY landing
+    # (identity >= 0.8, >= 18 bits — the cutoff the chance-match model derived for row A's ~3 % family-wise
+    # false-placement rate). Of the 11 VANISHED_TP_rescue_annot reads four draw again — 183b1e9e (45.0 bits,
+    # `1S11M1D2M1D6M1D3M2D9M1D`), 2277f7b3 (24.5), 2e873d77 (22.5), 428949d9 (27.0); the clean-run rule would have
+    # refused all four for a junction-side gap — and seven do not: 166079f3 (`1M12I1M1I6M`, 5.5 bits), 2586f261
+    # (`5I6M` -> `5S6M`, 12.0), 3fe6a57e (10.0), beab8d72 (7.5), c445d3ce (12.5), ea0a56cb (10.5) refused as
+    # exon_bits_below_floor, and 38722d08 as before. Of the 12 VANISHED_FP_added_nov reads only 844834e8 (`13M1I`,
+    # 23.5) and 890d2242 (`19M3I`, 26.5) draw; the other ten are refused — eight by E, c5d1c111 by the novel floor,
+    # fb0cdd4e by the indel-burden bound (a terminal-peel refusal, carried to the TSV). The tester's TP/FP classes
+    # are the 6485226 baseline's labels, not adjudicated verdicts; the seven TP misses are the true-positive cost of
+    # the operating point, reported with their bits in ISSUE-028 for Kevin's choice.
     table = SB.load_bundle('f53d770')
-    not_drawn, tokens = [], {}
+    not_drawn, tokens, bits = [], {}, {}
     n_vanished = 0
     for key, entry in sorted(table.items()):
         if not any(c.startswith('VANISHED') for c in entry['classes']):
@@ -76,13 +87,22 @@ def test_the_vanished_reads_draw_again(monkeypatch):
         if not (res.get('rescued') and row['five_prime_rescue_refused'] == '' and SB.new_nops(rec, stock)):
             not_drawn.append(key)
             tokens[key] = row['five_prime_rescue_refused']
+            bits[key] = row['five_prime_exon_bits']
     assert n_vanished >= 23, n_vanished
-    assert not_drawn == ['38722d08', 'ac5225e1', 'c5d1c111', 'c5d1c111#2', 'fb0cdd4e'], (not_drawn, tokens)
+    assert not_drawn == ['166079f3', '1d178d6e', '2586f261', '38722d08', '3fe6a57e', '41dc7d0b', '5cef5ebb',
+                         '5cef5ebb#2', '638af58a', '9152ed9b', '923d7ffe', '923d7ffe#2', 'a0fe8afe', 'ac5225e1',
+                         'beab8d72', 'c445d3ce', 'c5d1c111', 'c5d1c111#2', 'ea0a56cb', 'fb0cdd4e'], (not_drawn, tokens)
     assert tokens['c5d1c111'] == 'novel_exon_matched_below_floor', tokens
-    assert tokens['ac5225e1'] == 'annotated_exon_indel_burden', tokens
     assert tokens['fb0cdd4e'] == 'annotated_exon_indel_burden', tokens   # a terminal-peel refusal, carried to the TSV
+    assert tokens['923d7ffe'] == 'exon_identity_below_floor', tokens
+    for k in ('166079f3', '1d178d6e', '2586f261', '3fe6a57e', '41dc7d0b', '638af58a', '9152ed9b', 'a0fe8afe',
+              'ac5225e1', 'beab8d72', 'c445d3ce', 'ea0a56cb'):
+        assert tokens[k] == 'exon_bits_below_floor', (k, tokens[k])
+        assert bits[k] is not None and bits[k] < 18, (k, bits[k])
     for k in ('c5d1c111', 'ac5225e1', 'fb0cdd4e'):
         assert 'VANISHED_FP_added_nov' in table[k]['classes'], (k, table[k]['classes'])
-    assert 'VANISHED_TP_rescue_annot' in table['38722d08']['classes']
     tp_not_drawn = [k for k in not_drawn if 'VANISHED_TP_rescue_annot' in table[k]['classes']]
-    assert tp_not_drawn == ['38722d08'], tp_not_drawn
+    assert tp_not_drawn == ['166079f3', '2586f261', '38722d08', '3fe6a57e', 'beab8d72', 'c445d3ce', 'ea0a56cb'], tp_not_drawn
+    fp_drawn = [k for k, e in sorted(table.items())
+                if 'VANISHED_FP_added_nov' in e['classes'] and k not in not_drawn]
+    assert fp_drawn == ['844834e8', '890d2242', '890d2242#2'], fp_drawn

@@ -75,6 +75,18 @@ CORRECTION_TSV_HEADER = [
     # 2). The writer draws them as M between the N-op and the body, so the N-op
     # ends at the reported acceptor instead of the read's live edge. 0 = none.
     'five_prime_exon2_prefix',
+    # ISSUE-028 invariant E (2026-09-06): the placed 5' block's shape, so every
+    # threshold question is an offline join on the TSV (RULING 1 R4-3).
+    # five_prime_exon_identity = matched / (matched + mismatches) over the
+    # block, 2 decimals, a mismatch inside a genome homopolymer run >= 5
+    # counting half; five_prime_exon_bits = the block's evidence score in bits
+    # (a match +2, a mismatch / affine gap at the anchored aligner's constants
+    # over 2, homopolymer-run errors half; local_aligner.evidence_shape), 1
+    # decimal. Filled for every read whose 5' block was placed and judged —
+    # drawn OR refused (the refusal token sits in five_prime_rescue_refused /
+    # five_prime_novel_evidence); '' when no block was placed. Appended last.
+    'five_prime_exon_identity',
+    'five_prime_exon_bits',
 ]
 
 
@@ -198,7 +210,19 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         _consensus_cell(result, 'five_prime_landing_annotated'),
         result.get('five_prime_novel_evidence', '') or '',
         str(result.get('five_prime_exon2_prefix', 0) or 0),
+        _shape_cell(result.get('five_prime_exon_identity'), '{:.2f}'),
+        _shape_cell(result.get('five_prime_exon_bits'), '{:.1f}'),
     ]
+
+
+def _shape_cell(value, fmt: str) -> str:
+    """One invariant-E shape cell — ``''`` when no block was placed (None)."""
+    if value is None or value == '':
+        return ''
+    try:
+        return fmt.format(float(value))
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def write_output_tsv(results: List[Dict], output_path: str):

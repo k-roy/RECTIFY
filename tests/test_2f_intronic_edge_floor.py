@@ -71,29 +71,55 @@ def test_two_error_bases_never_reach_the_decoy():
     genome[41:43], which the +4 sweep window reaches: before the fix that ED-0
     hit at shift +4 won and the read was spliced to the decoy donor at 44.
     Now the 2-mer is below the floor, the sequence search is skipped for the
-    candidate, and Case 4 snaps the read to the ANNOTATED boundary."""
+    candidate, and Case 4 snaps the read to the ANNOTATED boundary.
+
+    ISSUE-028 (2026-09-06): the read used to START at 42 and carry the whole
+    N-filled intron, so the Case-4 snap re-placed a 98-base intron-mapped run
+    onto the 40-base exon 1 — a block with no identity to exon 1 that the
+    evidence floor now refuses (correctly: in real data those bases match the
+    intron and `_intronic_bases_favour_intron` keeps the read; the N run
+    defeated that test). The read now sits 2 bases inside the intron at its
+    ACCEPTOR end carrying five exon-1 bases (the misaligned-exon shape Case 4
+    exists for): a 5-mer is below the informative floor, so the sequence search
+    is skipped and Case 4 snaps on the structural prior as before (the 5-base
+    block is exempt from the evidence floor — 10 bits at best by construction)."""
     assert 'TA' not in EXON1_TAIL[-12:] and _GENOME_SEQ[41:43] == 'TA'
-    read = _read(42, 'TA' + _GENOME_SEQ[44:140] + 'C' * 60, 'err_ta')
+    read = _read(135, _GENOME_SEQ[35:40] + 'C' * 60, 'exon5_in_intron')
     res = _rescue(read)
     assert res['rescued_junction'] != DECOY
     assert res['rescued'] and res['rescue_type'] == 'intronic_snap'
     assert res['rescued_junction'] == JUNCTION
+    assert res['five_prime_exon_cigar'] == '5M' and res['exon_bits'] == 10.0
+
+
+def test_an_intron_mapped_run_with_no_identity_to_exon_1_is_not_snapped():
+    """ISSUE-028: the former fixture — 5' end 2 bases past the donor, the whole
+    intron mapped. The Case-4 snap would re-place 98 intronic bases onto exon 1;
+    that block is not evidence (identity ~0) and is refused; the decoy is never
+    reached; the read stays as it is."""
+    read = _read(42, 'TA' + _GENOME_SEQ[44:140] + 'C' * 60, 'err_ta_deep')
+    res = _rescue(read)
+    assert res['rescued_junction'] != DECOY
+    assert not res['rescued'], res
+    assert res.get('clip_refused') in ('exon_identity_below_floor', 'exon_bits_below_floor'), res
 
 
 def test_two_intronic_bases_that_match_the_intron_are_left_alone():
-    """The bases ARE the intron (AA = genome[42:44]): nothing is imperfect, so
+    """The bases ARE the intron (AG = genome[138:140]): nothing is imperfect, so
     there is no rescue sequence and no junction is created either way."""
-    read = _read(42, 'AA' + _GENOME_SEQ[44:140] + 'C' * 60, 'retained2')
+    read = _read(138, 'AG' + 'C' * 60, 'retained2')
     res = _rescue(read)
     assert res['rescued_junction'] != DECOY
     assert not res['rescued']
 
 
 def test_two_error_bases_inside_an_annotated_intron_snap_to_the_annotated_boundary():
-    """Alignment starts 2 bases inside the intron with error bases (CC): the
-    2-mer search is skipped; Case 4 cannot say the bases favour the intron, so
-    the read is snapped to the ANNOTATED boundary — never to the +4 decoy."""
-    read = _read(42, 'CC' + _GENOME_SEQ[44:140] + 'C' * 60, 'err2')
+    """Seven exon-1 bases mapped inside the intron at its acceptor end: the
+    7-mer search is skipped (below the floor); Case 4 sees the bases favour exon
+    1 over the intron and snaps the read to the ANNOTATED boundary — never to
+    the +4 decoy. (ISSUE-028: the former 2-error-base + whole-N-intron read is
+    `test_an_intron_mapped_run_with_no_identity_to_exon_1_is_not_snapped`.)"""
+    read = _read(133, _GENOME_SEQ[33:40] + 'C' * 60, 'exon7_in_intron')
     res = _rescue(read)
     assert res['rescued'] and res['rescue_type'] == 'intronic_snap'
     assert res['rescued_junction'] == JUNCTION

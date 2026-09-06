@@ -54,19 +54,23 @@ def _real(nops, off):
 # ----------------------------------------------------------------------------------------------- invariant A
 @pytest.mark.parametrize('gate', ['report', 'refuse'])
 @pytest.mark.parametrize('read8', CHRX_LOCUS)
-def test_chrx_locus_lands_on_the_annotated_donor_in_both_gate_modes(read8, gate, monkeypatch):
+def test_chrx_locus_never_draws_the_decoy_and_its_block_is_not_evidence(read8, gate, monkeypatch):
     """ISSUE-026 (a): the 11-nt clip's best window is 4-5 nt into the intron (the
     GTGAGT +4/+5 GT) on the SAME annotated candidate; that slide is a novel
     placement without evidence (9 matched) or onto a non-canonical donor (+5, TA)
-    and is refused as a placement decision — the read lands on 154398394 and the
-    writer draws it."""
+    and is refused as a placement decision. Up to 4993253 the read then landed on
+    the annotated 154398394 with the unslid block. ISSUE-028 invariant E judges
+    that block too: `3M4I5M` (fd8c2b85, 8.0 bits), `1M4I1M1D6M` (14be8590, 9.5
+    bits) and `5I6M` -> `5S6M` (2586f261, six placed bases, 12 bits) are not
+    evidence at the 18-bit floor — the reads draw nothing, in both gate modes,
+    with the token and the shape in the TSV. The decoy is never drawn either way."""
+    from rectify.core.splice.splice_aware_5prime import EXON_BITS_REFUSAL
     row, res, rec, stock, off = _replay(read8, monkeypatch, gate)
-    assert res['rescued'], res
-    assert res['rescued_junction'][1:] == (154398394 - off, 154398496 - off), (read8, _real([res['rescued_junction'][1:]], off))
-    assert res['landing_annotated'] is True and res['novel_evidence'] == ''
-    assert row['five_prime_rescue_refused'] == '', row['five_prime_rescue_refused']
+    assert not res.get('rescued'), res
+    assert row['five_prime_rescue_refused'] == EXON_BITS_REFUSAL, row['five_prime_rescue_refused']
+    assert row['five_prime_exon_bits'] is not None and row['five_prime_exon_bits'] < 18
     nops = _real(_nops(rec), off)
-    assert (154398394, 154398496) in nops, nops
+    assert _nops(rec) == _nops(stock), nops
     assert not any(s in (154398398, 154398399) for s, _e in nops), nops   # never the +4 / +5 decoy
 
 

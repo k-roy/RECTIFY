@@ -455,6 +455,8 @@ def correct_read_3prime(
     _five_prime_exon2_prefix = 0     # ISSUE-026 invariant D: clip bases over exon 2, drawn as M after the N
     _landing_annotated = None        # ISSUE-017: provenance of the rescue's landing site (None = no rescue)
     _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
+    _exon_identity = None            # ISSUE-028: identity of the placed 5' block (None = no block placed)
+    _exon_bits = None                # ISSUE-028: evidence score of that block, bits
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -510,6 +512,10 @@ def correct_read_3prime(
             )
             _landing_annotated = _3ss_result.get('landing_annotated')
             _novel_evidence = str(_3ss_result.get('novel_evidence', '') or '')
+            # ISSUE-028 invariant E: the placed block's shape, drawn or refused
+            # (None = no block was placed for this read).
+            _exon_identity = _3ss_result.get('exon_identity')
+            _exon_bits = _3ss_result.get('exon_bits')
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
@@ -761,6 +767,11 @@ def correct_read_3prime(
         'five_prime_landing_annotated': (
             int(bool(_landing_annotated)) if _landing_annotated is not None else ''),
         'five_prime_novel_evidence': _novel_evidence,
+        # ISSUE-028 invariant E: the placed 5' block's identity and evidence
+        # score in bits (TSV columns; '' when no block was placed). Kept when
+        # the placement was refused — they describe the block judged.
+        'five_prime_exon_identity': _exon_identity,
+        'five_prime_exon_bits': _exon_bits,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

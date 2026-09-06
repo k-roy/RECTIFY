@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F invariant E — the placed 5' block must be evidence for EVERY
+  landing (ISSUE-028)** (`align/local_aligner.py`, `splice/splice_aware_5prime.py`,
+  `bam/bam_processor.py`, `bam/output.py`). Two unchanged controls of the Sumner
+  T0 review gained rescues onto ANNOTATED junctions with placed blocks of 28 %
+  and 42 % identity (an annotated landing bypassed the novel-site verdict; the
+  indel-burden bound ignores mismatches), and two baseline exon CIGARs STARTED
+  with an insertion (`8I6M`). Now every placed block, annotated or novel, in
+  both gate modes, must carry identity >= 0.8 and an evidence score >= 18 bits
+  (a match = 2 bits, mismatch / affine gap at the anchored aligner's constants
+  over 2, homopolymer-run errors half); a leading I/D is stripped and emitted
+  as S. The bits cutoff is derived from the chance-match model (shuffled real
+  clips through the production aligner: 18 bits = the ~3 % per-read family-wise
+  rate of the clean-run rule it replaces; 22 bits ~1 %), overridable with
+  `RECTIFY_2F_EVIDENCE_BITS` / `RECTIFY_2F_EVIDENCE_IDENTITY`. Refusal tokens
+  `exon_identity_below_floor` / `exon_bits_below_floor`; two new trailing TSV
+  columns `five_prime_exon_identity` and `five_prime_exon_bits`. WIP checkpoint:
+  the validation suites have not yet been run on this change.
+
 - **Module 2F ranks 5' rescue candidates with the anchored placement model
   (ISSUE-020)** (`splice/splice_aware_5prime.py`, `align/local_aligner.py`,
   `bam/processing_stats.py`). The rescue RANKED candidates with an unanchored

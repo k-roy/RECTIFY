@@ -46,10 +46,17 @@ def _read(start, seq, name='r'):
 
 
 def _case4_tie():
-    """Two error bases inside every candidate intron (5' end at 46: 6 nt past
-    the annotated donor, 2 nt past the decoy's, 26 past the far one): the
-    Case-4 snap decides among three containing introns."""
-    read = _read(46, 'CC' + _GENOME_SEQ[48:140] + 'C' * 60, 'tie')
+    """Five exon-1 bases mapped inside every candidate intron at the shared
+    acceptor (5' end at 135: 95 nt past the annotated donor, 91 past the
+    decoy's, 115 past the far one): a 5-mer is below the informative floor, so
+    the Case-4 snap decides among three containing introns. ISSUE-028
+    (2026-09-06): the read used to start at 46 and carry the whole N-filled
+    intron, so the snap re-placed a 94-base intron-mapped run onto exon 1 — a
+    block with no identity to exon 1 that the evidence floor now refuses; five
+    exon-1 bases keep the fixture's question (which containing intron wins)
+    with a block below the informative floor, which rests on the structural
+    prior as before."""
+    read = _read(135, _GENOME_SEQ[35:40] + 'C' * 60, 'tie')
     return rescue_3ss_truncation(read, GENOME, {NOVEL_FAR, NOVEL_NEAR, ANNOTATED}, '+',
                                  annotated_junctions={ANNOTATED})
 
@@ -62,7 +69,8 @@ def test_case4_snap_prefers_the_annotated_intron():
 
 
 def test_case4_novel_only_picks_the_smallest_snap_distance():
-    read = _read(46, 'CC' + _GENOME_SEQ[48:140] + 'C' * 60, 'novel_only')
+    # nine exon-1 bases (a 5-mer favors the far intron's own sequence here; nine favor exon 1 for both candidates)
+    read = _read(131, _GENOME_SEQ[31:40] + 'C' * 60, 'novel_only')
     res = rescue_3ss_truncation(read, GENOME, {NOVEL_FAR, NOVEL_NEAR}, '+',
                                 annotated_junctions=set())
     assert res['rescued'] and res['rescue_type'] == 'intronic_snap'

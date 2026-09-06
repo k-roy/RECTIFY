@@ -107,7 +107,9 @@ def _exon_edit_count(read, res, genome_seq, strand):
     """mismatches + inserted + deleted bases of the emitted exon CIGAR (see the module docstring)."""
     ops = _cigar_ops(res['five_prime_exon_cigar'])
     j = res['rescued_junction']
-    span_q = sum(n for n, c in ops if c in 'MI=X')
+    # ISSUE-028: a leading I is emitted as S (unplaced query bases) — an insertion for the edit count, as the
+    # tester's Levenshtein ED_annot_ext would score it.
+    span_q = sum(n for n, c in ops if c in 'MIS=X')
     span_r = sum(n for n, c in ops if c in 'MD=X')
     q = read.query_sequence
     seg = (q[:span_q] if strand == '+' else q[len(q) - span_q:]).upper()
@@ -118,7 +120,7 @@ def _exon_edit_count(read, res, genome_seq, strand):
             edits += sum(1 for k in range(n) if seg[qi + k] != ref[ri + k])
             qi += n
             ri += n
-        elif c == 'I':
+        elif c in 'IS':
             edits += n
             qi += n
         elif c == 'D':
@@ -133,12 +135,32 @@ def _junction_side_op(ops, strand):
 
 READS = ['c887bc16', '31fab950', 'c64bc988', '5b20c72a', 'c41c7314', 'de84a10a', 'a5a5a1bb', '7f41e755', '6fc67f58', '885f6430']
 
+# ISSUE-028 invariant E (2026-09-06): the block 2F placed for de84a10a on the annotated junction —
+# `4M2D2M1I3M5I1M1I5M`, 14 matched / 1 mismatch / 7 inserted / 2 deleted, identity 0.93 — carries 13.5 bits,
+# under the 18-bit floor the chance-match model derived (row A's ~3 % family-wise rate). The junction is the
+# annotated one and the read was one of the six "+4 by evidence" reads RULING 10 placed there; under E it draws
+# nothing (token exon_bits_below_floor, shape in the TSV — the TSV carries the LAST block judged, the deepest
+# terminal peel's 4.5-bit spelling, not the 13.5-bit baseline block). Reported here with its numbers, not
+# loosened (the brief's instruction). The other nine fixture reads carry 20-83.5 bits and land annotated as
+# before (c887bc16 `16M` 13=/3X is 20.0 bits — the closest to the floor).
+NOT_EVIDENCE_AT_E = {'de84a10a': ('exon_bits_below_floor', 13.5)}
+
+
+def _assert_not_evidence(read8, res):
+    token, bits = NOT_EVIDENCE_AT_E[read8]
+    assert not res.get('rescued'), res
+    assert res.get('clip_refused') == token, res
+    assert res.get('exon_bits') is not None and res['exon_bits'] < 18, res
+
 
 @pytest.mark.parametrize('read8', sorted(READS))
 def test_bundle_read_lands_annotated(read8, monkeypatch):
     rows, sam, slices, ext = _load()
     row = [r for r in rows if r['read'].startswith(read8)][0]
     res, junction, novel, annotated = _replay(row, sam, slices, monkeypatch)
+    if read8 in NOT_EVIDENCE_AT_E:
+        _assert_not_evidence(read8, res)
+        return
     assert res['rescued'], row['read']
     # Never the 1–2-mer artefact: the comparison covered the whole clip.
     assert res['query_bp'] >= int(row['clip_len']) or res['rescue_type'] == 'intronic_snap'
@@ -189,6 +211,9 @@ def test_the_six_former_plus4_reads_have_no_junction_side_gap(read8, monkeypatch
     rows, sam, slices, ext = _load()
     row = [r for r in rows if r['read'].startswith(read8)][0]
     res, junction, novel, annotated = _replay(row, sam, slices, monkeypatch)
+    if read8 in NOT_EVIDENCE_AT_E:
+        _assert_not_evidence(read8, res)
+        return
     assert junction[1:] == annotated and res['landing_annotated'] is True
     ops = _cigar_ops(res['five_prime_exon_cigar'])
     assert ops, res
@@ -297,6 +322,9 @@ def test_every_bundle_rescue_is_drawn_where_reported(read8, monkeypatch):
     rows, sam, slices, ext = _load()
     row = [r for r in rows if r['read'].startswith(read8)][0]
     res, junction, novel, annotated = _replay(row, sam, slices, monkeypatch)
+    if read8 in NOT_EVIDENCE_AT_E:
+        _assert_not_evidence(read8, res)
+        return
     assert res['rescued']
     a0, genome, _n, _a, off = _inputs(row, sam, slices)
     modified, refusal, nops, b = _materialize(res, a0, genome, row['strand'])

@@ -166,6 +166,11 @@ def _check_anchored_consistency(seg_u: str, genome_seq: str, junction, strand: s
             f"ISSUE-020 (I1) {read_name}: ranking deficit {deficit} != re-scored {again} "
             f"at junction {junction} ({strand})")
     if cigar_ops and align_seq.upper() == seg_u:
+        # ISSUE-028: a leading I the strip re-emitted as S scores as the I it
+        # was (a stripped leading D is gone from the ops and the ref window
+        # alike, so the score below is that of the DP's optimum minus the
+        # leading gap — re-add it through the ref span check only).
+        cigar_ops = [(1 if op == 4 else op, ln) for op, ln in cigar_ops]
         span_r = sum(ln for op, ln in cigar_ops if op in (0, 2, 7, 8))
         if strand == '+':
             if exon_ref_start is None or exon_ref_start + span_r != junction[1]:
@@ -303,11 +308,107 @@ ANNOTATED_SLIDE_REFUSAL = 'annotated_slide_noncanonical_donor'
 # to retune (arbiter).
 ANNOTATED_INDEL_BURDEN_REFUSAL = 'annotated_exon_indel_burden'
 _ANNOTATED_EXON_INDEL_FRAC = 0.5
+# --- ISSUE-028 invariant E (2026-09-06): the placed 5' block must be EVIDENCE
+# for EVERY landing, annotated or novel, in both gate modes — a placement
+# decision. Kevin's read-level review of the 4993253 T0 set found two unchanged
+# controls rescued onto ANNOTATED junctions with placed blocks of 28 %
+# (26f8fb45: 32 bp, 9=/23X) and 42 % (04b17fc6: 26 bp, 11=/15X) identity: an
+# annotated landing bypassed the novel-site verdict and the only bound that did
+# apply (invariant C, I+D <= 0.5*matched) ignores mismatches. LENGTH is not
+# evidence; the block's identity and its junction-proximal clean run are. The
+# chance-match model (docs/algorithms/read_level_review.md § 3; real 5' clips
+# shuffled and placed by align_clip_to_exon against the annotated exon ends
+# within 5 kb; 3 libraries x 2 strands, ~250 clips x 10 shuffles each) gives the
+# per-read false-placement rate at the post-020 sweep size (T <= 42):
+#
+#   matched >= 10 alone (the ISSUE-006 floor)                     65-69 %
+#   matched >= 10, no leading I/D, clean run >= 6                 32-40 %
+#   matched >= 10, no leading I/D, clean run >= 8, identity >= 0.8   3.1-3.9 %   <- DEFAULT
+#   matched >= 15, clean run >= 10, identity >= 0.85               0.1-0.2 %
+#   matched >= 12, no indel at all, identity >= 0.9                0 / ~300,000 tests
+#
+# Kevin's ruling (2026-09-06 14:40): row A is the operating point, but a hard
+# clean-run threshold is the wrong PRIMITIVE — `6=1X7=` is an excellent 14-nt
+# anchor and would fail "clean run >= 8". The clean-run term is replaced by a
+# SCORE over the placed block in bits (local_aligner.evidence_shape: a match is
+# log2(4) = 2 bits, a mismatch and an affine gap cost the anchored aligner's own
+# constants /2, a mismatch or gap inside a genome homopolymer run >= 5 is
+# charged half — interim for the -log2 of the bundled DRS error rates). The
+# bits cutoff is DERIVED, not picked: chance_match_model.py run with the bits
+# criterion at several cutoffs on the same shuffled clips, the cutoff matching
+# row A's ~3 % per-read family-wise rate chosen (the ~0.1 % cutoff recorded
+# beside it) — the table is in ISSUE-028 and INVARIANT_E_LOG.md. Checks:
+# `6=1X7=` (24 bits) and 22f609c6's `1I15M` 13=/2X (19.5 bits) pass;
+# `5M4D2M` (10 bits), `9=/23X` (-28) and `11=/15X` (-8) fail. identity >= 0.8
+# and "no leading I/D" stay as they were: a leading I/D in the exon CIGAR is a
+# soft clip in disguise (`8I6M` = six placed bases) and is emitted as S
+# (local_aligner.strip_leading_indel) BEFORE the shape is measured.
+# RECTIFY_2F_EVIDENCE_IDENTITY / RECTIFY_2F_EVIDENCE_BITS override per run.
+# Derived 2026-09-06 (GSB_2394, 250 clips x 10 shuffles per strand, cutoffs
+# 12-24): per-read false placement at the T <= 42 sweep, + / - strand —
+#   bits >= 14: 0.103 / 0.115   bits >= 16: 0.055 / 0.061
+#   bits >= 18: 0.033 / 0.028   <- row A's 0.031 / 0.039: the operating point
+#   bits >= 20: 0.020 / 0.013   bits >= 22: 0.012 / 0.006   bits >= 24: 0.006 / 0.003
+# (the ~0.1 % point lies past the swept range, ~28 bits by the halving per
+# ~2 bits — extrapolated). One line to move it.
+E_IDENTITY = 0.8      # block identity floor
+E_BITS = 18.0         # evidence-score floor, bits (= row A's family-wise rate)
+EXON_IDENTITY_REFUSAL = 'exon_identity_below_floor'
+EXON_BITS_REFUSAL = 'exon_bits_below_floor'
+EVIDENCE_REFUSALS = (EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL)
 # Tokens the wrapper turns into the '<token>>annotated|novel' trace when a
 # later path re-rescues the read (NOVEL_EXON_REFUSALS is the novel-site
 # verdict proper and stays as it is; tests pin its contents).
 PLACEMENT_REFUSALS = NOVEL_EXON_REFUSALS + (ANNOTATED_SLIDE_REFUSAL,
-                                            ANNOTATED_INDEL_BURDEN_REFUSAL)
+                                            ANNOTATED_INDEL_BURDEN_REFUSAL) + EVIDENCE_REFUSALS
+
+
+def evidence_floor() -> Tuple[float, float]:
+    """``(identity, bits)`` floors of invariant E: the module constants unless
+    ``RECTIFY_2F_EVIDENCE_IDENTITY`` / ``RECTIFY_2F_EVIDENCE_BITS`` override
+    them (a garbage value keeps the constant)."""
+    def _env(name, default, cast):
+        raw = os.environ.get(name, '').strip()
+        if not raw:
+            return default
+        try:
+            return cast(raw)
+        except ValueError:
+            return default
+    return (_env('RECTIFY_2F_EVIDENCE_IDENTITY', E_IDENTITY, float),
+            _env('RECTIFY_2F_EVIDENCE_BITS', E_BITS, float))
+
+
+def _evidence_floor_refusal(shape) -> str:
+    """'' when the placed block (an :class:`EvidenceShape`, measured AFTER the
+    leading-indel strip) is evidence for its landing, else the invariant-E
+    token: ``exon_identity_below_floor`` when the identity is under the floor,
+    ``exon_bits_below_floor`` when the evidence score is. ``None`` (no block)
+    is not judged here — the novel-site verdict fails closed on that
+    separately."""
+    if shape is None:
+        return ''
+    identity, bits = evidence_floor()
+    if shape.identity < identity:
+        return EXON_IDENTITY_REFUSAL
+    if shape.bits < bits:
+        return EXON_BITS_REFUSAL
+    return ''
+
+
+def _place_and_measure(cigar_ops, align_seq: str, genome_seq: str,
+                       intron_start: int, intron_end: int, strand: str):
+    """Invariant E's two steps on an ``align_clip_to_exon`` result: strip the
+    leading I/D (emitted as S) and measure the shape of what remains. Returns
+    ``(ops, exon_cigar_str, shape)``; ``shape`` is None without a block."""
+    from ..align.local_aligner import cigar_ops_to_str, evidence_shape, strip_leading_indel
+    if not cigar_ops:
+        return cigar_ops, '', None
+    ops, _unplaced = strip_leading_indel(cigar_ops, strand)
+    if not ops:
+        return [], '', None
+    shape = evidence_shape(ops, align_seq, genome_seq, intron_start, intron_end, strand)
+    return ops, cigar_ops_to_str(ops), shape
 
 # What the gate DOES with its verdict on a novel site (RECTIFY_2F_NOVEL_GATE):
 #   refuse — the sequence/snap rescue is refused; the token lands in
@@ -1667,6 +1768,7 @@ def _terminal_peel_rescue(
     best_depth: Optional[int] = None
     best_peel_norm = base_norm
     _peel_refusal = ''   # ISSUE-026: a placement refusal seen at some depth
+    _peel_shape = (None, None)   # ISSUE-028: the refused block's (identity, anchor run)
     for d in depths:
         if d <= 0 or d > n_query:
             continue
@@ -1682,6 +1784,8 @@ def _terminal_peel_rescue(
         if not res.get('rescued'):
             if res.get('clip_refused') in PLACEMENT_REFUSALS:
                 _peel_refusal = res['clip_refused']   # deepest refusal wins: the fullest segment
+                # ISSUE-028: the refused block's shape rides with the token.
+                _peel_shape = (res.get('exon_identity'), res.get('exon_bits'))
             continue
         ed = res.get('edit_distance', -1.0)
         if ed is None or ed < 0:
@@ -1705,6 +1809,8 @@ def _terminal_peel_rescue(
         if (_peel_refusal and not base_rescued
                 and not (baseline.get('clip_refused') or '')):
             baseline['clip_refused'] = _peel_refusal
+            if baseline.get('exon_identity') is None and _peel_shape[0] is not None:
+                baseline['exon_identity'], baseline['exon_bits'] = _peel_shape
         return None
     # Screening: log the candidate (case-1 if baseline rescued, else new-rescue)
     # without changing output.
@@ -2117,6 +2223,7 @@ def _rescue_3ss_truncation_body(
     best_junction = None
     best_candidate_annotated = True   # provenance of best_junction's candidate
     _novel_refused = ''               # novel-site evidence-gate token, if it fired
+    _last_shape = None                # ISSUE-028: shape of the last placed block judged
     best_five_prime_corrected = align_5prime
     best_is_canonical = False    # tiebreaker 1: canonical GT/GC donor
     best_in_amb = False          # tiebreaker 2: shift within ambiguity window
@@ -3204,6 +3311,17 @@ def _rescue_3ss_truncation_body(
                 _exon_cigar_str = cigar_ops_to_str(_cigar_ops)
             except Exception as _e:
                 logger.debug("Local alignment failed for read %s: %s", read.query_name, _e)
+            # ISSUE-028 invariant E: a leading I/D is a soft clip in disguise —
+            # emitted as S — and the block's shape is measured on what remains.
+            _cigar_ops, _exon_cigar_str, _exon_shape = _place_and_measure(
+                _cigar_ops, _align_seq, genome_seq, _intron_start, _intron_end, strand)
+            if _exon_shape is not None:
+                _last_shape = _exon_shape
+            if _cigar_ops and strand == '+':
+                # A stripped leading D consumed reference at the 5' end: the
+                # block now starts that much closer to the junction.
+                _exon_ref_start = _intron_start - sum(
+                    ln for op, ln in _cigar_ops if op in (0, 2, 7, 8))
             # ISSUE-020 consistency invariant, debug mode (RECTIFY_2F_CHECK_CONSISTENCY=1).
             if _consistency_check_enabled():
                 _check_anchored_consistency(
@@ -3291,6 +3409,23 @@ def _rescue_3ss_truncation_body(
                 best_junction = None
                 best_ed = -1.0
                 break
+            # --- ISSUE-028 invariant E: the placed block must be evidence for
+            # EVERY landing (annotated or novel), in both gate modes — identity
+            # and junction-proximal clean run floors measured after the
+            # leading-indel strip (see E_IDENTITY / E_BITS).
+            # The read falls back exactly as a refused novel placement does
+            # (Case 4.5 / 4 / 3); the Case-4 snap judges its own re-placed
+            # block with the same floor, so a junk block cannot re-enter there.
+            # The novel-site verdict in refuse mode names its own, more
+            # specific token first (below); E's token stands otherwise.
+            _e_tok = _evidence_floor_refusal(_exon_shape)
+            if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
+                _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
+                    _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
+                _novel_refused = _e_tok
+                best_junction = None
+                best_ed = -1.0
+                break
             if _novel_tok and novel_gate_mode() == 'refuse':
                 _novel_refused = _novel_tok
                 # Counted once per read, in the wrapper. Reset the score with
@@ -3323,6 +3458,10 @@ def _rescue_3ss_truncation_body(
                     # relative to the hp-ED proxy (counted in the wrapper).
                     'anchored_deficit': best_deficit,
                     'reranked_between_annotated': _reranked,
+                    # ISSUE-028 invariant E: the placed block's shape (TSV
+                    # five_prime_exon_identity / five_prime_exon_bits).
+                    'exon_identity': (_exon_shape.identity if _exon_shape else None),
+                    'exon_bits': (_exon_shape.bits if _exon_shape else None),
                 }
 
     # --- Case 4.5: forced N-op snap for mapPacBio terminal-D overshoot ---
@@ -3352,6 +3491,10 @@ def _rescue_3ss_truncation_body(
                                   or tuple(_forced_snap_junction[:3]) in annotated_keys),
             'novel_evidence': '',
             'novel_refused_first': _novel_refused,
+            # ISSUE-028: the shape of the sequence block judged before this
+            # structural snap (None when no block was placed).
+            'exon_identity': (_last_shape.identity if _last_shape else None),
+            'exon_bits': (_last_shape.bits if _last_shape else None),
         }
 
     # --- Case 4: 5' end is strictly inside an annotated intron, no N-op for it ---
@@ -3469,6 +3612,31 @@ def _rescue_3ss_truncation_body(
             except Exception as _e4:
                 logger.debug("Case 4 local alignment failed for read %s: %s",
                              read.query_name, _e4)
+        # ISSUE-028 invariant E, on the snap's re-placed block too: strip the
+        # leading I/D (emitted as S), measure, and — when the block is long
+        # enough to BE a sequence test (>= min_informative_clip_bp() placed
+        # query bases, the ISSUE-006 floor) — refuse one that is not evidence
+        # for this landing, annotated or novel, both gate modes. A shorter
+        # block cannot carry the bits by construction (a 4-nt intronic overhang
+        # is 8 bits at best): that snap rests on the structural prior (the 5'
+        # end sits inside an annotated intron and the bases favor exon 1 over
+        # the intron, tested above) exactly as it always has, and the novel-
+        # site verdict still governs a novel intron below. The length is the
+        # PLACED QUERY span (M + I), not the aligned columns: f53d770 166079f3's
+        # `1M12I1M1I6M` has 8 aligned columns on 21 placed bases (5.5 bits).
+        _cigar_ops4, _exon_cigar_str4, _shape4 = _place_and_measure(
+            _cigar_ops4, _intronic_seq4 or '', genome_seq, intron_start, intron_end, strand)
+        if _shape4 is not None:
+            _last_shape = _shape4
+        _e_tok4 = ''
+        _placed4 = sum(ln for op, ln in (_cigar_ops4 or []) if op in (0, 1, 7, 8))
+        if _shape4 is not None and _placed4 >= min_informative_clip_bp():
+            _e_tok4 = _evidence_floor_refusal(_shape4)
+        if _e_tok4:
+            _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
+                _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
+            _novel_refused = _e_tok4
+            continue
         # Novel-site evidence gate (see _novel_exon_evidence_refusal): a snap
         # onto an ANNOTATED intron rests on the annotation; onto a pool intron
         # the re-placed intronic segment must itself be evidence. On the Sumner
@@ -3498,6 +3666,11 @@ def _rescue_3ss_truncation_body(
             # A sequence rescue refused before this snap (refuse mode) — the
             # wrapper turns it into the '<token>>annotated|novel' trace.
             'novel_refused_first': _novel_refused,
+            # ISSUE-028 invariant E: the snap's own re-placed block, when it has
+            # one; else the last sequence block judged for this read.
+            'exon_identity': ((_shape4 or _last_shape).identity if (_shape4 or _last_shape) else None),
+            'exon_bits': ((_shape4 or _last_shape).bits
+                                if (_shape4 or _last_shape) else None),
         }
 
     # --- Case 3: proximity-only (no sequence to match, but start is at a 3'SS) ---
@@ -3524,6 +3697,9 @@ def _rescue_3ss_truncation_body(
                 'five_prime_upstream_trim': 0,
                 'displaced_canonical_refused': _displaced_any,
                 'clip_refused': _novel_refused,
+                # ISSUE-028: the shape of the block that was refused, if any.
+                'exon_identity': (_last_shape.identity if _last_shape else None),
+                'exon_bits': (_last_shape.bits if _last_shape else None),
             }
 
     _res_none = _no_rescue(read, strand)
@@ -3535,6 +3711,10 @@ def _rescue_3ss_truncation_body(
         # The sequence rescue found a NOVEL landing site but the placed segment
         # was not evidence for it (same column, same reader).
         _res_none['clip_refused'] = _novel_refused
+    if _last_shape is not None:
+        # ISSUE-028: the shape of the block that was judged (and refused).
+        _res_none['exon_identity'] = _last_shape.identity
+        _res_none['exon_bits'] = _last_shape.bits
     return _res_none
 
 

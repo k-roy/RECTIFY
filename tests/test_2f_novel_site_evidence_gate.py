@@ -198,10 +198,13 @@ def test_novel_sequence_rescue_indel_riddled_placement(monkeypatch):
         return [(0, 3), (1, 4), (0, 1), (1, 3), (0, 1), (1, 3)], intron_start - 5
     import rectify.core.align.local_aligner as la
     monkeypatch.setattr(la, 'align_clip_to_exon', _bad)
-    # report (default): drawn, verdict recorded
+    # report (default): the novel verdict alone would have drawn it with the token recorded; ISSUE-028
+    # invariant E judges the block as a PLACEMENT decision in both modes (the forged spelling walks the clip
+    # against the wrong reference bases: identity under 0.8, -21 bits) and refuses it with its own token
+    from rectify.core.splice.splice_aware_5prime import EVIDENCE_REFUSALS
     res = _novel(_clip_read(15))
-    assert res['rescued'] and res['novel_evidence'] == TOKEN and not res.get('clip_refused')
-    # refuse: refused with the same token
+    assert not res['rescued'] and res.get('clip_refused') in EVIDENCE_REFUSALS, res
+    # refuse: the novel verdict's more specific token precedes E's
     monkeypatch.setenv('RECTIFY_2F_NOVEL_GATE', 'refuse')
     res = _novel(_clip_read(15))
     assert not res['rescued'] and res.get('clip_refused') == TOKEN
@@ -275,10 +278,13 @@ def _cells(row):
 
 
 def test_tsv_columns_report_mode():
-    # ISSUE-026 invariant D appended `five_prime_exon2_prefix` after these two.
-    assert CORRECTION_TSV_HEADER[-3:] == ['five_prime_landing_annotated',
+    # ISSUE-026 invariant D appended `five_prime_exon2_prefix` after these two;
+    # ISSUE-028 invariant E the two block-shape columns after that.
+    assert CORRECTION_TSV_HEADER[-5:] == ['five_prime_landing_annotated',
                                           'five_prime_novel_evidence',
-                                          'five_prime_exon2_prefix']
+                                          'five_prime_exon2_prefix',
+                                          'five_prime_exon_identity',
+                                          'five_prime_exon_bits']
     pool = bp._build_pool_chrom_index({JUNCTION})
     novel_tiny = _row(_intronic_read(4), annotated_junctions=set(), pool_chrom_index=pool)
     assert novel_tiny['five_prime_rescued'] and novel_tiny['five_prime_rescue_refused'] == ''
