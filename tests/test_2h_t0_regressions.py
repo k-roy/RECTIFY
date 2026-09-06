@@ -294,6 +294,42 @@ class TestAnnotatedAlternative:
         assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
         assert counters["noncanon_destination_refused"] == 0
 
+    @pytest.mark.parametrize("s_score, redirected", [(1.2, False), (2.0, True)],
+                             ids=["inside_the_hold_stays", "clears_the_hold_redirects"])
+    def test_the_redirect_must_clear_the_r1_hold_against_an_annotated_canonical_incumbent(
+            self, monkeypatch, s_score, redirected):
+        """D2: S is annotated canonical and scored.  A beats it by 0.7 (inside the
+        1.0 hold) -> the redirect is refused (``within_hold``), the read stays;
+        by 1.5 -> redirected as before.  The hold itself exempts an annotated
+        canonical destination, so without this clause the proxy would slip past
+        the margin the winner W faced."""
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5, S: s_score}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        repl = _refine(read, g, scores, annotated=[A, S], counters=counters)
+        assert counters["noncanon_destination_refused"] == 0
+        if redirected:
+            assert repl == [(idx, *S, *A)]
+            assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+            assert counters["noncanon_dest_refused_annotated_alt"] == 0
+        else:
+            assert repl == []
+            assert counters["noncanon_dest_lost_to_annotated_alt"] == 0
+            assert counters["noncanon_dest_refused_annotated_alt_within_hold"] == 1
+            assert counters["annotated_canonical_holds"] == 0      # refused here, not by the hold
+
+    def test_no_hold_clause_for_an_unannotated_or_unscored_incumbent(self, monkeypatch):
+        """D2 scope: S canonical but UNANNOTATED, A beats it by 0.2 -> no hold
+        clause, redirected (the hold's own scope is annotated canonical incumbents)."""
+        read, g, idx, S, A, W = self._setup(monkeypatch, scores=None)
+        scores = {W: 0.4, A: 0.5, S: 0.7}
+        _fake_scores(monkeypatch, scores)
+        counters = Counter()
+        assert _refine(read, g, scores, annotated=[A], counters=counters) == [(idx, *S, *A)]
+        assert counters["noncanon_dest_refused_annotated_alt"] == 0
+        assert counters["noncanon_dest_lost_to_annotated_alt"] == 1
+
     @pytest.mark.parametrize("alt_writable", [False, True], ids=["alt_unwritable_stays", "alt_writable_redirects"])
     def test_the_shape_of_the_sixteen(self, monkeypatch, alt_writable):
         """The 4413bbd family: NON-canonical unannotated incumbent S (GT..CAT),

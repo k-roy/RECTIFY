@@ -1322,6 +1322,20 @@ def refine_read_junctions(
                 _alt_refusal = ''
                 if incumbent_tuple is not None and not (_alt < incumbent_tuple):
                     _alt_refusal = 'outranked'
+                elif (
+                    # The redirect is an annotation proxy for a winner the read
+                    # chose, not the read's own choice; against an ANNOTATED
+                    # CANONICAL incumbent it must clear the R1 hold that the
+                    # winner itself would have faced.  (The hold below exempts
+                    # annotated-canonical destinations as isoform swaps, so it
+                    # would not ask this of the redirect.)
+                    _ANNOTATED_CANONICAL_HOLD > 0.0
+                    and incumbent_score is not None
+                    and current_tier < 4
+                    and (chrom, ns, ne) in annotated_set
+                    and _alt[0] > incumbent_score - _ANNOTATED_CANONICAL_HOLD
+                ):
+                    _alt_refusal = 'within_hold'
                 elif not _realizable(read, cigar_idx, ns, ne, _alt_js, _alt_je,
                                      genome_seq, strand, hp_pen, W):
                     _alt_refusal = 'unrealizable'
