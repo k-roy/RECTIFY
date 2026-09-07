@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Module 2F — a most-parsimonious ORIGIN for every 5' clip that draws no
+  junction** (ISSUE-034; step 2 of Kevin's plan, 2026-09-07; `splice/
+  splice_aware_5prime.py`, `splice/junction_scoring.py`, `bam/output.py`,
+  `bam/bam_writer.py`). Attribution is not creation: a clip that fails the
+  creation floor is scored three ways with the same E bits — continuing into
+  the intron at the read's own 5' edge (unspliced / retained-intron /
+  degraded), the best vetted exon overhang 2F already judged, and a capped
+  log2 prior from the prescan's unspliced-vs-spliced counts at the annotated
+  intron (`build_junction_pool(..., return_signal=True)`; a read whose aligned
+  block runs through an annotated intron edge with >= 10 bases on both sides
+  is unspliced signal). The winner needs a 3-bit lead, else `ambiguous`; a
+  clip under the informative floor is `none`. Emitted as TSV columns
+  `five_prime_clip_origin` / `_bits` / `_prior_bits` (appended last) and BAM
+  tag `XO:Z`; never an N-op — station C decides sites, this decides counts.
+
 ### Fixed
 
 - **Module 2F — the annotated placement holds unless a shift wins by a margin;

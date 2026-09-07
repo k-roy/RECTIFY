@@ -484,6 +484,75 @@ def _shift_bits(seg_u: str, genome_seq: str, intron_start: int, intron_end: int,
     return None if shape is None else shape.bits
 
 
+# ISSUE-034 (step 2 of Kevin's plan, 2026-09-07): a most-parsimonious ORIGIN for a 5' clip that creates
+# no junction. Attribution is not creation: the clip either continues into the intron (unspliced /
+# retained-intron / degraded species), belongs to the vetted exon overhang 2F already scored, or cannot be
+# told. Never draws an N-op; a TSV column + BAM tag for quantitation (station C decides sites).
+CLIP_ORIGIN_MARGIN = 3.0        # bits one side must lead by to be called (else 'ambiguous')
+CLIP_ORIGIN_MIN_BITS = 6.0      # and the winner must carry at least this (three clean bases): 04b17fc6's 1.5-bit
+                                # "exon" and bcd90cad's 4.5 are not attributions — Kevin: with nothing convincing
+                                # nearby, attribute to sequencing error at a truncated 5' end (= ambiguous)
+CLIP_ORIGIN_PRIOR_CAP = 6.0     # |log2((unspliced+1)/(spliced+1))| cap: counts never override sequence
+_CLIP_ORIGIN_SIGNAL = {'unspliced': {}, 'spliced': {}}
+
+
+def set_clip_origin_signal(signal) -> None:
+    """Install the prescan's per-annotated-intron ``{'unspliced': Counter, 'spliced': Counter}``
+    (junction_scoring.build_junction_pool(..., return_signal=True)); ``None`` clears it (prior 0)."""
+    global _CLIP_ORIGIN_SIGNAL
+    _CLIP_ORIGIN_SIGNAL = {'unspliced': dict((signal or {}).get('unspliced', {}) or {}),
+                           'spliced': dict((signal or {}).get('spliced', {}) or {})}
+
+
+def clip_origin_prior_bits(junction) -> float:
+    """log2((unspliced + 1) / (spliced + 1)) at *junction*, capped at ±CLIP_ORIGIN_PRIOR_CAP; 0 without signal."""
+    if junction is None:
+        return 0.0
+    key = tuple(junction[:3])
+    u = _CLIP_ORIGIN_SIGNAL['unspliced'].get(key)
+    sp_ = _CLIP_ORIGIN_SIGNAL['spliced'].get(key)
+    if u is None and sp_ is None:
+        return 0.0
+    v = _math.log2((float(u or 0) + 1.0) / (float(sp_ or 0) + 1.0))
+    return max(-CLIP_ORIGIN_PRIOR_CAP, min(CLIP_ORIGIN_PRIOR_CAP, v))
+
+
+def clip_origin(read, strand: str, genome_seq: str, exon_site, exon_bits, exon_annotated: bool):
+    """``(origin, bits, prior)`` for the read's 5' clip: 'intron' / 'exon:<chrom>:<donor>' / 'ambiguous' /
+    'none'. The intron score anchors the clip at the read's own 5' aligned edge (as if unspliced) with the
+    same E bits; the exon score is the best vetted overhang 2F judged (``exon_site``, ``exon_bits``); the
+    prior (unspliced vs spliced counts at the annotated intron) is added to the intron side."""
+    ct = read.cigartuples or []
+    q = read.query_sequence or ''
+    if strand == '+':
+        clip = q[:ct[0][1]] if ct and ct[0][0] == 4 else ''
+    else:
+        clip = q[len(q) - ct[-1][1]:] if ct and ct[-1][0] == 4 else ''
+    if len(clip) < min_informative_clip_bp():
+        return 'none', None, 0.0, None, None
+    if strand == '+':
+        edge = read.reference_start
+        b_int = _shift_bits(clip.upper(), genome_seq, edge, edge, '+')
+    else:
+        edge = read.reference_end
+        b_int = _shift_bits(clip.upper(), genome_seq, edge, edge, '-')
+    prior = clip_origin_prior_bits(exon_site) if (exon_site is not None and exon_annotated) else 0.0
+    b_int_adj = (b_int if b_int is not None else float('-inf')) + prior
+    b_exo = float(exon_bits) if exon_bits is not None else float('-inf')
+    _exo_val = None if b_exo == float('-inf') else b_exo
+    if b_exo == float('-inf') and b_int is None:
+        return 'ambiguous', None, prior, None, None
+    if exon_site is None:
+        b_exo = float('-inf')                       # a block with no site is not an attribution target
+    if b_exo >= b_int_adj + CLIP_ORIGIN_MARGIN and b_exo >= CLIP_ORIGIN_MIN_BITS:
+        site = f"{exon_site[0]}:{exon_site[1] if strand == '+' else exon_site[2]}"
+        return f'exon:{site}', b_exo, prior, b_int, _exo_val
+    if b_int_adj >= b_exo + CLIP_ORIGIN_MARGIN and b_int is not None and b_int >= CLIP_ORIGIN_MIN_BITS:
+        return 'intron', b_int, prior, b_int, _exo_val
+    _best = max(b_exo, b_int if b_int is not None else float('-inf'))
+    return 'ambiguous', (None if _best == float('-inf') else _best), prior, b_int, _exo_val
+
+
 def _gap_refusal(cigar_ops) -> str:
     """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer
     than ``E_MAX_GAP`` (env ``RECTIFY_2F_EVIDENCE_MAX_GAP``), else ''."""
@@ -1879,6 +1948,7 @@ def _terminal_peel_rescue(
     best_peel_norm = base_norm
     _peel_refusal = ''   # ISSUE-026: a placement refusal seen at some depth
     _peel_shape = (None, None)   # ISSUE-028: the refused block's (identity, anchor run)
+    _peel_site = None            # ISSUE-034: the candidate that block was judged at
     for d in depths:
         if d <= 0 or d > n_query:
             continue
@@ -1896,6 +1966,7 @@ def _terminal_peel_rescue(
                 _peel_refusal = res['clip_refused']   # deepest refusal wins: the fullest segment
                 # ISSUE-028: the refused block's shape rides with the token.
                 _peel_shape = (res.get('exon_identity'), res.get('exon_bits'))
+                _peel_site = res.get('exon_site')
             continue
         # ISSUE-031 in 2F (2026-09-07, ea0a56cb / 3fe6a57e / beab8d72 / 9152ed9b): a peel on a
         # read that starts k bases INTO exon 2 (invariant-D prefix k) relabels the peeled BODY
@@ -1930,6 +2001,7 @@ def _terminal_peel_rescue(
             baseline['clip_refused'] = _peel_refusal
             if baseline.get('exon_identity') is None and _peel_shape[0] is not None:
                 baseline['exon_identity'], baseline['exon_bits'] = _peel_shape
+                baseline['exon_site'] = _peel_site
         return None
     # Screening: log the candidate (case-1 if baseline rescued, else new-rescue)
     # without changing output.
@@ -2203,6 +2275,22 @@ def rescue_3ss_truncation(
     _tok = (_result.get('clip_refused') or _result.get('novel_evidence') or '').split('>')[0]
     if _tok in PLACEMENT_REFUSALS:
         _OI_COUNTERS[_tok] = _OI_COUNTERS.get(_tok, 0) + 1
+    # ISSUE-034: a most-parsimonious origin for the clip of every read that draws no junction.
+    if not _result.get('rescued'):
+        try:
+            _site = _result.get('exon_site')
+            _ann_site = bool(_site is not None and (_annotated_keys is None or tuple(_site) in _annotated_keys))
+            _o, _ob, _op, _bi, _be = clip_origin(read, strand, genome_seq, _site, _result.get('exon_bits'), _ann_site)
+        except Exception as _oe:
+            logger.debug("clip_origin failed for %s: %s", read.query_name, _oe)
+            _o, _ob, _op, _bi, _be = 'ambiguous', None, 0.0, None, None
+        _result['clip_origin'] = _o
+        _result['clip_origin_bits'] = _ob
+        _result['clip_prior_bits'] = _op
+        _result['clip_intron_bits'] = _bi
+        _result['clip_exon_bits'] = _be
+        _OI_COUNTERS['five_prime_clip_origin_' + _o.split(':')[0]] = (
+            _OI_COUNTERS.get('five_prime_clip_origin_' + _o.split(':')[0], 0) + 1)
     # ISSUE-020 (e): moves BETWEEN two annotated candidates, once per read on
     # the FINAL result (the body runs once per terminal-peel depth as well).
     if _result.get('rescued') and _result.get('reranked_between_annotated'):
@@ -2396,6 +2484,7 @@ def _rescue_3ss_truncation_body(
     best_candidate_annotated = True   # provenance of best_junction's candidate
     _novel_refused = ''               # novel-site evidence-gate token, if it fired
     _last_shape = None                # ISSUE-028: shape of the last placed block judged
+    _last_shape_site = None           # ISSUE-034: the candidate that block was judged at
     best_five_prime_corrected = align_5prime
     best_is_canonical = False    # tiebreaker 1: canonical GT/GC donor
     best_in_amb = False          # tiebreaker 2: shift within ambiguity window
@@ -3515,6 +3604,7 @@ def _rescue_3ss_truncation_body(
                 _cigar_ops, _align_seq, genome_seq, _intron_start, _intron_end, strand)
             if _exon_shape is not None:
                 _last_shape = _exon_shape
+                _last_shape_site = tuple(best_junction) if best_junction else None
             if _cigar_ops and strand == '+':
                 # A stripped leading D consumed reference at the 5' end: the
                 # block now starts that much closer to the junction.
@@ -3832,6 +3922,7 @@ def _rescue_3ss_truncation_body(
             _cigar_ops4, _intronic_seq4 or '', genome_seq, intron_start, intron_end, strand)
         if _shape4 is not None:
             _last_shape = _shape4
+            _last_shape_site = (j_chrom, intron_start, intron_end)
         _e_tok4 = ''
         _annot4_floor = (annotated_keys is None
                          or (j_chrom, intron_start, intron_end) in annotated_keys)
@@ -3944,6 +4035,7 @@ def _rescue_3ss_truncation_body(
                     if _e_tok3:
                         _novel_refused = _novel_refused or _e_tok3
                         _last_shape = _shape3
+                        _last_shape_site = (j_chrom, intron_start, intron_end)
                     continue
                 # ISSUE-026 invariant C, as the sequence loop applies it: a block that reaches the
                 # floor on bits but carries more inserted + deleted bases than half its matched
@@ -3955,6 +4047,7 @@ def _rescue_3ss_truncation_body(
                     _novel_refused = _novel_refused or ANNOTATED_INDEL_BURDEN_REFUSAL
                     if _shape3 is not None:
                         _last_shape = _shape3
+                        _last_shape_site = (j_chrom, intron_start, intron_end)
                     continue
                 # TWO-TIER FLOOR (Kevin 2026-09-07, cards 975638b6 / 166079f3): the clip
                 # anchored at this annotated donor IS evidence at the attachment tier, so the
@@ -4019,6 +4112,7 @@ def _rescue_3ss_truncation_body(
         # ISSUE-028: the shape of the block that was judged (and refused).
         _res_none['exon_identity'] = _last_shape.identity
         _res_none['exon_bits'] = _last_shape.bits
+        _res_none['exon_site'] = _last_shape_site
     return _res_none
 
 

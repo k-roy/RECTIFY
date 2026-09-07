@@ -1072,12 +1072,18 @@ def run(args):
                 if _prebuilt_pool is None and config.get('aligner_bams'):
                     _warn_self_pool(config, logger)
                     _min_support = int(config.get('junction_min_observed_support') or 1)
-                    _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
+                    _prebuilt_pool, _prebuilt_annot_set, _clip_signal = build_junction_pool(
                         config['aligner_bams'],
                         _annot_j,
                         min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
+                        return_signal=True,
                     )
+                    # ISSUE-034: the unspliced/spliced prior for the 5' clip-origin call.
+                    from ..splice.splice_aware_5prime import set_clip_origin_signal
+                    set_clip_origin_signal(_clip_signal)
+                    logger.info("  Clip-origin prior: unspliced signal at %d annotated introns",
+                                sum(1 for _v in _clip_signal['unspliced'].values() if _v))
                     logger.info(
                         "  Built junction pool: %d junctions (%d annotated, "
                         "%d observed with support >= %d)",

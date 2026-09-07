@@ -83,8 +83,14 @@ import pytest
 # reanchor_clip_len 0 -> 7 and five_prime_soft_clip_length 0 -> 7 (the reanchored
 # clip now reaches the writer on an unrescued read). No other field on any row moved.
 # Prior golden af5aeac6…
+# 2026-09-07 — re-recorded for ISSUE-034 (the 5' clip-origin call). A pure SCHEMA
+# addition: `five_prime_clip_origin`, `five_prime_clip_origin_bits`,
+# `five_prime_clip_prior_bits` joined the result dict ('' / 'none', None, 0.0 / None
+# here — no annotation, so no candidate is ever judged). Verified before re-recording
+# (scratchpad golden_check3.py) that stripping the three new keys reproduces the previous
+# golden ae45870b… exactly. Prior golden ae45870b…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "ae45870bac35c6462a907348b996e6fbf2b06e9cb054d763d6c615736a56c01c"
+    "cd06c38aab26edb7ff66864596b251e779a7717b3468153ae409137d53bf02e3"
 )
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation

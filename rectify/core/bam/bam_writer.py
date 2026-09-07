@@ -138,6 +138,8 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_sc_sclen = hdr.index('sc_original_softclip_len')  if 'sc_original_softclip_len'  in hdr else -1
             # Case 4 intronic-snap BAM hard-clip column (v2.9.8)
             i_5p_icp   = hdr.index('five_prime_intron_clip_pos') if 'five_prime_intron_clip_pos' in hdr else -1
+            # ISSUE-034: most-parsimonious origin of an unplaced 5' clip (BAM tag XO)
+            i_5p_orig  = hdr.index('five_prime_clip_origin')     if 'five_prime_clip_origin'     in hdr else -1
             # Over-call rescue columns
             i_oc_ext   = hdr.index('oc_homopolymer_extension')   if 'oc_homopolymer_extension'   in hdr else -1
             i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
@@ -161,6 +163,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
                 five_prime_reanc   = int(parts[i_5p_reanc])  if i_5p_reanc >= 0 and len(parts) > i_5p_reanc and parts[i_5p_reanc] else 0
                 five_prime_e2      = int(parts[i_5p_e2])     if i_5p_e2 >= 0 and len(parts) > i_5p_e2 and parts[i_5p_e2] else 0
+                five_prime_orig    = parts[i_5p_orig]        if i_5p_orig >= 0 and len(parts) > i_5p_orig else ''
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
                 sc_seq   = parts[i_sc_seq]         if i_sc_seq   >= 0 and len(parts) > i_sc_seq   else ''
@@ -184,6 +187,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'reanchor_clip_len':          five_prime_reanc,
                     'five_prime_exon2_prefix':    five_prime_e2,
                     'five_prime_intron_clip_pos': five_prime_icp,
+                    'five_prime_clip_origin':     five_prime_orig,
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
                     'sc_original_softclip_len':   sc_sclen,
@@ -705,6 +709,10 @@ def apply_corrected_edits_to_read(
 
     # Tag the final corrected 3' end so it is visible in IGV / samtools view.
     read.set_tag('cp', correction['corrected_3prime'])
+    # ISSUE-034: the 5' clip's most-parsimonious origin (quantitation; never a junction).
+    _xo = correction.get('five_prime_clip_origin') or ''
+    if _xo:
+        read.set_tag('XO', _xo)
 
     return modified
 

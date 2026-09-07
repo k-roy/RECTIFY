@@ -87,6 +87,14 @@ CORRECTION_TSV_HEADER = [
     # five_prime_novel_evidence); '' when no block was placed. Appended last.
     'five_prime_exon_identity',
     'five_prime_exon_bits',
+    # ISSUE-034 (2026-09-07): the most-parsimonious ORIGIN of a 5' clip that drew no junction —
+    # 'intron' (continues into the intron: unspliced / retained / degraded), 'exon:<chrom>:<donor>'
+    # (the vetted overhang 2F judged, below the creation floor), 'ambiguous', 'none' (clip below the
+    # informative floor); '' when a junction WAS drawn. bits = the winning side's score; prior = the
+    # capped log2 unspliced/spliced prior from the prescan. Quantitation only; never a junction.
+    'five_prime_clip_origin',
+    'five_prime_clip_origin_bits',
+    'five_prime_clip_prior_bits',
 ]
 
 
@@ -212,6 +220,9 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         str(result.get('five_prime_exon2_prefix', 0) or 0),
         _shape_cell(result.get('five_prime_exon_identity'), '{:.2f}'),
         _shape_cell(result.get('five_prime_exon_bits'), '{:.1f}'),
+        result.get('five_prime_clip_origin', '') or '',
+        _shape_cell(result.get('five_prime_clip_origin_bits'), '{:.1f}'),
+        _shape_cell(result.get('five_prime_clip_prior_bits'), '{:.1f}'),
     ]
 
 

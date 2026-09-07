@@ -457,6 +457,9 @@ def correct_read_3prime(
     _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
     _exon_identity = None            # ISSUE-028: identity of the placed 5' block (None = no block placed)
     _exon_bits = None                # ISSUE-028: evidence score of that block, bits
+    _clip_origin = ''                # ISSUE-034: origin of an unplaced 5' clip (intron / exon:<site> / ambiguous / none)
+    _clip_origin_bits = None
+    _clip_prior_bits = None
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -516,6 +519,9 @@ def correct_read_3prime(
             # (None = no block was placed for this read).
             _exon_identity = _3ss_result.get('exon_identity')
             _exon_bits = _3ss_result.get('exon_bits')
+            _clip_origin = _3ss_result.get('clip_origin', '') or ''
+            _clip_origin_bits = _3ss_result.get('clip_origin_bits')
+            _clip_prior_bits = _3ss_result.get('clip_prior_bits')
             # ISSUE-032(b): the reanchor pre-pass propagates whether or not a rescue was drawn
             # (the writer's `_apply_reanchor_from_clip_len` runs on reanchor_clip_len alone).
             _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
@@ -775,6 +781,10 @@ def correct_read_3prime(
         # the placement was refused — they describe the block judged.
         'five_prime_exon_identity': _exon_identity,
         'five_prime_exon_bits': _exon_bits,
+        # ISSUE-034: most-parsimonious origin of a clip that drew no junction (quantitation only).
+        'five_prime_clip_origin': _clip_origin,
+        'five_prime_clip_origin_bits': _clip_origin_bits,
+        'five_prime_clip_prior_bits': _clip_prior_bits,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

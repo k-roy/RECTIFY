@@ -624,11 +624,60 @@ def collect_junctions_from_bam(
     return junctions
 
 
+UNSPLICED_SIGNAL_OVERHANG = 10   # bases on EACH side of an annotated intron edge a read block must cover
+
+
+def _acceptor_index(annotated_introns) -> Dict[str, Tuple[List[int], List[Tuple[int, int, int]]]]:
+    """chrom -> (sorted edge positions, parallel junction tuples): both edges of every annotated intron."""
+    per: Dict[str, List[Tuple[int, Tuple[int, int, int]]]] = {}
+    for j in annotated_introns or ():
+        if len(j) < 3:
+            continue
+        chrom = standardize_chrom_name(str(j[0])); s_, e_ = int(j[1]), int(j[2])
+        per.setdefault(chrom, []).append((s_, (chrom, s_, e_)))
+        per[chrom].append((e_, (chrom, s_, e_)))
+    out = {}
+    for chrom, lst in per.items():
+        lst.sort(key=lambda t: t[0])
+        out[chrom] = ([t[0] for t in lst], [t[1] for t in lst])
+    return out
+
+
+def _count_unspliced(cigar, ref_start: int, idx_pos: List[int], idx_j: List[Tuple[int, int, int]],
+                     counter: Counter, overhang: int) -> None:
+    """ISSUE-034 (step 2 of Kevin's plan): a read whose ALIGNED block runs straight through an annotated
+    intron edge with >= *overhang* bases on both sides is unspliced / intron-retained signal at that intron."""
+    import bisect
+    pos = ref_start
+    blk_start = None
+    for op, length in cigar:
+        if op in (0, 7, 8, 2):            # M/=/X/D extend the current aligned block
+            if blk_start is None:
+                blk_start = pos
+            pos += length
+        else:
+            if blk_start is not None and pos - blk_start >= 2 * overhang:
+                lo = bisect.bisect_left(idx_pos, blk_start + overhang)
+                hi = bisect.bisect_right(idx_pos, pos - overhang)
+                for k in range(lo, hi):
+                    counter[idx_j[k]] += 1
+            blk_start = None
+            if op == 3:                    # N
+                pos += length
+    if blk_start is not None and pos - blk_start >= 2 * overhang:
+        lo = bisect.bisect_left(idx_pos, blk_start + overhang)
+        hi = bisect.bisect_right(idx_pos, pos - overhang)
+        for k in range(lo, hi):
+            counter[idx_j[k]] += 1
+
+
 def _collect_junction_counts_core(
     bam_path: str,
     chrom_filter: Optional[str] = None,
     max_junction_size: Optional[int] = None,
     min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
+    annotated_index=None,
+    unspliced_out: Optional[Counter] = None,
 ) -> Tuple[Counter, Counter]:
     """One pass over a BAM → ``(anchor_pass_counts, raw_counts)``.
 
@@ -656,6 +705,9 @@ def _collect_junction_counts_core(
                 if chrom_filter and chrom != chrom_filter:
                     continue
                 cigar = _merge_del_into_intron(read.cigartuples)
+                if annotated_index is not None and unspliced_out is not None and chrom in annotated_index:
+                    _ip, _ij = annotated_index[chrom]
+                    _count_unspliced(cigar, read.reference_start, _ip, _ij, unspliced_out, UNSPLICED_SIGNAL_OVERHANG)
                 query_seq = read.query_sequence or ""
                 pos = read.reference_start
                 qpos = 0
@@ -673,6 +725,8 @@ def _collect_junction_counts_core(
                         qpos += length
     except Exception as exc:
         logger.warning("_collect_junction_counts_core(%s): %s", bam_path, exc)
+    if unspliced_out is not None:
+        return anchor, raw, unspliced_out       # 3-tuple only when the signal was requested
     return anchor, raw
 
 
@@ -701,8 +755,15 @@ def build_junction_pool(
     min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
     relax_min_families: int = DEFAULT_RELAX_MIN_FAMILIES,
     aligner_families: Optional[List[str]] = None,
+    return_signal: bool = False,
 ) -> Tuple[Set[Junction], Set[Junction]]:
     """Build union of annotated + per-aligner junctions.
+
+    ``return_signal=True`` (ISSUE-034) appends a third element: ``{'unspliced':
+    Counter, 'spliced': Counter}`` over the ANNOTATED introns — reads whose
+    aligned block runs through an intron edge with >= UNSPLICED_SIGNAL_OVERHANG
+    bases on both sides (unspliced / retained-intron signal), and the anchored
+    spliced support — the prior for the 5' clip-origin call.
 
     An observed junction enters the pool when EITHER:
 
@@ -758,11 +819,14 @@ def build_junction_pool(
 
     # Per-aligner (anchor_pass_counts, raw_counts).
     per_bam: List[Tuple[Counter, Counter]] = []
+    _sig_index = _acceptor_index(annot_3) if return_signal else None
+    _unspliced: Counter = Counter()
     if not aligner_bams:
         pass
     elif len(aligner_bams) == 1:
         per_bam.append(_collect_junction_counts_core(
-            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang))
+            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang,
+            annotated_index=_sig_index, unspliced_out=_unspliced))
     else:
         try:
             from concurrent.futures import ProcessPoolExecutor
@@ -770,7 +834,8 @@ def build_junction_pool(
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [
                     ex.submit(_collect_junction_counts_core, bp, chrom_filter,
-                              max_junction_size, min_anchor_overhang)
+                              max_junction_size, min_anchor_overhang,
+                              _sig_index, Counter() if return_signal else None)
                     for bp in aligner_bams
                 ]
                 per_bam = [fut.result() for fut in futures]
@@ -785,6 +850,15 @@ def build_junction_pool(
                     bp, chrom_filter, max_junction_size, min_anchor_overhang)
                 for bp in aligner_bams
             ]
+
+    # ISSUE-034: fold the per-BAM unspliced signal (3rd element when requested) and keep 2-tuples for the rank.
+    _pb2 = []
+    for _t in per_bam:
+        if len(_t) == 3:
+            _unspliced.update(_t[2]); _pb2.append((_t[0], _t[1]))
+        else:
+            _pb2.append(_t)
+    per_bam = _pb2
 
     # Accumulate anchored support (summed reads) and the set of DISTINCT
     # algorithm families reporting each junction (for the concordance relaxation).
@@ -814,6 +888,13 @@ def build_junction_pool(
         len(annot_3), n_anchored, min_observed_support,
         n_relaxed, relax_min_families, len(all_j),
     )
+    if return_signal:
+        _spliced: Counter = Counter()
+        for _anchor, _raw in per_bam:
+            for _j, _c in _anchor.items():
+                if _j in annot_3:
+                    _spliced[_j] += _c
+        return all_j, annot_3, {'unspliced': _unspliced, 'spliced': _spliced}
     return all_j, annot_3
 
 
