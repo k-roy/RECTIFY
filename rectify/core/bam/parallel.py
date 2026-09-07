@@ -1162,6 +1162,7 @@ def process_bam_streaming_parallel(
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
+    clip_signal: Optional[Dict] = None,       # ISSUE-034: the clip-origin prior for the workers
     pool_chrom_index: Optional[Dict] = None,
     apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,

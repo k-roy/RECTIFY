@@ -1355,6 +1355,7 @@ def run(args):
                     variant_aware=config['variant_aware'],
                     variant_output_path=variant_output_path,
                     annotated_junctions=annotated_junctions,
+                    clip_signal=_clip_signal,
                     pool_chrom_index=_pool_chrom_index,
                     apply_3ss_rescue=config['apply_3ss_rescue'],
                     gene_interval_trees=gene_interval_trees,
