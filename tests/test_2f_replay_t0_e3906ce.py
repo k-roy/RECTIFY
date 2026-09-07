@@ -89,13 +89,14 @@ def test_dab60caa_keeps_its_annotated_junction(monkeypatch):
     slide is refused up front; the annotated 103376613-103377027 stays drawn."""
     row, res, rec, stock, off = _replay('dab60caa', monkeypatch)
     nops = _real(_nops(rec), off)
-    # PROVISIONAL E_MAX_GAP (2026-09-07): the 52-nt clip's annotated block `6S8M3D5M3D2M6D2M1I5M4D4M1I3M1I4M2I12M`
-    # (45 matched, 16 deleted + 5 inserted, 51.5 bits) carries a 6-base deletion and is refused as a placement
-    # (`exon_gap_above_max`); the read keeps its stock junction. On Kevin's queue as a gap-bound ruling card.
+    # Gap bound (2026-09-07): the 52-nt clip's annotated block `6S8M3D5M3D2M6D2M1I5M4D4M1I3M1I4M2I12M` (45 matched,
+    # 16 deleted + 5 inserted, 51.5 bits) carries a 6-base deletion. The FLAT cap of 4 refused it (and 306 other
+    # >= 18-bit rescues on T1); the cap now scales with the block (45 // 5 = 9) and the annotated junction is drawn
+    # again. Still on Kevin's queue as a gap-bound ruling card.
+    assert (103376613, 103377027) in nops, nops
     assert (103377106, 103377509) in nops, nops
-    assert (103376613, 103377027) not in nops, nops
-    assert row['five_prime_rescue_refused'] == 'exon_gap_above_max', row['five_prime_rescue_refused']
-    assert not res.get('rescued')
+    assert row['five_prime_rescue_refused'] == '', row['five_prime_rescue_refused']
+    assert res['landing_annotated'] is True and res.get('exon_bits') == 51.5
 
 
 def test_slide_refusal_is_a_placement_decision_not_a_token():

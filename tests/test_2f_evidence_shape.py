@@ -232,6 +232,15 @@ def test_gap_bound_refuses_a_single_long_indel_in_the_block(monkeypatch):
     assert _gap_refusal(ops_04b) == EXON_GAP_REFUSAL
     assert _gap_refusal(ops_227) == ''
     assert _gap_refusal([]) == '' and _gap_refusal([(0, 12)]) == ''
+    # the cap scales with the block (T1 372d6c5): dab60caa's 6D on 45 matched is allowed (45 // 5 = 9),
+    # 638af58a's 9D on 28 matched is not (28 // 5 = 5)
+    ops_dab = [(4, 6), (0, 8), (2, 3), (0, 5), (2, 3), (0, 2), (2, 6), (0, 2), (1, 1), (0, 5), (2, 4), (0, 4), (1, 1), (0, 3), (1, 1), (0, 4), (1, 2), (0, 12)]
+    ops_638 = [(4, 7), (0, 13), (2, 2), (0, 2), (2, 9), (0, 13), (2, 1)]
+    assert _gap_refusal(ops_dab) == ''
+    assert _gap_refusal(ops_638) == EXON_GAP_REFUSAL
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED', '0')      # scaling off -> flat cap
+    assert _gap_refusal(ops_dab) == EXON_GAP_REFUSAL
+    monkeypatch.delenv('RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED')
     monkeypatch.setenv('RECTIFY_2F_EVIDENCE_MAX_GAP', '8')
     assert _gap_refusal(ops_04b) == ''
     monkeypatch.setenv('RECTIFY_2F_EVIDENCE_MAX_GAP', 'garbage')

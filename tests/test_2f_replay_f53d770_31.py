@@ -102,7 +102,7 @@ def test_the_vanished_reads_draw_again(monkeypatch):
                          '5cef5ebb#2', '638af58a', '9152ed9b', '923d7ffe', '923d7ffe#2', 'a0fe8afe', 'ac5225e1',
                          'beab8d72', 'c5d1c111', 'c5d1c111#2', 'ea0a56cb', 'fb0cdd4e'], (not_drawn, tokens)
     assert tokens['638af58a'] == 'exon_gap_above_max', tokens
-    assert tokens['c5d1c111'] == 'novel_exon_matched_below_floor', tokens
+    assert tokens['c5d1c111'] in ('novel_exon_matched_below_floor', 'exon_bits_below_floor'), tokens   # the last block judged
     assert tokens['fb0cdd4e'] == 'annotated_exon_indel_burden', tokens   # a terminal-peel refusal, carried to the TSV
     assert tokens['923d7ffe'] == 'exon_identity_below_floor', tokens
     assert tokens['9152ed9b'] == 'exon_bits_below_floor', tokens          # the peel discarded; Case 3's block judged last

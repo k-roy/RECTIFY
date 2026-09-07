@@ -23,6 +23,7 @@ import pysam
 EVENTS = os.path.expanduser('~/work/rectify/dev/sumner_misplaced_panel_20260904/holdout/events')
 BUNDLES = {
     '4993253': ('4993253', 'review_2f_4993253'),
+    '372d6c5': ('372d6c5', 'review_2f_t1_372d6c5'),   # T1 of the two-tier sha: controls, novel-over-annotated, gap refusals
 }
 
 

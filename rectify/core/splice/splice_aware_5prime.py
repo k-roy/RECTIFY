@@ -380,6 +380,12 @@ E_BITS_ANNOTATED = 12.0
 # RECTIFY_2F_EVIDENCE_MAX_GAP. Kept ≥ 4 so 2277f7b3's `1M4I3M1I14M2D1M` (24.5 bits, a reviewed
 # true rescue) still draws; 638af58a's `…9D…` and 04b17fc6's `…6D…` do not.
 E_MAX_GAP = 4
+# T1 i020g_372d6c5 (2026-09-07): the FLAT cap refused 320 baseline-true rescues, 306 of them >= 18 bits
+# (860ceadf 66.8, 869b5245 67.0, dab60caa 51.5 with 45 matched). A gap is suspicious RELATIVE to the
+# block: the cap now scales, max(E_MAX_GAP, matched // E_GAP_PER_MATCHED). 04b17fc6 (24 matched -> 4,
+# 6D refused), 638af58a (28 -> 5, 9D refused), de84a10a (14 -> 4, 5I refused), dab60caa (45 -> 9, 6D
+# allowed), 2277f7b3 (4I on 18 matched, allowed). Env RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED.
+E_GAP_PER_MATCHED = 5
 EXON_IDENTITY_REFUSAL = 'exon_identity_below_floor'
 EXON_BITS_REFUSAL = 'exon_bits_below_floor'
 EXON_GAP_REFUSAL = 'exon_gap_above_max'
@@ -446,6 +452,38 @@ def _evidence_floor_refusal(shape, annotated: bool = False) -> str:
     return ''
 
 
+# ISSUE-032(c)(i) — the annotated placement holds unless a shifted one is clearly better
+# (T1 i020g_372d6c5: 7 baseline-true annotated rescues re-landed on a NOVEL site 2-5 nt away
+# because the per-candidate shift sweep ranks on the anchored DEFICIT, on which the shift won
+# by a hair: 7f779873 annotated 24.5 bits vs -3 26.0 (a GC donor), ed3301ff 30.5 vs +4 34.5,
+# 5d30f4ea 30.0 vs +4 33.0). The E bits are the number the floor judges, so the comparison
+# is made in bits: the unslid annotated placement wins unless the shifted winner beats it by
+# at least this margin — three clean extra bases, the arbiter's iteration-4 threshold T = 6
+# (3aea3e5a's 12/12 at +4 beats its mismatched annotated block by far more). Only two extra
+# anchored DPs, and only when a shift out-ranked the annotated coordinate.
+# Env RECTIFY_2F_ANNOTATED_SHIFT_MARGIN.
+ANNOTATED_SHIFT_MARGIN = 6.0
+
+
+def annotated_shift_margin() -> float:
+    raw = os.environ.get('RECTIFY_2F_ANNOTATED_SHIFT_MARGIN', '').strip()
+    try:
+        return float(raw) if raw else ANNOTATED_SHIFT_MARGIN
+    except ValueError:
+        return ANNOTATED_SHIFT_MARGIN
+
+
+def _shift_bits(seg_u: str, genome_seq: str, intron_start: int, intron_end: int, strand: str):
+    """E bits of *seg_u* anchored at (intron_start, intron_end) — None without a block."""
+    try:
+        from ..align.local_aligner import align_clip_to_exon
+        ops, _ = align_clip_to_exon(seg_u, genome_seq, intron_start, intron_end, strand)
+        _ops, _cig, shape = _place_and_measure(ops, seg_u, genome_seq, intron_start, intron_end, strand)
+    except Exception:
+        return None
+    return None if shape is None else shape.bits
+
+
 def _gap_refusal(cigar_ops) -> str:
     """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer
     than ``E_MAX_GAP`` (env ``RECTIFY_2F_EVIDENCE_MAX_GAP``), else ''."""
@@ -456,6 +494,13 @@ def _gap_refusal(cigar_ops) -> str:
         cap = int(raw) if raw else E_MAX_GAP
     except ValueError:
         cap = E_MAX_GAP
+    raw2 = os.environ.get('RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED', '').strip()
+    try:
+        per = int(raw2) if raw2 else E_GAP_PER_MATCHED
+    except ValueError:
+        per = E_GAP_PER_MATCHED
+    matched = sum(ln for op, ln in cigar_ops if op in (0, 7, 8))
+    cap = max(cap, matched // per) if per > 0 else cap
     if any(op in (1, 2) and ln > cap for op, ln in cigar_ops):
         return EXON_GAP_REFUSAL
     return ''
@@ -1908,6 +1953,40 @@ def _terminal_peel_rescue(
         else (_ct[-1][1] if _ct and _ct[-1][0] == 4 else 0)
     _extra = max(0, int(best_depth or 0) - _clip0)
     if _extra:
+        # The writer absorbs the peeled body bases into the exon block by trimming them off
+        # the body, so the drawn N is `_extra` longer on the ACCEPTOR side: the junction the
+        # record carries is (donor, acceptor + d), not the candidate's. Report what is drawn
+        # (TSV == BAM, ISSUE-024): shift the acceptor, re-derive provenance and motif, and
+        # judge the shifted landing at its own tier — a novel acceptor needs the creation
+        # floor. bcd90cad (T1 372d6c5): 11S64M at the annotated acceptor, peel 4 -> the
+        # record's N ended 4 nt past 8683201 while the TSV named 8683201.
+        rj = best_peel.get('rescued_junction')
+        if rj is not None:
+            j_chrom, js, je = rj
+            new_rj = (j_chrom, js, je + _extra) if strand == '+' else (j_chrom, js - _extra, je)
+            _gs = len(genome_seq)
+            if strand == '+':
+                _acc_ok = new_rj[2] <= _gs and genome_seq[new_rj[2] - 2:new_rj[2]].upper() == 'AG'
+            else:
+                _acc_ok = new_rj[1] >= 0 and genome_seq[new_rj[1]:new_rj[1] + 2].upper() == 'CT'
+            _ann_new = (annotated_keys is None or tuple(new_rj) in annotated_keys)
+            _bits = best_peel.get('exon_bits')
+            _floor = evidence_floor_annotated_bits() if _ann_new else evidence_floor()[1]
+            if not _acc_ok or _bits is None or _bits < _floor:
+                _OI_COUNTERS['five_prime_peel_acceptor_shift_refused'] = (
+                    _OI_COUNTERS.get('five_prime_peel_acceptor_shift_refused', 0) + 1)
+                if not base_rescued and not (baseline.get('clip_refused') or ''):
+                    baseline['clip_refused'] = EXON_BITS_REFUSAL if _acc_ok else 'noncanonical_destination'
+                    if baseline.get('exon_identity') is None and best_peel.get('exon_identity') is not None:
+                        baseline['exon_identity'] = best_peel.get('exon_identity')
+                        baseline['exon_bits'] = _bits
+                return None
+            best_peel['rescued_junction'] = new_rj
+            best_peel['landing_annotated'] = _ann_new
+            if not _ann_new:
+                best_peel['novel_evidence'] = best_peel.get('novel_evidence') or 'pass'
+            _OI_COUNTERS['five_prime_peel_acceptor_shifted'] = (
+                _OI_COUNTERS.get('five_prime_peel_acceptor_shifted', 0) + 1)
         best_peel['five_prime_upstream_trim'] = int(best_peel.get('five_prime_upstream_trim', 0) or 0) + _extra
         best_peel['peel_depth'] = _extra
     return best_peel
@@ -2842,6 +2921,19 @@ def _rescue_3ss_truncation_body(
                         _best_local = (_key, _t)
                 if _best_local is None:
                     continue
+                # ISSUE-032(c)(i): the annotated coordinate holds unless the shifted winner
+                # beats it by ANNOTATED_SHIFT_MARGIN bits (see the constant).
+                if (_best_local[1][1] != 0 and _shift0_alt is not None
+                        and (annotated_keys is None
+                             or (j_chrom, intron_start, intron_end) in annotated_keys)):
+                    _b_w = _shift_bits(_rseq_u, genome_seq, _best_local[1][2], intron_end, '+')
+                    _b_0 = _shift_bits(_rseq_u, genome_seq, intron_start, intron_end, '+')
+                    _n_anchored_dps += 2
+                    if _b_0 is not None and (_b_w is None or _b_w < _b_0 + annotated_shift_margin()):
+                        _t0 = next(_t for _t in _survivors if _t[1] == 0)
+                        _best_local = ((_shift0_alt[0], _t0[0][1], _t0[0][2], _t0[0][3]), _t0)
+                        _OI_COUNTERS['five_prime_annotated_shift_held'] = (
+                            _OI_COUNTERS.get('five_prime_annotated_shift_held', 0) + 1)
                 _best_local_deficit = _best_local[0][0]
                 _best_local_ed = _best_local[1][0][0]
                 (_shift_w, _eff_intron_start, exon_seq,
@@ -3061,6 +3153,19 @@ def _rescue_3ss_truncation_body(
                         _best_local = (_key, _t)
                 if _best_local is None:
                     continue
+                # ISSUE-032(c)(i), minus mirror: the annotated coordinate holds unless the
+                # shifted winner beats it by ANNOTATED_SHIFT_MARGIN bits.
+                if (_best_local[1][1] != 0 and _shift0_alt is not None
+                        and (annotated_keys is None
+                             or (j_chrom, intron_start, intron_end) in annotated_keys)):
+                    _b_w = _shift_bits(_rseq_u, genome_seq, intron_start, _best_local[1][2], '-')
+                    _b_0 = _shift_bits(_rseq_u, genome_seq, intron_start, intron_end, '-')
+                    _n_anchored_dps += 2
+                    if _b_0 is not None and (_b_w is None or _b_w < _b_0 + annotated_shift_margin()):
+                        _t0 = next(_t for _t in _survivors if _t[1] == 0)
+                        _best_local = ((_shift0_alt[0], _t0[0][1], _t0[0][2], _t0[0][3]), _t0)
+                        _OI_COUNTERS['five_prime_annotated_shift_held'] = (
+                            _OI_COUNTERS.get('five_prime_annotated_shift_held', 0) + 1)
                 _best_local_deficit = _best_local[0][0]
                 _best_local_ed = _best_local[1][0][0]
                 (_shift_w, _eff_intron_end, exon_seq,

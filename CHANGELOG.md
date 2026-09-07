@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F — the annotated placement holds unless a shift wins by a margin;
+  the gap bound scales with the block** (`splice/splice_aware_5prime.py`; T1 of
+  the two-tier sha, 2026-09-07). Seven baseline-true annotated rescues had
+  re-landed on a novel site 2–5 nt away because the per-candidate shift sweep
+  ranks on the anchored deficit and the shift won by a hair (7f779873:
+  annotated 24.5 bits vs a −3 GC donor at 26.0). When the sweep's winner is not
+  the unslid coordinate of an annotated candidate, the two placements are
+  compared in E bits and the annotated one holds unless the shift beats it by
+  `ANNOTATED_SHIFT_MARGIN` = 6 bits (three clean bases; env
+  `RECTIFY_2F_ANNOTATED_SHIFT_MARGIN`; counter
+  `five_prime_annotated_shift_held`). The flat gap cap had refused 320 true
+  rescues on T1, 306 of them at ≥ 18 bits; the cap is now
+  `max(E_MAX_GAP, matched // E_GAP_PER_MATCHED)` (4, 5; env
+  `RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED`), so a 6-base deletion in a 45-match
+  block passes and the same gap in a 24-match block does not. And a terminal
+  peel that borrows body bases now REPORTS the junction it draws: the writer
+  absorbs the peeled bases by lengthening the N on the acceptor side, so the
+  reported acceptor shifts by the peel depth, is re-checked for a canonical
+  motif and re-judged at the tier of its own provenance (bcd90cad: the TSV
+  named the annotated acceptor while the record's N ended 4 nt past it; now
+  refused, TSV == BAM).
 - **Module 2F two-tier evidence floor — attaching a read to an annotated
   junction is not creating a junction** (`splice/splice_aware_5prime.py`,
   `bam/bam_writer.py`; Kevin's ruling on the read-review queue, 2026-09-07).
