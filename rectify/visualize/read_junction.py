@@ -740,6 +740,54 @@ def adjacent_blocks(view: ArmView, j: Tuple[int, int], within: int) -> Tuple[Opt
     return (left, right) if view.strand == "+" else (right, left)
 
 
+def _parse_cigar(cig: str) -> List[Tuple[str, int]]:
+    return [(m.group(2), int(m.group(1))) for m in re.finditer(r"(\d+)([MIDNSHP=X])", cig or "")]
+
+
+def read_locator(view: ArmView, junction: Tuple[int, int]) -> Optional[Tuple[float, int, int, str]]:
+    """WHERE IN THE READ the drawn junction sits: ``(frac, qpos, qlen, label)`` in TRANSCRIPT orientation,
+    ``frac`` 0.0 at the read's 5' end and 1.0 at its 3' end, ``label`` one of ``5' END`` / ``MIDDLE`` /
+    ``3' END``. Kevin 2026-09-07: a reviewer must be able to tell at a glance whether they are looking at
+    the middle of a molecule or at one of its ends, because that changes what an unexplained clip can mean
+    (a truncated 5' end excuses it; the real end of the molecule does not — ISSUE-036)."""
+    ops = _parse_cigar(view.cigar)
+    if not ops:
+        return None
+    qlen = sum(n for op, n in ops if op in "MIS=X")
+    if qlen <= 0:
+        return None
+    ref, q, qpos = view.ref_start, 0, None
+    for op, n in ops:
+        if op == "N" and ref == junction[0]:
+            qpos = q
+            break
+        if op in "M=X":
+            ref += n; q += n
+        elif op in "IS":
+            q += n
+        elif op in "DN":
+            ref += n
+    if qpos is None:                      # the junction is not drawn in this arm: use its reference position
+        ref, q = view.ref_start, view.lead_clip
+        for op, n in ops:
+            if op in "M=X":
+                if ref <= junction[0] < ref + n:
+                    qpos = q + (junction[0] - ref); break
+                ref += n; q += n
+            elif op in "IS":
+                q += n
+            elif op in "DN":
+                if ref <= junction[0] < ref + n:
+                    qpos = q; break
+                ref += n
+    if qpos is None:
+        return None
+    frac = qpos / qlen if view.strand == "+" else 1.0 - qpos / qlen
+    frac = min(1.0, max(0.0, frac))
+    label = "5′ END" if frac <= _END_FRAC else ("3′ END" if frac >= 1.0 - _END_FRAC else "MIDDLE")
+    return frac, qpos, qlen, label
+
+
 def _blk(b: Optional[Block]) -> str:
     return f"{b.M}/{b.aligned} {b.identity:.0f} %" if b else "–"
 
@@ -772,7 +820,37 @@ def verdict_line(view: ArmView, genome: Genome, frame: Frame) -> str:
             clip = f"clip {view.five_clip} fit –"
     else:
         clip = "clip 0"
-    return f"{jtxt} · {blk} · {run} · {clip} · MQ {view.mapq}"
+    cig = local_cigar(view, frame)
+    bits = [jtxt, cig, blk]
+    if view.five_clip:
+        bits.append(clip.split(" @")[0])
+    bits.append(f"MQ {view.mapq}")
+    return " · ".join(bits)
+
+
+def local_cigar(view: ArmView, frame: Frame) -> str:
+    """The arm's CIGAR ops whose reference span touches the drawn window, with an ellipsis for what is
+    trimmed. Kevin 2026-09-07 asked for the CIGAR foregrounded on the card; the full one is unreadable on
+    a long read, and every op outside the window is noise for the question being judged."""
+    ops = _parse_cigar(view.cigar)
+    lo = min(a for a, _ in frame.segments)
+    hi = max(b for _, b in frame.segments)
+    ref, keep, before, after = view.ref_start, [], False, False
+    for op, n in ops:
+        span = n if op in "M=XDN" else 0
+        a, b = ref, ref + span
+        if op in "SI":
+            a = b = ref
+        if b >= lo and a <= hi:
+            keep.append(f"{n}{op}")
+        elif b < lo:
+            before = True
+        else:
+            after = True
+        ref += span
+    if not keep:
+        return view.cigar
+    return ("…" if before else "") + "".join(keep) + ("…" if after else "")
 
 
 # ----------------------------------------------------------------------------- drawing
@@ -785,6 +863,7 @@ _MARGIN_MM = 4.0
 # is WIDENED in proportion rather than the letters shrunk, so the floor always holds.
 _COLS_AT_COL_DOUBLE = 75
 _MAX_EXON_HALF = 60
+_END_FRAC = 0.15      # a junction inside this fraction of the read's length counts as being AT that end
 _TSS_LABEL_GAP = 5    # columns; nearer TSS share one label so alternative starts do not stack          # 2 x 60 + 2 x intron half + gap ~ 150 columns ~ a 14-in figure; past that the PNG stops being readable on a phone
 
 
@@ -1035,7 +1114,8 @@ def _rows_per_panel(n_arms: int, n_models: int = 1, extra: float = 0.0) -> float
 
 def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optional[Sequence[str]] = None,
                 window: int = 32, exon_window: Optional[int] = None, junction_index="auto", sidecar: bool = True,
-                recommend: Optional[str] = None, sidecar_note: Optional[str] = None) -> dict:
+                recommend: Optional[str] = None, sidecar_note: Optional[str] = None,
+                legend_mode: str = "full") -> dict:
     """Render the per-read junction PNG. Returns ``{"png", "panels", "junctions", "arms", "floors_ok"}``.
 
     ``recommend``: an arm name -> a rounded ``focal`` box around that arm's whole row in every panel and a
@@ -1105,7 +1185,12 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     panel_gap_mm = 6.5
     ncols = max(f.ncols for f in frames)
     # legend + footer band (measured on a probe when figstyle is available)
-    legend = _legend_text(read_id, man, frames, list(views))
+    legend = _legend_text(read_id, man, frames, list(views), brief=(str(legend_mode) == "brief"))
+    loc = None
+    for _n in ([rec_arm] if rec_arm else []) + list(views):
+        loc = read_locator(views[_n], frames[0].junction)
+        if loc:
+            break
     fs = _figstyle()
     if fs is not None:
         probe = plt.figure(figsize=(width_in, 4.0))
@@ -1123,6 +1208,8 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     ident = " · ".join(x for x in (read_id[:8], man.get("library", ""), man.get("class", ""), f"{v0.chrom} {strand}") if x)
     fig.text(_MARGIN_MM / width_mm, 1 - _MARGIN_MM / height_mm, ident, ha="left", va="top", fontsize=T["in_figure"],
              fontweight="bold", color=color("ink"))
+    if loc:
+        _draw_locator(fig, loc, width_mm, height_mm)
     arm_line = " · ".join(_arm_summary(n, v) for n, v in views.items())
     fig.text(_MARGIN_MM / width_mm, 1 - (_MARGIN_MM + 4.2) / height_mm, arm_line, ha="left", va="top",
              fontsize=T["annotation"], color=color("hairline"))
@@ -1195,7 +1282,33 @@ def _arm_summary(name: str, v: ArmView) -> str:
     return f"{name} {_fmt(i.start)}–{_fmt(i.end)} {i.motif}"
 
 
-def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str]) -> str:
+def _draw_locator(fig, loc, width_mm: float, height_mm: float) -> None:
+    """The "you are here" strip: the whole read as a bar, 5' on the left and 3' on the right, with a
+    marker where the drawn junction sits and the position named in words. Kevin 2026-09-07: a reviewer
+    has to know at a glance whether this is the middle of a molecule or one of its ends."""
+    from matplotlib.patches import Rectangle
+    frac, qpos, qlen, label = loc
+    T, S = _type(), _stroke()
+    bar_mm, h_mm = 30.0, 1.6
+    x0 = (width_mm - _MARGIN_MM - bar_mm - 4.0) / width_mm
+    y0 = 1 - (_MARGIN_MM + 2.6) / height_mm
+    fig.patches.append(Rectangle((x0, y0), bar_mm / width_mm, h_mm / height_mm, transform=fig.transFigure,
+                                 facecolor=color("wash"), edgecolor=color("hairline"),
+                                 linewidth=S["hairline"], zorder=3))
+    mx = x0 + (bar_mm * frac) / width_mm
+    fig.patches.append(Rectangle((mx - 0.4 / width_mm, y0 - 0.9 / height_mm), 0.8 / width_mm,
+                                 (h_mm + 1.8) / height_mm, transform=fig.transFigure,
+                                 facecolor=color("focal"), edgecolor="none", zorder=4))
+    fig.text(x0 - 2.6 / width_mm, y0 + (h_mm / 2) / height_mm, "5\u2032", ha="right", va="center",
+             fontsize=T["annotation"], color=color("subtle"))
+    fig.text(x0 + (bar_mm + 2.6) / width_mm, y0 + (h_mm / 2) / height_mm, "3\u2032", ha="left", va="center",
+             fontsize=T["annotation"], color=color("subtle"))
+    fig.text(x0 + (bar_mm / 2) / width_mm, y0 + (h_mm + 2.4) / height_mm,
+             f"{label}  \u00b7  base {qpos:,} of {qlen:,}", ha="center", va="bottom",
+             fontsize=T["in_figure"], color=color("focal"), fontweight="semibold")
+
+
+def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str], brief: bool = False) -> str:
     n = len(frames)
     parts = [f"Figure | read {read_id[:8]}, {len(arms)} arms, one junction per panel at base resolution."]
     for k, f in enumerate(frames):
@@ -1205,6 +1318,8 @@ def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str]) 
         span = (f"{f.half} letters each side of each end." if he == f.half else
                 f"{he} letters on the exon side and {f.half} on the intron side of each end.")
         parts.append(f"{call}{f.chrom}:{_fmt(s)}–{_fmt(e)} ({f.strand}), {span}")
+    if brief:
+        return " ".join(parts)          # the shared legend lives once on the review page, not on every card
     parts.append("Grey letters match, orange letters with a tick mismatch; orange notch = deletion, amber raised block = insertion, "
                  "hatched = soft clip continued ungapped, thin line = N-op; blue ticks = annotated exon ends and a "
                  "filled arrowhead marked TSS = an annotated transcript start, pointing the way the gene is transcribed "
@@ -1286,13 +1401,15 @@ def main(argv=None) -> int:
     ap.add_argument("--all-junctions", action="store_true", help="one panel per junction present in any arm")
     ap.add_argument("--junction", default=None, help="index into the --all-junctions list (0 = 5'-most)")
     ap.add_argument("--no-sidecar", action="store_true")
+    ap.add_argument("--legend", choices=("full", "brief"), default="full",
+                    help="brief drops the shared legend paragraph from the figure (the review page carries it once)")
     ap.add_argument("--recommend", default=None,
                     help="an arm name (focal box around its row + `fixer's pick` tag) or none:<text> (a focal banner, no box)")
     ap.add_argument("--sidecar-note", default=None, help="free text written into the .md sidecar")
     a = ap.parse_args(argv)
     mode = "all" if a.all_junctions else ("auto" if a.junction is None else int(a.junction))
     res = render_read(a.bundle, a.read, a.genome, a.gtf, a.out, arms=a.arms, window=a.window,
-                      exon_window=a.exon_window, junction_index=mode,
+                      exon_window=a.exon_window, legend_mode=a.legend, junction_index=mode,
                       sidecar=not a.no_sidecar, recommend=a.recommend, sidecar_note=a.sidecar_note)
     print(f"{res['png']}  panels {res['panels']}  junctions {res['junctions']}  arms {res['arms']}  floors {'OK' if res['floors_ok'] else 'BELOW'}")
     return 0 if res["floors_ok"] else 1

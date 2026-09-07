@@ -103,8 +103,27 @@ def test_data_model_matches_the_planted_edits(bundle):
     s = RJ.arm_view("stock", recs["stock"], G, A)
     assert s.five_clip == 20 and not s.introns
     assert s.clip_fit and s.clip_fit["exon_end"] == IN_S and s.clip_fit["matches"] == 20 and s.clip_fit["offset"] == 0
-    line = RJ.verdict_line(v, G, RJ.Frame("chrT", "+", (IN_S, IN_E), 16))
-    assert "GT-AG drawn" in line and "MQ 60" in line and "run 20|10" in line and "3′ " in line
+    frame = RJ.Frame("chrT", "+", (IN_S, IN_E), 16)
+    line = RJ.verdict_line(v, G, frame)
+    # Kevin 2026-09-07 ("less text burden … showcasing the CIGAR"): the status line now carries the LOCAL
+    # CIGAR and drops the clean-run pair, which was never the criterion anyway (bits score, not clean run).
+    assert "GT-AG drawn" in line and "MQ 60" in line and "3′ " in line
+    assert "run " not in line
+    assert RJ.local_cigar(v, frame) in line
+    assert "200N" in RJ.local_cigar(v, frame)               # the drawn intron is inside the window
+    assert RJ.local_cigar(v, frame).endswith("…")           # ops past the window are trimmed, not printed
+
+
+def test_read_locator_names_the_end_of_the_molecule(bundle):
+    """The "you are here" strip: 5' END / MIDDLE / 3' END, in transcript orientation (Kevin 2026-09-07)."""
+    G = RJ.Genome(bundle["fa"])
+    A = RJ.Annotation(bundle["gtf"])
+    recs = RJ.load_arms(bundle["dir"], "aaaa1111")
+    v = RJ.arm_view("candidate", recs["candidate"], G, A)
+    frac, qpos, qlen, label = RJ.read_locator(v, (IN_S, IN_E))
+    assert 0.0 <= frac <= 1.0 and 0 < qlen and 0 <= qpos <= qlen
+    assert label in ("5′ END", "MIDDLE", "3′ END")
+    assert label == "5′ END" and frac < 0.15, (frac, label)   # the planted junction sits 20 nt into the read
 
 
 def test_junction_selection_auto_is_the_disagreement(bundle):
