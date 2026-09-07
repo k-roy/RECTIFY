@@ -44,6 +44,10 @@ tokens, never base colours; matched letters stay ``subtle`` and the soft clip st
 WINDOW. The house type floor (7.5 pt = 1.89 mm cap) caps a 7.2-in figure at ~75 letter
 columns, so ``window`` is the number of letters per junction END (default 32: 16 each side of
 the donor boundary and 16 each side of the acceptor boundary, 64 columns + the gap).
+``exon_window`` (``--exon-window``) sets the EXON side of each boundary on its own, because that
+is the side a 5' placement is judged on (Kevin 2026-09-07, a7cb6487: the placement was legible in
+rbrowse and not in a symmetric 32-letter panel). Above ~75 columns the FIGURE WIDENS in proportion
+rather than the letters shrinking, so the type floor always holds.
 
 Usage::
 
@@ -239,6 +243,7 @@ class Annotation:
     def __init__(self, gtf, chroms: Optional[Sequence[str]] = None):
         self.path = str(gtf)
         ex = collections.defaultdict(list)
+        strand_of: Dict[Tuple[str, str], str] = {}
         self.gene_of: Dict[str, str] = {}
         want = set(chroms) if chroms else None
         with open(self.path) as fh:
@@ -255,15 +260,22 @@ class Annotation:
                 g = re.search(r'gene_name "([^"]+)"', f[8])
                 self.gene_of[tid] = g.group(1) if g else tid
                 ex[(f[0], tid)].append((int(f[3]) - 1, int(f[4])))
+                strand_of[(f[0], tid)] = f[6]
         self.introns: Dict[str, set] = collections.defaultdict(set)
         self.exon_starts: Dict[str, set] = collections.defaultdict(set)
         self.exon_ends: Dict[str, set] = collections.defaultdict(set)
         self._exons: Dict[str, List[Tuple[int, int]]] = collections.defaultdict(list)
         #: chrom -> [(transcript_id, sorted exons)]
         self.transcripts: Dict[str, List[Tuple[str, List[Tuple[int, int]]]]] = collections.defaultdict(list)
+        #: chrom -> {position: strand} of annotated TRANSCRIPT STARTS. A 5' block that reaches one is at the
+        #: end of the molecule, not clipped, which is what separates a full-length DRS read from a fragment
+        #: (Kevin 2026-09-07: "for reads near the 5' end, it'd also be helpful to know where the TSS(s) are").
+        self.tss: Dict[str, Dict[int, str]] = collections.defaultdict(dict)
         for (c, tid), e in ex.items():
             e.sort()
             self.transcripts[c].append((tid, e))
+            _sd = strand_of.get((c, tid), "+")
+            self.tss[c][e[0][0] if _sd != "-" else e[-1][1] - 1] = _sd
             for (s1, e1), (s2, e2) in zip(e, e[1:]):
                 self.introns[c].add((e1, s2))
             for s, t in e:
@@ -619,16 +631,21 @@ class Frame:
     junction: Tuple[int, int]
     half: int
     gap: int = 3
+    half_exon: Optional[int] = None
     segments: List[Tuple[int, int]] = field(default_factory=list)
     offsets: List[int] = field(default_factory=list)
 
     def __post_init__(self):
         s, e = self.junction
-        h = self.half
+        h = self.half                                     # letters on the INTRON side of each boundary
+        he = self.half if self.half_exon is None else self.half_exon   # letters on the EXON side
+        # The intron always lies between s and e, so the exon side of s is left and of e is right on
+        # either strand (`-` only reverses the order the segments are drawn in). Kevin 2026-09-07: the
+        # placement of a 5' block is judged on the exon side, so that side gets the extra letters.
         if e - s <= 2 * h:  # a short intron: one continuous window
-            segs = [(s - h, e + h)]
+            segs = [(s - he, e + he)]
         else:
-            segs = [(s - h, s + h), (e - h, e + h)]
+            segs = [(s - he, s + h), (e - h, e + he)]
         if self.strand == "-":
             segs = segs[::-1]
         self.segments = segs
@@ -764,13 +781,18 @@ _CLIP_LETTERS = 8   # clip letters drawn either side of the alignment edge
 _CLIP_LABEL_COLS = 5  # columns of the hatched block that carry the `clip N` label
 _GUTTER_COLS = 6.5  # label gutter, in columns
 _MARGIN_MM = 4.0
+# Letter columns a COL_DOUBLE (7.2 in) figure holds at the 7.5 pt type floor. Above this the figure
+# is WIDENED in proportion rather than the letters shrunk, so the floor always holds.
+_COLS_AT_COL_DOUBLE = 75
+_MAX_EXON_HALF = 60
+_TSS_LABEL_GAP = 5    # columns; nearer TSS share one label so alternative starts do not stack          # 2 x 60 + 2 x intron half + gap ~ 150 columns ~ a 14-in figure; past that the PNG stops being readable on a phone
 
 
 def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann: Annotation, *, letter_pt: float,
                 recommend_arm: Optional[str] = None):
     """One panel: reference, coordinates, model, one read row + verdict per arm. y grows DOWNWARD
     (row units; the axes' y-axis is inverted by the caller)."""
-    from matplotlib.patches import Rectangle
+    from matplotlib.patches import Polygon, Rectangle
     S = _stroke()
     ink, hair, subtle, mute, wash, splice = (color(n) for n in ("ink", "hairline", "subtle", "mute", "wash", "splice"))
     focal, stratum_a = color("focal"), color("stratum_a")   # Kevin's override for THIS tool: deviations in colour
@@ -812,6 +834,27 @@ def _draw_panel(ax, frame: Frame, views: Dict[str, ArmView], genome: Genome, ann
                 if bx is not None:
                     ax.plot([bx, bx], [y_ref + 0.42, y_ref + 0.62], color=splice, lw=S["secondary"],
                             solid_capstyle="butt", zorder=4)
+
+    # ---- annotated TSS inside the frame: a filled arrowhead on the ruler pointing the way the gene is
+    # transcribed, so a 5' block that reaches one is read as the END of the molecule, not as a clip
+    _tss = ann.tss.get(chrom, {})
+    _drawn = []          # columns already carrying a TSS label, so alternative starts a few bases apart
+    for (a, b), off in zip(frame.segments, frame.offsets):     # do not stack "TSS" on top of itself
+        for pos in sorted(p for p in _tss if a <= p < b):
+            sd = _tss[pos]
+            cx = frame.col(pos)
+            if cx is None:
+                continue
+            # point in the direction of transcription as DRAWN (the frame flips x on a minus-strand read)
+            right = (sd != "-") == (strand != "-")
+            tip, tail = (cx + 1.15, cx + 0.15) if right else (cx - 0.15, cx + 0.85)
+            ax.add_patch(Polygon([[tail, y_ref + 0.44], [tail, y_ref + 0.94], [tip, y_ref + 0.69]],
+                                 closed=True, facecolor=splice, edgecolor="none", zorder=5))
+            if any(abs(cx - d) < _TSS_LABEL_GAP for d in _drawn):
+                continue                                        # arrowhead only; one label serves the cluster
+            _drawn.append(cx)
+            ax.text(tip + (0.35 if right else -0.35), y_ref + 0.69, "TSS", color=splice,
+                    ha="left" if right else "right", va="center", fontsize=_type()["annotation"], zorder=5)
 
     # ---- the annotation model rows: up to three distinct exon structures inside the frame
     # (the transcript carrying the frame's junction first); exon = ink block, intron = hairline + chevrons
@@ -991,8 +1034,8 @@ def _rows_per_panel(n_arms: int, n_models: int = 1, extra: float = 0.0) -> float
 
 
 def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optional[Sequence[str]] = None,
-                window: int = 32, junction_index="auto", sidecar: bool = True, recommend: Optional[str] = None,
-                sidecar_note: Optional[str] = None) -> dict:
+                window: int = 32, exon_window: Optional[int] = None, junction_index="auto", sidecar: bool = True,
+                recommend: Optional[str] = None, sidecar_note: Optional[str] = None) -> dict:
     """Render the per-read junction PNG. Returns ``{"png", "panels", "junctions", "arms", "floors_ok"}``.
 
     ``recommend``: an arm name -> a rounded ``focal`` box around that arm's whole row in every panel and a
@@ -1003,13 +1046,20 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     ``junction_index``: ``'auto'`` (the junction(s) the arms disagree about, else the 5'-most),
     ``'all'`` (one panel per junction in any arm), or an int index into the ``'all'`` list.
     ``window``: letters per junction end (centered on the boundary); the type floor caps a 7.2-in
-    figure at ~75 columns, so > 36 is refused."""
+    figure at ~75 columns, so > 36 is refused.
+    ``exon_window``: letters on the EXON side of each boundary (default: ``window // 2``, i.e. centred).
+    Raising it shows more of the sequence a 5' placement is judged on; the figure WIDENS to keep every
+    letter at or above the type floor, so the panel gets wider rather than the letters smaller."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     if window > 36:
         raise ValueError("window > 36 cannot hold floor-size letters at COL_DOUBLE (7.2 in); use <= 36")
+    half_intron = max(1, window // 2)
+    half_exon = half_intron if exon_window is None else int(exon_window)
+    if half_exon < 1 or half_exon > _MAX_EXON_HALF:
+        raise ValueError(f"exon_window must be 1..{_MAX_EXON_HALF} letters")
     apply_style(matplotlib)
     T = _type()
     G = genome if isinstance(genome, Genome) else Genome(genome)
@@ -1037,10 +1087,13 @@ def render_read(bundle_dir, read_id: str, genome, gtf, out_png, *, arms: Optiona
     man = read_manifest(bundle_dir, read_id)
     v0 = next(iter(views.values()))
     strand = v0.strand
-    frames = [Frame(v0.chrom, strand, g[0], max(1, window // 2)) for g in groups]
+    frames = [Frame(v0.chrom, strand, g[0], half_intron, half_exon=half_exon) for g in groups]
 
     # ---- geometry, in mm
     width_in = tokens()["geometry"]["column_in"]["double"]
+    _ncols = max(f.ncols for f in frames)
+    if _ncols > _COLS_AT_COL_DOUBLE:            # widen, never shrink the letters below the floor
+        width_in *= _ncols / _COLS_AT_COL_DOUBLE
     width_mm = width_in * 25.4
     n_arms = len(views)
     n_models = max(1, max(len(A.models_in(f.chrom, f.segments, f.junction)) for f in frames))
@@ -1148,9 +1201,14 @@ def _legend_text(read_id: str, man: dict, frames: List[Frame], arms: List[str]) 
     for k, f in enumerate(frames):
         call = f"({_letter(k)}) " if n > 1 else ""
         s, e = f.junction
-        parts.append(f"{call}{f.chrom}:{_fmt(s)}–{_fmt(e)} ({f.strand}), {f.half} letters each side of each end.")
+        he = f.half if f.half_exon is None else f.half_exon
+        span = (f"{f.half} letters each side of each end." if he == f.half else
+                f"{he} letters on the exon side and {f.half} on the intron side of each end.")
+        parts.append(f"{call}{f.chrom}:{_fmt(s)}–{_fmt(e)} ({f.strand}), {span}")
     parts.append("Grey letters match, orange letters with a tick mismatch; orange notch = deletion, amber raised block = insertion, "
-                 "hatched = soft clip continued ungapped, thin line = N-op; blue ticks = annotated exon ends. "
+                 "hatched = soft clip continued ungapped, thin line = N-op; blue ticks = annotated exon ends and a "
+                 "filled arrowhead marked TSS = an annotated transcript start, pointing the way the gene is transcribed "
+                 "(a 5′ block reaching one is the END of the molecule, not a clip). "
                  "Per arm: the N-op at this junction drawn or absent in that arm's record · matched/aligned of the blocks on the "
                  "5′ and 3′ side of the junction (the 5′ block when neither is adjacent) · I, D · clean run 5′|3′ · "
                  "5′ clip fit to the nearest annotated exon end within 5 kb · MAPQ.")
@@ -1222,6 +1280,9 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True, help="output PNG (a .md sidecar is written beside it)")
     ap.add_argument("--arms", nargs="*", default=None, help="arm names (default: every *.bam, stock first)")
     ap.add_argument("--window", type=int, default=32, help="letters per junction end (default 32; max 36)")
+    ap.add_argument("--exon-window", type=int, default=None,
+                    help="letters on the EXON side of each boundary (default: window//2). Higher shows more of the "
+                         "sequence a 5' placement is judged on; the figure widens so letters stay at the type floor")
     ap.add_argument("--all-junctions", action="store_true", help="one panel per junction present in any arm")
     ap.add_argument("--junction", default=None, help="index into the --all-junctions list (0 = 5'-most)")
     ap.add_argument("--no-sidecar", action="store_true")
@@ -1230,7 +1291,8 @@ def main(argv=None) -> int:
     ap.add_argument("--sidecar-note", default=None, help="free text written into the .md sidecar")
     a = ap.parse_args(argv)
     mode = "all" if a.all_junctions else ("auto" if a.junction is None else int(a.junction))
-    res = render_read(a.bundle, a.read, a.genome, a.gtf, a.out, arms=a.arms, window=a.window, junction_index=mode,
+    res = render_read(a.bundle, a.read, a.genome, a.gtf, a.out, arms=a.arms, window=a.window,
+                      exon_window=a.exon_window, junction_index=mode,
                       sidecar=not a.no_sidecar, recommend=a.recommend, sidecar_note=a.sidecar_note)
     print(f"{res['png']}  panels {res['panels']}  junctions {res['junctions']}  arms {res['arms']}  floors {'OK' if res['floors_ok'] else 'BELOW'}")
     return 0 if res["floors_ok"] else 1
