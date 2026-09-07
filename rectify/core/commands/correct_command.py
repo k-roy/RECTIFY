@@ -1064,6 +1064,14 @@ def run(args):
                     else:
                         _prebuilt_pool = _pool_data['all_junctions']
                         _prebuilt_annot_set = _pool_data['annotated_set']
+                        # ISSUE-034: a pool written by a prescan that carried the clip-origin prior.
+                        from ..splice.splice_aware_5prime import set_clip_origin_signal
+                        set_clip_origin_signal(_pool_data.get('clip_signal'))
+                        if _pool_data.get('clip_signal'):
+                            logger.info("  Clip-origin prior loaded from the pool cache (%d annotated introns with unspliced signal)",
+                                        sum(1 for _v in _pool_data['clip_signal'].get('unspliced', {}).values() if _v))
+                        else:
+                            logger.info("  Pool cache carries no clip-origin prior (pre-ISSUE-034 prescan): prior = 0")
                         logger.info(
                             "  Pre-built pool: %d junctions (%d annotated)",
                             len(_prebuilt_pool), len(_prebuilt_annot_set),

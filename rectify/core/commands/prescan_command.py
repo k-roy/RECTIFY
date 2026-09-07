@@ -259,11 +259,12 @@ def run(args: argparse.Namespace) -> int:
 
         from ..splice.junction_refiner import build_junction_pool
         t0 = time.perf_counter()
-        all_junctions, annotated_set = build_junction_pool(
+        all_junctions, annotated_set, clip_signal = build_junction_pool(
             aligner_bams,
             annotated_junctions,
             min_observed_support=args.junction_min_support,
             max_junction_size=args.junction_max_size,
+            return_signal=True,      # ISSUE-034: unspliced/spliced counts per annotated intron (clip-origin prior)
         )
         elapsed = time.perf_counter() - t0
         logger.info(
@@ -296,6 +297,8 @@ def run(args: argparse.Namespace) -> int:
         pool_data = {
             'all_junctions': all_junctions,
             'annotated_set': annotated_set,
+            # ISSUE-034: {'unspliced': {junction: n}, 'spliced': {junction: n}} — the clip-origin prior.
+            'clip_signal': {'unspliced': dict(clip_signal['unspliced']), 'spliced': dict(clip_signal['spliced'])},
             'min_observed_support': args.junction_min_support,
             'max_junction_size': args.junction_max_size,
             'complexity_alpha': args.complexity_alpha,
