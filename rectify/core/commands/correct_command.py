@@ -1033,6 +1033,7 @@ def run(args):
                 logger.info("Module 2H: skipped junction refinement; preparing pool lookup only...")
             else:
                 logger.info("Module 2H: Junction N-op boundary refinement...")
+            _clip_signal = None          # ISSUE-034: the clip-origin prior (set below from the cache or a fresh pool)
             try:
                 from ..splice.junction_refiner import build_junction_pool, refine_bam_junctions
                 from ..consensus.consensus import load_annotated_junctions as _load_annot_j
@@ -1066,7 +1067,8 @@ def run(args):
                         _prebuilt_annot_set = _pool_data['annotated_set']
                         # ISSUE-034: a pool written by a prescan that carried the clip-origin prior.
                         from ..splice.splice_aware_5prime import set_clip_origin_signal
-                        set_clip_origin_signal(_pool_data.get('clip_signal'))
+                        _clip_signal = _pool_data.get('clip_signal')
+                        set_clip_origin_signal(_clip_signal)
                         if _pool_data.get('clip_signal'):
                             logger.info("  Clip-origin prior loaded from the pool cache (%d annotated introns with unspliced signal)",
                                         sum(1 for _v in _pool_data['clip_signal'].get('unspliced', {}).values() if _v))
@@ -1423,6 +1425,7 @@ def run(args):
                 variant_aware=config['variant_aware'],
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
+                clip_signal=_clip_signal,
                 pool_chrom_index=_pool_chrom_index,
                 apply_3ss_rescue=config['apply_3ss_rescue'],
                 gene_interval_trees=gene_interval_trees,

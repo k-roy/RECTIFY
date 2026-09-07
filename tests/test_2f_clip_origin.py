@@ -126,3 +126,16 @@ def test_prescan_unspliced_signal_counts_reads_running_through_an_intron_edge():
     _count_unspliced([(0, 30), (3, 100), (0, 30)], 10, *idx['chrT'], c, 10)  # spliced: no
     _count_unspliced([(0, 30)], 20, *idx['chrT'], c, 10)                     # 20-50 across the donor 40
     assert c == Counter({('chrT', 40, 140): 2})
+
+
+def test_region_worker_initializer_installs_the_prior_in_the_worker_process(tmp_path):
+    """Spawned region workers do not inherit module globals: the shared state carries the signal and the
+    initializer installs it (the dca3302 T1 had the prior loaded in the parent and 0 on every worker row)."""
+    from rectify.core.bam import parallel as bp_par
+    genome_fa = tmp_path / 'g.fa'
+    genome_fa.write_text('>chrT\n' + 'ACGT' * 50 + '\n')
+    set_clip_origin_signal(None)
+    bp_par._init_region_worker_state(str(genome_fa), None, {'clip_signal': {'unspliced': {JUNCTION: 7}, 'spliced': {JUNCTION: 1}}})
+    assert clip_origin_prior_bits(JUNCTION) == pytest.approx(2.0)          # log2(8/2)
+    bp_par._init_region_worker_state(str(genome_fa), None, {})
+    assert clip_origin_prior_bits(JUNCTION) == 0.0
