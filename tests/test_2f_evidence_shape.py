@@ -202,7 +202,8 @@ def test_defaults_and_registered_tokens():
     assert E_IDENTITY == 0.8
     assert 14 <= E_BITS <= 19.5          # the model's range; 22f609c6 (19.5) must pass
     assert evidence_floor() == (E_IDENTITY, E_BITS)
-    assert set(EVIDENCE_REFUSALS) == {EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL}
+    from rectify.core.splice.splice_aware_5prime import EXON_GAP_REFUSAL
+    assert set(EVIDENCE_REFUSALS) == {EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL, EXON_GAP_REFUSAL}
     assert set(EVIDENCE_REFUSALS) <= set(PLACEMENT_REFUSALS)
     assert not (set(EVIDENCE_REFUSALS) & set(NOVEL_EXON_REFUSALS))
     assert _evidence_floor_refusal(None) == ''
@@ -219,6 +220,46 @@ def test_env_overrides_move_the_operating_point(monkeypatch):
     monkeypatch.setenv('RECTIFY_2F_EVIDENCE_IDENTITY', 'garbage')
     monkeypatch.setenv('RECTIFY_2F_EVIDENCE_BITS', 'garbage')
     assert evidence_floor() == (E_IDENTITY, E_BITS)
+
+
+def test_gap_bound_refuses_a_single_long_indel_in_the_block(monkeypatch):
+    """PROVISIONAL E_MAX_GAP (2026-09-07, control 04b17fc6 `6M1I9M6D3M1D3M1I3M` 19.5 bits): no single I/D in a
+    placed block may exceed 4 bases; 2277f7b3's `1M4I3M1I14M2D1M` (a reviewed true rescue) stays allowed."""
+    from rectify.core.splice.splice_aware_5prime import E_MAX_GAP, EXON_GAP_REFUSAL, _gap_refusal
+    assert E_MAX_GAP == 4 and EXON_GAP_REFUSAL in EVIDENCE_REFUSALS
+    ops_04b = [(0, 6), (1, 1), (0, 9), (2, 6), (0, 3), (2, 1), (0, 3), (1, 1), (0, 3)]
+    ops_227 = [(0, 1), (1, 4), (0, 3), (1, 1), (0, 14), (2, 2), (0, 1)]
+    assert _gap_refusal(ops_04b) == EXON_GAP_REFUSAL
+    assert _gap_refusal(ops_227) == ''
+    assert _gap_refusal([]) == '' and _gap_refusal([(0, 12)]) == ''
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_MAX_GAP', '8')
+    assert _gap_refusal(ops_04b) == ''
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_MAX_GAP', 'garbage')
+    assert _gap_refusal(ops_04b) == EXON_GAP_REFUSAL
+
+
+def test_two_tier_floor_annotated_attachment_vs_novel_creation(monkeypatch):
+    """Kevin 2026-09-07 (cards 975638b6 / 166079f3): attaching a read to an ANNOTATED site is judged at
+    E_BITS_ANNOTATED (12); creating a NOVEL site keeps E_BITS (18). Identity applies to both tiers. The
+    annotated tier can never exceed the novel one."""
+    from rectify.core.splice.splice_aware_5prime import E_BITS_ANNOTATED, evidence_floor_annotated_bits
+    assert E_BITS_ANNOTATED == 12.0 and evidence_floor_annotated_bits() == 12.0
+    six_clean = EvidenceShape(6, 0, 1.0, 12.0, 6, 0)               # 975638b6's `6M4S`
+    assert _evidence_floor_refusal(six_clean, annotated=True) == ''
+    assert _evidence_floor_refusal(six_clean, annotated=False) == EXON_BITS_REFUSAL
+    ten_two_x = EvidenceShape(8, 2, 0.8, 12.0, 4, 0)               # d90160db's reanchor 8/10
+    assert _evidence_floor_refusal(ten_two_x, annotated=True) == ''
+    low_identity = EvidenceShape(9, 4, 9 / 13, 10.0, 3, 0)         # identity floor still applies
+    assert _evidence_floor_refusal(low_identity, annotated=True) == EXON_IDENTITY_REFUSAL
+    just_under = EvidenceShape(5, 0, 1.0, 10.0, 5, 0)              # 5 clean bases: 10 bits
+    assert _evidence_floor_refusal(just_under, annotated=True) == EXON_BITS_REFUSAL
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_BITS_ANNOTATED', '16')
+    assert evidence_floor_annotated_bits() == 16.0
+    assert _evidence_floor_refusal(six_clean, annotated=True) == EXON_BITS_REFUSAL
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_BITS_ANNOTATED', '30')   # capped at the novel floor
+    assert evidence_floor_annotated_bits() == E_BITS
+    monkeypatch.setenv('RECTIFY_2F_EVIDENCE_BITS_ANNOTATED', 'garbage')
+    assert evidence_floor_annotated_bits() == 12.0
 
 
 # ---------------------------------------------------------------------------------------------- end to end

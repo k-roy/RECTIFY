@@ -94,12 +94,12 @@ def test_an_informative_clip_that_fits_no_candidate_is_a_refusal_not_a_proximity
 @pytest.mark.skipif(not SB.bundle_present('f53d770'),
                     reason='Sumner f53d770 replay bundle not present (collaborator data, kept outside the repo)')
 @pytest.mark.parametrize('gate', ['report', 'refuse'])
-@pytest.mark.parametrize('key', ['5cef5ebb', '5cef5ebb#2', '975638b6'])
-def test_5cef5ebb_and_975638b6_are_refusals_not_proximity_rows_and_draw_nothing(key, gate, monkeypatch):
+@pytest.mark.parametrize('key', ['5cef5ebb', '5cef5ebb#2'])
+def test_5cef5ebb_is_a_refusal_not_a_proximity_row_and_draws_nothing(key, gate, monkeypatch):
     """5cef5ebb: 12-nt clip GTATGGTGTACA, 5' base 154398497 (annotated exon-2 start + 1). Its best placement in
     ±6 of the annotated donor is the disapproved +4 (`8M3I1M`, 8 matched / 1 mismatch, 10.5 bits); the annotated
-    donor gives `2M3I3M4I` (2.5 bits). 975638b6 (−, 10-nt clip TGTTTCGGGG): the annotated donor places `6M4S`
-    (12.0 bits). Neither is evidence anywhere: no rescue, the refusal named, no proximity row, record == stock."""
+    donor gives `2M3I3M4I` (2.5 bits) — below BOTH tiers. No rescue, the refusal named, no proximity row,
+    record == stock (Kevin 2026-09-07: approve)."""
     table = SB.load_bundle('f53d770')
     entry = table[key]
     row, res, rec, stock = SB.replay(entry, monkeypatch, gate)
@@ -110,3 +110,28 @@ def test_5cef5ebb_and_975638b6_are_refusals_not_proximity_rows_and_draw_nothing(
     assert row['five_prime_exon_bits'] is not None and row['five_prime_exon_bits'] < 18
     assert _junctions_of(rec) == _junctions_of(stock)
     assert not any(s + entry['off'] in (154398398, 154398399) for s, _e in _junctions_of(rec))
+
+
+@pytest.mark.skipif(not SB.bundle_present('f53d770'),
+                    reason='Sumner f53d770 replay bundle not present (collaborator data, kept outside the repo)')
+@pytest.mark.parametrize('gate', ['report', 'refuse'])
+def test_975638b6_attaches_to_the_annotated_donor_at_the_attachment_tier(gate, monkeypatch):
+    """975638b6 (−, 10-nt clip TGTTTCGGGG; Kevin 2026-09-07 card 975638b6, the two-tier ruling): the −4 site the
+    baseline drew is 2/10 and WRONG; the annotated IDH3G donor 153786800 places TGTTTC 6/6 with GGGG clipped
+    (`6M4S`, identity 1.0, 12.0 bits). Below the 18-bit CREATION floor, at the 12-bit ATTACHMENT floor: the
+    sequence loop's shifted (novel) winner is refused, Case 3 finds the unslid annotated block IS evidence at its
+    tier and DRAWS it — landing_annotated, the annotated N-op in the record, nothing at the −4 site."""
+    table = SB.load_bundle('f53d770')
+    entry = table['975638b6']
+    row, res, rec, stock = SB.replay(entry, monkeypatch, gate)
+    assert res.get('rescued') and res.get('rescue_type') == 'softclip', res
+    assert res.get('landing_annotated') is True
+    assert res.get('five_prime_exon_cigar') == '6M4S', res.get('five_prime_exon_cigar')
+    assert res.get('exon_bits') == 12.0 and res.get('exon_identity') == 1.0
+    assert row['five_prime_rescued'] and row['five_prime_landing_annotated']
+    assert row['five_prime_exon_bits'] == 12.0
+    new = set(_junctions_of(rec)) - set(_junctions_of(stock))
+    assert len(new) == 1, new
+    (_s, e), = new
+    assert e + entry['off'] == 153786800, (e + entry['off'])        # the annotated donor, not the −4 site
+    assert e + entry['off'] != 153786796

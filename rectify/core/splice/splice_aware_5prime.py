@@ -361,9 +361,29 @@ E_BITS = 18.0         # evidence-score floor, bits (= row A's family-wise rate)
 # identity floor applies only when the block has fewer than this many matched bases; longer
 # blocks are judged by bits alone. Env RECTIFY_2F_EVIDENCE_IDENTITY_MAX_MATCHED overrides.
 E_IDENTITY_MAX_MATCHED = 20
+# TWO-TIER FLOOR (Kevin, 2026-09-07, review card 975638b6 + 166079f3 + 03c312ab): creating a
+# junction and attributing a read are different decisions. A NOVEL landing creates a site and
+# keeps the E_BITS floor (+ station C downstream). An ANNOTATED landing attaches the read to a
+# site that already exists; a wrong attachment miscounts one read, it fabricates nothing, so it
+# gets the lower floor below. Derivation: at 12 bits the chance-match model (annotated
+# candidate set, GSB_2394) gives 0.18 / 0.20 per shuffled read; on the 5c952af T0 (chrX) the
+# 18-bit floor had removed 110 rescues the tester scored TP, of which 12–14 bits: 23, 14–16: 22,
+# 16–18: 35 (identity mostly 0.9–1.0) — the two-tier floor returns ~80 of them and none of the
+# reviewed wrong controls (26f8fb45 0.79 / 8.0, 04b17fc6 0.73 / 5.0 fail either way). The
+# identity floor and the leading-I/D strip apply to both tiers. Env RECTIFY_2F_EVIDENCE_BITS_ANNOTATED.
+E_BITS_ANNOTATED = 12.0
+# PROVISIONAL (2026-09-07, review control 04b17fc6): the bits model prices a gap at open -2 /
+# extend -0.5, so a single 6-base deletion inside a 21-base block costs 4.5 bits and the block
+# still reaches 19.5 — but a 6-base deletion in 21 bases is not ONT error, it is a misplacement
+# (Kevin: "likely low quality seq"). Until the gap costs come from the bundled error table
+# (iteration 4), no single I or D in a placed block may exceed this many bases. Env
+# RECTIFY_2F_EVIDENCE_MAX_GAP. Kept ≥ 4 so 2277f7b3's `1M4I3M1I14M2D1M` (24.5 bits, a reviewed
+# true rescue) still draws; 638af58a's `…9D…` and 04b17fc6's `…6D…` do not.
+E_MAX_GAP = 4
 EXON_IDENTITY_REFUSAL = 'exon_identity_below_floor'
 EXON_BITS_REFUSAL = 'exon_bits_below_floor'
-EVIDENCE_REFUSALS = (EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL)
+EXON_GAP_REFUSAL = 'exon_gap_above_max'
+EVIDENCE_REFUSALS = (EXON_IDENTITY_REFUSAL, EXON_BITS_REFUSAL, EXON_GAP_REFUSAL)
 # Tokens the wrapper turns into the '<token>>annotated|novel' trace when a
 # later path re-rescues the read (NOVEL_EXON_REFUSALS is the novel-site
 # verdict proper and stays as it is; tests pin its contents).
@@ -387,16 +407,32 @@ def evidence_floor() -> Tuple[float, float]:
             _env('RECTIFY_2F_EVIDENCE_BITS', E_BITS, float))
 
 
-def _evidence_floor_refusal(shape) -> str:
+def evidence_floor_annotated_bits() -> float:
+    """The bits floor for an ANNOTATED landing (two-tier floor, 2026-09-07):
+    ``E_BITS_ANNOTATED`` unless ``RECTIFY_2F_EVIDENCE_BITS_ANNOTATED`` overrides
+    it. Never above the novel floor: an annotated site is never held to a
+    stricter standard than a novel one."""
+    raw = os.environ.get('RECTIFY_2F_EVIDENCE_BITS_ANNOTATED', '').strip()
+    try:
+        v = float(raw) if raw else E_BITS_ANNOTATED
+    except ValueError:
+        v = E_BITS_ANNOTATED
+    return min(v, evidence_floor()[1])
+
+
+def _evidence_floor_refusal(shape, annotated: bool = False) -> str:
     """'' when the placed block (an :class:`EvidenceShape`, measured AFTER the
     leading-indel strip) is evidence for its landing, else the invariant-E
     token: ``exon_identity_below_floor`` when the identity is under the floor,
     ``exon_bits_below_floor`` when the evidence score is. ``None`` (no block)
     is not judged here — the novel-site verdict fails closed on that
-    separately."""
+    separately. ``annotated`` selects the lower bits floor of the two-tier
+    rule (an attachment to an existing site) — see E_BITS_ANNOTATED."""
     if shape is None:
         return ''
     identity, bits = evidence_floor()
+    if annotated:
+        bits = evidence_floor_annotated_bits()
     # ISSUE-032(a): the identity floor judges SHORT blocks only; a long block is priced by bits.
     _raw = os.environ.get('RECTIFY_2F_EVIDENCE_IDENTITY_MAX_MATCHED', '').strip()
     try:
@@ -407,6 +443,21 @@ def _evidence_floor_refusal(shape) -> str:
         return EXON_IDENTITY_REFUSAL
     if shape.bits < bits:
         return EXON_BITS_REFUSAL
+    return ''
+
+
+def _gap_refusal(cigar_ops) -> str:
+    """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer
+    than ``E_MAX_GAP`` (env ``RECTIFY_2F_EVIDENCE_MAX_GAP``), else ''."""
+    if not cigar_ops:
+        return ''
+    raw = os.environ.get('RECTIFY_2F_EVIDENCE_MAX_GAP', '').strip()
+    try:
+        cap = int(raw) if raw else E_MAX_GAP
+    except ValueError:
+        cap = E_MAX_GAP
+    if any(op in (1, 2) and ln > cap for op, ln in cigar_ops):
+        return EXON_GAP_REFUSAL
     return ''
 
 
@@ -1801,6 +1852,15 @@ def _terminal_peel_rescue(
                 # ISSUE-028: the refused block's shape rides with the token.
                 _peel_shape = (res.get('exon_identity'), res.get('exon_bits'))
             continue
+        # ISSUE-031 in 2F (2026-09-07, ea0a56cb / 3fe6a57e / beab8d72 / 9152ed9b): a peel on a
+        # read that starts k bases INTO exon 2 (invariant-D prefix k) relabels the peeled BODY
+        # bases as exon-2 [0, k) and the writer fills the gap with a `kD` glued to the N —
+        # Kevin's banned shape. The body's `dist` is measured on the unpeeled read, so the
+        # prefix and the peel describe the same bases twice. Such a peel is not a placement.
+        if int(res.get('five_prime_exon2_prefix', 0) or 0) > 0:
+            _OI_COUNTERS['five_prime_peel_prefix_conflict'] = (
+                _OI_COUNTERS.get('five_prime_peel_prefix_conflict', 0) + 1)
+            continue
         ed = res.get('edit_distance', -1.0)
         if ed is None or ed < 0:
             continue  # snap-type result from override path — ignore
@@ -1835,6 +1895,21 @@ def _terminal_peel_rescue(
         return None
     best_peel = dict(best_peel)
     best_peel['terminal_peel'] = True
+    # ISSUE-030 ROOT CAUSE (2026-09-07): the winning peel judged the segment query[:d]
+    # (the 5' clip PLUS d - clip body bases), and its exon CIGAR consumes that many
+    # query bases (minus the exon-2 prefix). The writer sizes the exon block from the
+    # record's clip length, so every peel result used to arrive with a span
+    # mismatch that the flat-M fallback silently papered over (26f8fb45's `32M`,
+    # 5cef5ebb's `11M`, 03c312ab's `15M`, …). The writer's `upstream_trim` is the
+    # mechanism for absorbing body bases into the exon block (equivalence
+    # extension); the peel's extra depth rides on the same field.
+    _ct = read.cigartuples or []
+    _clip0 = (_ct[0][1] if _ct and _ct[0][0] == 4 else 0) if strand == '+' \
+        else (_ct[-1][1] if _ct and _ct[-1][0] == 4 else 0)
+    _extra = max(0, int(best_depth or 0) - _clip0)
+    if _extra:
+        best_peel['five_prime_upstream_trim'] = int(best_peel.get('five_prime_upstream_trim', 0) or 0) + _extra
+        best_peel['peel_depth'] = _extra
     return best_peel
 
 
@@ -3436,7 +3511,8 @@ def _rescue_3ss_truncation_body(
             # block with the same floor, so a junk block cannot re-enter there.
             # The novel-site verdict in refuse mode names its own, more
             # specific token first (below); E's token stands otherwise.
-            _e_tok = _evidence_floor_refusal(_exon_shape)
+            _e_tok = (_evidence_floor_refusal(_exon_shape, annotated=bool(_emitted_annotated))
+                      or _gap_refusal(_cigar_ops))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
                 _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                     _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
@@ -3652,8 +3728,13 @@ def _rescue_3ss_truncation_body(
         if _shape4 is not None:
             _last_shape = _shape4
         _e_tok4 = ''
+        _annot4_floor = (annotated_keys is None
+                         or (j_chrom, intron_start, intron_end) in annotated_keys)
         if _shape4 is not None and _placed4 >= min_informative_clip_bp():
-            _e_tok4 = _evidence_floor_refusal(_shape4)
+            # The gap bound applies here too: a snap whose re-placed segment needs a long I/D
+            # is a junction with an indel glued to the N (dab60caa's 6D, de84a10a's 5I).
+            _e_tok4 = (_evidence_floor_refusal(_shape4, annotated=_annot4_floor)
+                       or _gap_refusal(_cigar_ops4))
         if _e_tok4:
             _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                 _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
@@ -3719,22 +3800,86 @@ def _rescue_3ss_truncation_body(
             # that IS evidence at this donor yet was not emitted above.
             if (five_clip >= min_informative_clip_bp()
                     and rescue_type_candidate == 'softclip' and rescue_seq):
+                _exon_cigar_str3 = ''
+                _ops3 = None
+                # ISSUE-026 invariant D, as the sequence loop does it: a read that starts
+                # k bases INTO exon 2 carries exon-2 [0, k) as the junction-side k bases of
+                # its clip; they are not exon-1 sequence. Same strand conventions as the
+                # loop (plus: k = dist; minus: k = dist - 1, touching = dist 1).
+                _k3 = dist if strand == '+' else max(0, dist - 1)
+                _seg3 = rescue_seq
+                if 0 < _k3 < len(rescue_seq):
+                    _seg3 = rescue_seq[:-_k3] if strand == '+' else rescue_seq[_k3:]
+                elif _k3 >= len(rescue_seq):
+                    _seg3 = ''
                 try:
                     from ..align.local_aligner import align_clip_to_exon
-                    _ops3, _ = align_clip_to_exon(
-                        rescue_seq, genome_seq, intron_start, intron_end, strand)
-                    _ops3, _, _shape3 = _place_and_measure(
-                        _ops3, rescue_seq, genome_seq, intron_start, intron_end, strand)
+                    if _seg3 and len(_seg3) >= min_informative_clip_bp():
+                        _ops3, _ = align_clip_to_exon(
+                            _seg3, genome_seq, intron_start, intron_end, strand)
+                        _ops3, _exon_cigar_str3, _shape3 = _place_and_measure(
+                            _ops3, _seg3, genome_seq, intron_start, intron_end, strand)
+                    else:
+                        _shape3 = None
                 except Exception as _e3:
                     logger.debug("Case 3 evidence check failed for read %s: %s",
                                  read.query_name, _e3)
                     _shape3 = None
                 # (The TSV keeps the LAST block the sequence loop / peel judged;
                 # this check's block is not that record.)
-                if _shape3 is None or _evidence_floor_refusal(_shape3):
+                # The attachment tier applies only when the named intron IS annotated; a pool
+                # (novel) candidate within proximity is held to the creation floor.
+                _annot3 = (annotated_keys is None
+                           or (j_chrom, intron_start, intron_end) in annotated_keys)
+                _e_tok3 = ('' if _shape3 is None else
+                           (_evidence_floor_refusal(_shape3, annotated=_annot3) or _gap_refusal(_ops3)))
+                if _shape3 is None or _e_tok3:
                     _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
                         _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)
+                    if _e_tok3:
+                        _novel_refused = _novel_refused or _e_tok3
+                        _last_shape = _shape3
                     continue
+                # ISSUE-026 invariant C, as the sequence loop applies it: a block that reaches the
+                # floor on bits but carries more inserted + deleted bases than half its matched
+                # ones is not a placement (04b17fc6 review control: `6M1I9M6D3M1D3M1I3M`, 19.5 bits
+                # with 7 D + 2 I on ~16 matched — Kevin: "likely low quality seq").
+                if _ops3 and _exon_indel_burden_exceeded(_ops3, _ANNOTATED_EXON_INDEL_FRAC):
+                    _OI_COUNTERS['five_prime_annotated_indel_burden_refused'] = (
+                        _OI_COUNTERS.get('five_prime_annotated_indel_burden_refused', 0) + 1)
+                    _novel_refused = _novel_refused or ANNOTATED_INDEL_BURDEN_REFUSAL
+                    if _shape3 is not None:
+                        _last_shape = _shape3
+                    continue
+                # TWO-TIER FLOOR (Kevin 2026-09-07, cards 975638b6 / 166079f3): the clip
+                # anchored at this annotated donor IS evidence at the attachment tier, so the
+                # attachment is DRAWN — a proximity row that names the intron without placing
+                # the clip was the old contract and left the read counted nowhere. The
+                # sequence loop refused its own (shifted, novel) winner above; this is the
+                # unslid annotated placement of the same clip. Only when the read touches the
+                # exon-2 boundary (dist <= 1 in this function's convention): a deeper 5' end
+                # would need the exon-2 prefix bookkeeping of the loop (ISSUE-026 D).
+                if _exon_cigar_str3 and _ops3:
+                    _OI_COUNTERS['five_prime_proximity_scored_drawn'] = (
+                        _OI_COUNTERS.get('five_prime_proximity_scored_drawn', 0) + 1)
+                    return {
+                        'rescued': True,
+                        'rescue_type': 'softclip',
+                        'five_prime_corrected': (intron_start - 1 if strand == '+' else intron_end),
+                        'rescued_junction': (j_chrom, intron_start, intron_end),
+                        'edit_distance': -1,
+                        'query_bp': len(_seg3),
+                        'five_prime_exon_cigar': _exon_cigar_str3,
+                        'five_prime_upstream_trim': 0,
+                        'five_prime_exon2_prefix': _k3 if 0 < _k3 < len(rescue_seq) else 0,
+                        'landing_annotated': _annot3,
+                        'novel_evidence': '' if _annot3 else 'pass',
+                        'anchored_deficit': None,
+                        'reranked_between_annotated': False,
+                        'displaced_canonical_refused': _displaced_any,
+                        'exon_identity': _shape3.identity,
+                        'exon_bits': _shape3.bits,
+                    }
             return {
                 'rescued': False,
                 'rescue_type': 'proximity',

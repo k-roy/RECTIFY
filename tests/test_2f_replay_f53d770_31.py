@@ -89,20 +89,32 @@ def test_the_vanished_reads_draw_again(monkeypatch):
             tokens[key] = row['five_prime_rescue_refused']
             bits[key] = row['five_prime_exon_bits']
     assert n_vanished >= 23, n_vanished
-    assert not_drawn == ['166079f3', '1d178d6e', '2586f261', '38722d08', '3fe6a57e', '41dc7d0b', '5cef5ebb',
+    # TWO-TIER FLOOR (Kevin 2026-09-07, card 975638b6): an ANNOTATED landing is judged at 12 bits. 2586f261
+    # (`5S6M`, 12.0) and c445d3ce (`2M2I4M1I3M`, 12.5) attach again; 638af58a (VANISHED_FP_added_nov by the
+    # baseline's label) reaches the annotated site through Case 3 with a 50.5-bit block (`…9D…`) that the gap bound refuses.
+    # 9152ed9b's peel (13.0 bits) carried an exon-2 prefix and is discarded (ISSUE-031 in 2F); its unpeeled
+    # placement is a novel slide below the matched floor. Six of the ten drawn blocks end in a junction-side
+    # I/D (183b1e9e 1D, 2e873d77 1D, 428949d9 2D, 638af58a 1D, 844834e8 1I, 890d2242 3I) — on Kevin's queue as
+    # a ruling (his rule for 2H is "never a D next to an N"); not refused here until he rules.
+    # 638af58a's 50.5-bit Case-3 block carries a single 9-base deletion: refused by the provisional
+    # E_MAX_GAP bound (`exon_gap_above_max`) — a 9D inside a placed block is a misplacement, not ONT error.
+    assert not_drawn == ['166079f3', '1d178d6e', '38722d08', '3fe6a57e', '41dc7d0b', '5cef5ebb',
                          '5cef5ebb#2', '638af58a', '9152ed9b', '923d7ffe', '923d7ffe#2', 'a0fe8afe', 'ac5225e1',
-                         'beab8d72', 'c445d3ce', 'c5d1c111', 'c5d1c111#2', 'ea0a56cb', 'fb0cdd4e'], (not_drawn, tokens)
+                         'beab8d72', 'c5d1c111', 'c5d1c111#2', 'ea0a56cb', 'fb0cdd4e'], (not_drawn, tokens)
+    assert tokens['638af58a'] == 'exon_gap_above_max', tokens
     assert tokens['c5d1c111'] == 'novel_exon_matched_below_floor', tokens
     assert tokens['fb0cdd4e'] == 'annotated_exon_indel_burden', tokens   # a terminal-peel refusal, carried to the TSV
     assert tokens['923d7ffe'] == 'exon_identity_below_floor', tokens
-    for k in ('166079f3', '1d178d6e', '2586f261', '3fe6a57e', '41dc7d0b', '638af58a', '9152ed9b', 'a0fe8afe',
-              'ac5225e1', 'beab8d72', 'c445d3ce', 'ea0a56cb'):
+    assert tokens['9152ed9b'] == 'exon_bits_below_floor', tokens          # the peel discarded; Case 3's block judged last
+    for k in ('166079f3', '1d178d6e', '3fe6a57e', '41dc7d0b', 'a0fe8afe', 'ac5225e1', 'beab8d72', 'ea0a56cb'):
         assert tokens[k] == 'exon_bits_below_floor', (k, tokens[k])
+        # the TSV carries the LAST block judged (a discarded peel's or Case 3's), so ea0a56cb reads 12.5 here
+        # while its placeable (prefix-trimmed) block is 10.5 — below the attachment tier; all < 18
         assert bits[k] is not None and bits[k] < 18, (k, bits[k])
     for k in ('c5d1c111', 'ac5225e1', 'fb0cdd4e'):
         assert 'VANISHED_FP_added_nov' in table[k]['classes'], (k, table[k]['classes'])
     tp_not_drawn = [k for k in not_drawn if 'VANISHED_TP_rescue_annot' in table[k]['classes']]
-    assert tp_not_drawn == ['166079f3', '2586f261', '38722d08', '3fe6a57e', 'beab8d72', 'c445d3ce', 'ea0a56cb'], tp_not_drawn
+    assert tp_not_drawn == ['166079f3', '38722d08', '3fe6a57e', 'beab8d72', 'ea0a56cb'], tp_not_drawn
     fp_drawn = [k for k, e in sorted(table.items())
                 if 'VANISHED_FP_added_nov' in e['classes'] and k not in not_drawn]
     assert fp_drawn == ['844834e8', '890d2242', '890d2242#2'], fp_drawn

@@ -143,7 +143,12 @@ READS = ['c887bc16', '31fab950', 'c64bc988', '5b20c72a', 'c41c7314', 'de84a10a',
 # terminal peel's 4.5-bit spelling, not the 13.5-bit baseline block). Reported here with its numbers, not
 # loosened (the brief's instruction). The other nine fixture reads carry 20-83.5 bits and land annotated as
 # before (c887bc16 `16M` 13=/3X is 20.0 bits — the closest to the floor).
-NOT_EVIDENCE_AT_E = {'de84a10a': ('exon_bits_below_floor', 13.5)}
+# TWO-TIER FLOOR (Kevin 2026-09-07, card 975638b6): an ANNOTATED landing is judged at 12 bits (attachment),
+# a novel one at 18 (creation). de84a10a's 13.5-bit block on the annotated junction is evidence at the
+# attachment tier and draws again — the read rejoins the "lands annotated" set; nothing is left in this map.
+# …except that the same 13.5-bit block `4M2D2M1I3M5I1M1I5M` carries a 5-base insertion: the PROVISIONAL E_MAX_GAP
+# bound (4) refuses it, and the TSV then carries the deepest peel's 4.5-bit spelling. A gap-bound ruling card.
+NOT_EVIDENCE_AT_E = {'de84a10a': ('exon_bits_below_floor', 4.5)}
 
 
 def _assert_not_evidence(read8, res):

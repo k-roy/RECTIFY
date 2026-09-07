@@ -23,6 +23,7 @@ Date: 2026-03-09
 from typing import Dict, Optional, Tuple
 import copy
 import logging
+import os
 import pysam
 
 from ...utils.genome import get_chrom_sequence
@@ -268,6 +269,10 @@ def _n_op_intervals(read: pysam.AlignedSegment) -> Tuple[Tuple[int, int], ...]:
 # about placement, not about lost terminal bases, and the junction should be
 # refused rather than massaged.
 _MAX_ACCEPTOR_REPAIR_BP = 3
+# ISSUE-031 (2026-09-07): the acceptor repair plants a D on the body side of the N. Disabled
+# under Kevin's rule; a non-canonical rescued N is reverted instead. Kept switchable for the
+# replay comparison only (RECTIFY_2F_ACCEPTOR_REPAIR=1).
+_ACCEPTOR_REPAIR_DISABLED = os.environ.get('RECTIFY_2F_ACCEPTOR_REPAIR', '').strip() != '1'
 
 
 def _repair_acceptor_overshoot(
@@ -290,6 +295,13 @@ def _repair_acceptor_overshoot(
     passed over for a farther one (on the bundled upf1d cat3_plus_2 read both
     delta=2 — the annotated GT-AG — and delta=4 are canonical).
     """
+    # ISSUE-031 in the writer (Kevin 2026-09-06/07, "never put a D next to an N"; ISSUE-023's
+    # open policy decided by that rule): pulling a rescued N back onto a canonical acceptor
+    # by planting a D on the body side IS the banned construct (ea0a56cb: `…1077N2D114M`).
+    # A rescue whose drawn junction is non-canonical is reverted by
+    # _revert_selfinflicted_noncanonical_n (REFUSAL_NONCANONICAL) instead of repaired.
+    if _ACCEPTOR_REPAIR_DISABLED:
+        return False
     cigar = list(read.cigartuples or [])
     if not (0 <= n_index < len(cigar)) or cigar[n_index][0] != 3:
         return False

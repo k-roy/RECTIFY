@@ -66,12 +66,20 @@ def test_chrx_locus_never_draws_the_decoy_and_its_block_is_not_evidence(read8, g
     with the token and the shape in the TSV. The decoy is never drawn either way."""
     from rectify.core.splice.splice_aware_5prime import EXON_BITS_REFUSAL
     row, res, rec, stock, off = _replay(read8, monkeypatch, gate)
+    nops = _real(_nops(rec), off)
+    assert not any(s in (154398398, 154398399) for s, _e in nops), nops   # never the +4 / +5 decoy
+    if read8 == '2586f261':
+        # TWO-TIER FLOOR (Kevin 2026-09-07): six clean placed bases at the ANNOTATED donor are 12.0 bits
+        # = the attachment tier; the read attaches (`5S6M`, landing_annotated) at 154398394 — the annotated
+        # site, never the decoy.
+        assert res.get('rescued') and res.get('landing_annotated') is True, res
+        assert res.get('five_prime_exon_cigar') == '5S6M' and res.get('exon_bits') == 12.0, res
+        assert (154398394, 154398496) in nops, nops
+        return
     assert not res.get('rescued'), res
     assert row['five_prime_rescue_refused'] == EXON_BITS_REFUSAL, row['five_prime_rescue_refused']
-    assert row['five_prime_exon_bits'] is not None and row['five_prime_exon_bits'] < 18
-    nops = _real(_nops(rec), off)
+    assert row['five_prime_exon_bits'] is not None and row['five_prime_exon_bits'] < 12    # below BOTH tiers
     assert _nops(rec) == _nops(stock), nops
-    assert not any(s in (154398398, 154398399) for s, _e in nops), nops   # never the +4 / +5 decoy
 
 
 def test_dab60caa_keeps_its_annotated_junction(monkeypatch):
@@ -81,10 +89,13 @@ def test_dab60caa_keeps_its_annotated_junction(monkeypatch):
     slide is refused up front; the annotated 103376613-103377027 stays drawn."""
     row, res, rec, stock, off = _replay('dab60caa', monkeypatch)
     nops = _real(_nops(rec), off)
-    assert (103376613, 103377027) in nops, nops
+    # PROVISIONAL E_MAX_GAP (2026-09-07): the 52-nt clip's annotated block `6S8M3D5M3D2M6D2M1I5M4D4M1I3M1I4M2I12M`
+    # (45 matched, 16 deleted + 5 inserted, 51.5 bits) carries a 6-base deletion and is refused as a placement
+    # (`exon_gap_above_max`); the read keeps its stock junction. On Kevin's queue as a gap-bound ruling card.
     assert (103377106, 103377509) in nops, nops
-    assert row['five_prime_rescue_refused'] == '', row['five_prime_rescue_refused']
-    assert res['landing_annotated'] is True
+    assert (103376613, 103377027) not in nops, nops
+    assert row['five_prime_rescue_refused'] == 'exon_gap_above_max', row['five_prime_rescue_refused']
+    assert not res.get('rescued')
 
 
 def test_slide_refusal_is_a_placement_decision_not_a_token():

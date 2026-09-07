@@ -901,9 +901,12 @@ class TestRescue3SSTruncation:
 
         r = rescue_3ss_truncation(read, genome, self.JUNCTION, strand='+')
 
-        assert r['rescued'] is True
-        assert r['rescue_type'] == 'intronic_snap'
-        assert r['five_prime_corrected'] == 99
+        # PROVISIONAL E_MAX_GAP (2026-09-07, ISSUE-031 in 2F): the snap's re-placed 50-base segment
+        # (28 exon-1 A's + 22 intronic C's) can only be drawn as exon 1 with a 22-base insertion
+        # glued to the N — Kevin's banned shape. The snap is refused (`exon_gap_above_max`); the read
+        # keeps its intronic alignment. (Before 2026-09-07 this asserted the snap at 99.)
+        assert r['rescued'] is False, r
+        assert r.get('clip_refused') == 'exon_gap_above_max', r
         assert r['five_prime_corrected'] != 100
 
     # ---- Plus strand: start too far from any 3'SS ----

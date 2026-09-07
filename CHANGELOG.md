@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Module 2F two-tier evidence floor — attaching a read to an annotated
+  junction is not creating a junction** (`splice/splice_aware_5prime.py`,
+  `bam/bam_writer.py`; Kevin's ruling on the read-review queue, 2026-09-07).
+  A NOVEL landing keeps the 18-bit creation floor; an ANNOTATED landing is
+  judged at `E_BITS_ANNOTATED` = 12 bits (a wrong attachment miscounts one read
+  at an existing site, it fabricates nothing; env
+  `RECTIFY_2F_EVIDENCE_BITS_ANNOTATED`). Identity and the leading-I/D strip
+  apply to both tiers. Case 3 (proximity) now DRAWS the clip's anchored block
+  at the annotated donor when it passes the attachment tier, with the sequence
+  loop's exon-2 prefix bookkeeping and invariant C, instead of naming the
+  intron without placing the clip. On the Sumner chrX T0 the 18-bit floor had
+  removed 110 rescues the tester scored true (57 at 14–18 bits, identity
+  ≥ 0.9); the tier returns most of them and neither reviewed wrong control.
+  Landed with it: (a) the ROOT CAUSE of ISSUE-030 — the terminal peel judged
+  clip + peeled body bases but only the clip length reached the writer, so
+  every peel rescue arrived with a span mismatch the flat-M fallback hid; the
+  peel depth now rides on `five_prime_upstream_trim`, and a peel on a read
+  that starts inside exon 2 is discarded (it relabels body bases and forces a
+  D against the N); (b) the writer's acceptor repair (a body-side D glued to
+  the N) is disabled under the no-indel-next-to-an-N rule
+  (`RECTIFY_2F_ACCEPTOR_REPAIR=1` restores it for comparison); (c) a
+  PROVISIONAL bound `E_MAX_GAP` = 4 — no single I/D in a placed block above 4
+  bases (`exon_gap_above_max`; env `RECTIFY_2F_EVIDENCE_MAX_GAP`) — because the
+  bits model prices a 6-base deletion inside 21 placed bases at 4.5 bits and
+  such a block is a misplacement, not ONT error; the error-table gap costs of
+  iteration 4 replace it.
 - **Module 2F invariant E — the placed 5' block must be evidence for EVERY
   landing (ISSUE-028)** (`align/local_aligner.py`, `splice/splice_aware_5prime.py`,
   `bam/bam_processor.py`, `bam/output.py`). Two unchanged controls of the Sumner
