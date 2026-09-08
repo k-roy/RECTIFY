@@ -71,11 +71,19 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                        umi_canonical: Dict[int, str],
                        cluster_xf_tier: Dict[int, int],
                        cluster_tail_len: Dict[int, int],
+                       reference: Optional[Path],
                        use_poa: bool = False,
                        strand_aware_consensus: bool = False,
-                       cluster_name_prefix: str = "cluster",
-                       reference: Optional[Path] = None) -> dict:
+                       cluster_name_prefix: str = "cluster") -> dict:
     """Emit per-cluster consensus sequences as a FASTQ for downstream alignment.
+
+    ``reference`` is REQUIRED and positional (GitHub #4).  It used to be the last
+    keyword with a ``= None`` default, and `_cdna_region_task` simply forgot to pass it
+    — which raised nothing.  Every consensus record from the region-parallel path then
+    kept samtools calmd's ``=`` placeholders (only ``restore_eq_seq`` resolves them, and
+    only with a reference), so ~94 % of records were >50 % ``=`` and realigned at 0.8 %
+    while every stage exited 0.  Passing ``None`` explicitly is still allowed — a caller
+    may genuinely have no reference — but it can no longer happen by omission.
 
     `rectify align` will run the multi-aligner on this FASTQ to produce the final
     aligned BAM. Per-cluster SAM-format tags are appended to each read's comment

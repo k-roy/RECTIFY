@@ -574,6 +574,60 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     return parser
 
 
+_EQ_SAMPLE_RECORDS = 2000
+_EQ_MAJORITY_FRACTION = 0.5
+_EQ_REFUSE_FRACTION = 0.10
+
+
+def _refuse_calmd_placeholder_fastq(reads_path) -> int:
+    """Refuse a FASTQ whose SEQ still carries samtools calmd '=' placeholders (GitHub #4).
+
+    `samtools calmd -e` rewrites every reference-matching base to '='.  Such a FASTQ aligns to
+    almost nothing, and NOTHING ELSE SIGNALS IT: the aligner exits 0, writes a sorted BAM of
+    plausible size with the right record count, and only the mapped fraction gives it away — which
+    nothing compares against the pre-collapse stage.  Measured on a real PCB114 library: 0.8 %
+    mapped versus 99.1 % for the same molecules' raw reads.
+
+    The specific producer bug is fixed (`_cdna_region_task` now passes its reference), but any
+    other path that hands calmd output to an aligner would fail the same silent way, so refuse it
+    here for every producer.  Sampling the first `_EQ_SAMPLE_RECORDS` records is enough: the
+    failure is systematic, never a handful of records.
+
+    Returns 0 to proceed, 1 to refuse.
+    """
+    import gzip as _gz
+    try:
+        opener = _gz.open if str(reads_path).endswith('.gz') else open
+        n = bad = 0
+        with opener(str(reads_path), 'rt') as fh:
+            for i, line in enumerate(fh):
+                if i % 4 != 1:                       # SEQ is every 4th line, offset 1
+                    continue
+                seq = line.strip()
+                if not seq:
+                    continue
+                n += 1
+                if seq.count('=') > len(seq) * _EQ_MAJORITY_FRACTION:
+                    bad += 1
+                if n >= _EQ_SAMPLE_RECORDS:
+                    break
+    except (OSError, UnicodeDecodeError) as exc:      # unreadable/binary: let the aligner report it
+        logger.debug("calmd-placeholder pre-check skipped for %s: %s", reads_path, exc)
+        return 0
+
+    if n and bad / n >= _EQ_REFUSE_FRACTION:
+        logger.error(
+            "%s carries samtools calmd '=' placeholders in SEQ (%d of %d sampled records are "
+            ">%.0f%% '='). Aligning it would map almost nothing while exiting 0.\n"
+            "  Cause: the reference-compressed sequence was never restored to real bases.\n"
+            "  If this came from `rectify correct-cdna`, re-run it WITH --reference <genome.fa> "
+            "(see GitHub #4); a run without one cannot resolve the placeholders.",
+            reads_path, bad, n, _EQ_MAJORITY_FRACTION * 100,
+        )
+        return 1
+    return 0
+
+
 def run_align(args: argparse.Namespace) -> int:
     """Run align command."""
     from datetime import datetime as _dt_al, timezone as _tz_al
@@ -595,6 +649,10 @@ def run_align(args: argparse.Namespace) -> int:
     if not args.genome.exists():
         logger.error(f"Genome file not found: {args.genome}")
         return 1
+
+    rc = _refuse_calmd_placeholder_fastq(args.reads)
+    if rc:
+        return rc
 
     # Create output directory
     args.output_dir.mkdir(parents=True, exist_ok=True)

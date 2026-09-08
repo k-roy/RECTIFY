@@ -10,8 +10,10 @@ algorithm history and PCB114.24 chemistry details are documented in
 Output files (in --out directory):
   - stage1_consensus.fastq.gz    one consensus record per molecule. Per-cluster
                                   SAM-format tags are appended to each read's
-                                  comment line for `rectify align -y` to pass
-                                  through to the final aligned BAM.
+                                  comment line; `rectify align` passes them
+                                  through to the final aligned BAM automatically
+                                  (it applies minimap2's own -y internally --
+                                  `rectify align` has NO -y flag of its own).
 
 Downstream: run `rectify align` on the FASTQ, then `rectify cdna-analyze` on
 the resulting BAM to produce clusters.tsv, isoforms.tsv, and t1t2_pairs.tsv
@@ -216,6 +218,15 @@ def _cdna_region_task(
         use_poa=use_poa and _HAS_POA,
         strand_aware_consensus=strand_aware_consensus,
         cluster_name_prefix=region_name,
+        # GitHub #4: this kwarg was MISSING, and `write_stage1_fastq`'s `reference` used to
+        # default to None, so the omission raised nothing — the region-parallel path emitted
+        # every consensus record still carrying samtools calmd's "=" placeholders, which
+        # `restore_eq_seq` can only resolve with a reference.  Result: ~94 % of records >50 %
+        # "=", realigning to 0.8 % mapped, with every stage exiting 0.  The sequential path
+        # passed it all along, which is why `--region` runs looked clean and genome-wide runs
+        # did not.  `reference` is now REQUIRED (see io.write_stage1_fastq) so this cannot
+        # recur silently.
+        reference=reference,
     )
     fq_stats["n_rdna_masked"] = n_rdna_masked
     # 624: report what the start-in-region filter removed, so the correction is visible in the
@@ -623,7 +634,8 @@ def create_correct_cdna_parser(subparsers):
             'consensus per cluster (POA if pyabpoa is available).\n\n'
             'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
             'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN) '
-            'for `rectify align -y` to propagate into the post-align BAM. Gene assignment, '
+            'that `rectify align` propagates into the post-align BAM automatically -- it '
+            'applies minimap2 -y internally, and has NO -y flag of its own. Gene assignment, '
             'isoform clustering, and Type-1↔Type-2 pairing run downstream in '
             '`rectify cdna-analyze`.'
         ),
