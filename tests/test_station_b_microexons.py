@@ -321,3 +321,28 @@ def test_the_higher_scoring_split_is_not_a_tie():
     index = {CHROM: [(200, 209), (300, 306)]}
     splits = MX.find_microexon_splits(long_seg, CHROM, 60, 460, '+', gg, index)
     assert splits == [[(200, 209)]]
+
+
+def test_station_b_stands_down_when_a_5prime_rescue_touches_the_same_intron(monkeypatch):
+    """The one interaction that could make the TSV and the BAM disagree. The writer applies the 5'
+    rescue surgery BEFORE station B, so a rescue that rewrites the same intron moves the geometry out
+    from under the row's coordinates and the writer then correctly declines the draw — leaving the TSV
+    claiming two introns where the BAM has one. The row stands down instead, which is the same
+    discipline as `predict_5prime_rescue_refusal`: predict the writer's refusal, never out-run it."""
+    import rectify.core.bam.bam_processor as bp
+
+    monkeypatch.setenv('RECTIFY_STATION_B', 'apply')
+    MX.set_microexon_index(INDEX)
+    try:
+        # A read with BOTH a junction-adjacent insertion at [60, 460) and a 5' clip that 2F can
+        # rescue onto that same intron: 12 clean exon-1 bases, then the body starting at the acceptor.
+        clip = GENOME_SEQ[60 - 12:60]
+        seq = clip + MICRO + GENOME_SEQ[460:560]
+        read = _read([(4, 12), (1, 6), (0, 100)], seq, start=460, name='both')
+        row = bp.correct_read_3prime(read, {CHROM: GENOME_SEQ},
+                                     annotated_junctions={(CHROM, 60, 460)})[0]
+        if row['five_prime_rescued'] and row['station_b_microexons']:
+            assert row['station_b_applied'] == 0
+            assert (60, 460) in [tuple(j) for j in row['junctions']] or not row['junctions']
+    finally:
+        MX.set_microexon_index(None)

@@ -632,6 +632,21 @@ def correct_read_3prime(
     # ISSUE-040 + ISSUE-024: when station B will draw micro-exons, the TSV's `junctions` must equal
     # the N-ops the writer ends up writing — the writer asserts it and the tester's scorer reads this
     # column. Replace the one drawn intron with the introns the split creates, in genomic order.
+    #
+    # First, the one interaction that could make the two disagree: the writer applies the 5' rescue
+    # surgery BEFORE station B, so a rescue that rewrites the same intron moves the geometry out from
+    # under the row's coordinates and the writer then (correctly) skips the draw — leaving the TSV
+    # claiming two introns where the BAM has one. Rather than let the writer's skip be silent, the
+    # row stands down here: a read whose 5' rescue touches the station-B intron is not applied at all.
+    # Same rule as `predict_5prime_rescue_refusal` — predict the writer's refusal, never out-run it.
+    if _station_b_applied and _station_b_intron and '_3ss_result' in locals():
+        _rj_sb = _3ss_result.get('rescued_junction') if _3ss_result.get('rescued') else None
+        if _rj_sb is not None and len(_rj_sb) >= 3:
+            _lo, _hi = int(_rj_sb[1]), int(_rj_sb[2])
+            if not (_hi <= _station_b_intron[0] or _lo >= _station_b_intron[1]):
+                _station_b_applied = 0
+                _OI_COUNTERS['station_b_stood_down_for_5prime_rescue'] = (
+                    _OI_COUNTERS.get('station_b_stood_down_for_5prime_rescue', 0) + 1)
     if _station_b_applied and _station_b_microexons and _station_b_intron:
         _segs = [(int(t.rsplit(':', 1)[1].split('-')[0]), int(t.rsplit(':', 1)[1].split('-')[1]))
                  for t in _station_b_microexons.split(',') if ':' in t]
