@@ -634,6 +634,64 @@ def predict_5prime_rescue_refusal(
     return refusal
 
 
+def _parse_segment_list(text: str):
+    """``'chr1:10-16,chr1:40-49'`` -> ``[(10, 16), (40, 49)]``; ``[]`` on anything unparseable."""
+    out = []
+    for tok in (text or '').split(','):
+        tok = tok.strip()
+        if not tok or ':' not in tok or '-' not in tok:
+            continue
+        try:
+            _c, span = tok.rsplit(':', 1)
+            a, b = span.split('-', 1)
+            out.append((int(a), int(b)))
+        except ValueError:
+            return []
+    return out
+
+
+def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> bool:
+    """Draw the row's micro-exon configuration into *read*'s CIGAR (ISSUE-040). True when it changed.
+
+    Record-driven, never index-driven: the row names the intron by COORDINATES, and this walks the
+    LIVE CIGAR to find the N op with exactly that reference span together with an adjacent insertion
+    whose length equals the segments' total. If the geometry has moved (a 2F rescue rewrote the same
+    region), the rewrite is skipped rather than applied to the wrong op — a coordinate computed
+    instead of read from the record is the failure mode CLAUDE.md names.
+
+    The result never leaves an I or a D beside an N: the whole insertion is consumed as M
+    (ISSUE-031/038), and both the query span and the reference span are conserved.
+    """
+    if correction.get('station_b_applied') not in (1, '1', True):
+        return False
+    segs = _parse_segment_list(correction.get('station_b_microexons') or '')
+    if not segs:
+        return False
+    try:
+        i_start, i_end = int(correction['station_b_intron_start']), int(correction['station_b_intron_end'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    cigar = list(read.cigartuples or [])
+    if not cigar:
+        return False
+    total = sum(e - s for s, e in segs)
+    ref = read.reference_start
+    for idx, (op, ln) in enumerate(cigar):
+        if op == 3 and ref == i_start and ref + ln == i_end:
+            for j in (idx - 1, idx + 1):
+                if 0 <= j < len(cigar) and cigar[j][0] == 1 and cigar[j][1] == total:
+                    from ..splice.microexon import rewrite_with_microexons
+                    try:
+                        read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
+                    except AssertionError:
+                        return False
+                    return True
+            return False
+        if op in (0, 2, 3, 7, 8):
+            ref += ln
+    return False
+
+
 def apply_corrected_edits_to_read(
     read: pysam.AlignedSegment,
     correction: Optional[Dict],
@@ -678,6 +736,14 @@ def apply_corrected_edits_to_read(
     _5p_modified, _ = apply_5prime_rescue_surgery(read, correction, genome)
     modified |= _5p_modified
 
+    # STATION B (ISSUE-040): draw annotated micro-exons the aligner orphaned as an insertion beside
+    # a junction. Applied HERE, after the 5' surgery, deliberately: the search reads the ALIGNER's
+    # record in bam_processor, and drawing it in the writer means station B's new N-ops are never
+    # candidates for this read's own 2F rescue — a micro-exon must not become a 5' landing that
+    # skipped the evidence floor. The row carries the intron and the segments; the op indices are
+    # re-derived from the LIVE record here, so a 2F edit elsewhere in the CIGAR cannot misplace it.
+    modified |= apply_station_b_microexons(read, correction)
+
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):
         modified |= extend_read_3prime_for_softclip_rescue(
@@ -713,6 +779,14 @@ def apply_corrected_edits_to_read(
     _xo = correction.get('five_prime_clip_origin') or ''
     if _xo:
         read.set_tag('XO', _xo)
+    # ISSUE-040: the micro-exon configuration DRAWN (XB) and the equally good ones NOT drawn (XV).
+    # Kevin 2026-09-07: where several are equally plausible, draw one and keep the others noted.
+    _xb = correction.get('station_b_microexons') or ''
+    if _xb and correction.get('station_b_applied') in (1, '1', True):
+        read.set_tag('XB', _xb)
+        _xv = correction.get('station_b_alternatives') or ''
+        if _xv:
+            read.set_tag('XV', _xv)
 
     return modified
 

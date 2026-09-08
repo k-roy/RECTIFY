@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **STATION B — micro-exons the aligner orphaned as an insertion beside a
+  junction** (ISSUE-040; Kevin 2026-09-07; new `splice/microexon.py`, plus
+  `bam/{bam_processor,bam_writer,output,parallel}.py`,
+  `commands/correct_command.py`). A splice aligner cannot seed a 6- or 9-nt
+  internal exon — tested, `--junc-bed` at bonus 9 AND 30 gives minimap2 a
+  byte-identical CIGAR — so it parks the exon's bases as an insertion beside
+  the intron it did find. In one library 32 of 153 such insertions (21 %)
+  exactly contain an annotated exon of 30 nt or less from inside that same
+  intron. Station B enumerates those exons and accepts only an ordered set
+  that consumes the inserted bases EXACTLY, with every resulting intron a
+  legal PAIR (GT-AG / GC-AG / AT-AC in transcript orientation, never two
+  independently-checked ends) and no indel left beside any N. Where several
+  configurations are equally plausible one is drawn at random — seeded by the
+  read name, so the pick is arbitrary but reproducible — and the others are
+  kept: BAM tags `XB` (drawn) and `XV` (equally good, not drawn), TSV columns
+  `station_b_microexons`, `station_b_alternatives`, `station_b_n_tied`,
+  `station_b_applied`, `station_b_intron_start/end`. The search reads the
+  aligner's record before 2F and the draw happens in the writer after it, so a
+  micro-exon can never become a 5' landing that skipped the evidence floor.
+  `RECTIFY_STATION_B=apply` draws; the default `report` records only.
+
 - **Module 2F — STATION C: the population supplies the attachment tier**
   (ISSUE-039; Kevin's rule from review card R007, 2026-09-07; `splice/
   junction_scoring.py`, `splice/splice_aware_5prime.py`, `commands/

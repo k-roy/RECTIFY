@@ -112,8 +112,12 @@ def _init_region_worker_state(
     from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
     _signal = _REGION_WORKER_STATE.pop('clip_signal', None)
     set_clip_origin_signal(_signal)
-    # ISSUE-039 station C rides the same payload (correct_command folds it in).
+    # ISSUE-039 station C and ISSUE-040 station B ride the same payload (correct_command folds
+    # them in) — a spawned worker inherits no module globals, and a silently missing signal is how
+    # 278982d shipped a parallel path that scored 0/17.
     set_site_support((_signal or {}).get('site_support'))
+    from ..splice.microexon import set_microexon_index
+    set_microexon_index((_signal or {}).get('microexon_index'))
     _REGION_WORKER_STATE['genome'] = genome
     _REGION_WORKER_STATE['polya_model'] = polya_model
 

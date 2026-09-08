@@ -78,6 +78,8 @@ from ..splice.splice_aware_5prime import (
     DEFAULT_PEEL_MAX_BP as _PEEL_MAX_BP,
 )
 from ..splice import false_junction_filter as _fjf
+from ..splice import microexon as _microexon
+from ..splice.overhang_informativeness import COUNTERS as _OI_COUNTERS
 
 # Backwards-compat re-exports for callers that still reach in via this module.
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
@@ -462,6 +464,40 @@ def correct_read_3prime(
     _clip_prior_bits = None
     _site_support = None             # ISSUE-039: population support for the landing site ('' = no rescue)
     _landing_established = None
+    _station_b_microexons = ''       # ISSUE-040: annotated micro-exons found inside a junction-adjacent insertion
+    _station_b_alternatives = ''     # equally good configurations NOT drawn (Kevin 2026-09-07)
+    _station_b_n_tied = 0            # how many were tied for best; > 1 = the draw picked arbitrarily
+    _station_b_intron = None         # the drawn intron the segments partition
+    _station_b_applied = 0           # 1 when apply mode drew it (the writer does the surgery)
+
+    # STATION B (ISSUE-040), report pass: an insertion of >= 3 nt glued to an N is where a splice
+    # aligner leaves a micro-exon it cannot seed. Read the ALIGNER's own record, before any 2F
+    # surgery, and ask whether annotated exons <= 30 nt inside that intron consume the inserted
+    # bases exactly and in order. In report mode the finding is a TSV column only; the CIGAR
+    # rewrite exists and is tested (microexon.rewrite_with_microexons) but is not applied here.
+    if _microexon.microexon_index():
+        try:
+            _mx = _microexon.recover_read_microexons(
+                read, genome.get(chrom_std) or genome.get(chrom) or '', strand,
+                _microexon.microexon_index())
+        except Exception as _mxe:                       # never let a report column fail a read
+            logger.debug("station B microexon scan failed for %s: %s", read.query_name, _mxe)
+            _mx = None
+        if _mx is not None:
+            _station_b_microexons = _microexon.format_segments(chrom_std, _mx.segments)
+            _station_b_alternatives = _microexon.format_alternatives(chrom_std, _mx.alternatives)
+            _station_b_n_tied = _mx.n_tied
+            _station_b_intron = _mx.intron
+            _station_b_applied = 1 if _microexon.station_b_mode() == 'apply' else 0
+            _OI_COUNTERS['station_b_microexon_reads'] = _OI_COUNTERS.get('station_b_microexon_reads', 0) + 1
+            _OI_COUNTERS['station_b_microexon_segments'] = (
+                _OI_COUNTERS.get('station_b_microexon_segments', 0) + len(_mx.segments))
+            if _mx.ambiguous:
+                _OI_COUNTERS['station_b_microexon_ambiguous'] = (
+                    _OI_COUNTERS.get('station_b_microexon_ambiguous', 0) + 1)
+            if _station_b_applied:
+                _OI_COUNTERS['station_b_microexon_applied'] = (
+                    _OI_COUNTERS.get('station_b_microexon_applied', 0) + 1)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -593,6 +629,15 @@ def correct_read_3prime(
             _junc_tuple = (_r_start, _r_end)
             if _junc_tuple not in junctions:
                 junctions = list(junctions) + [_junc_tuple]
+    # ISSUE-040 + ISSUE-024: when station B will draw micro-exons, the TSV's `junctions` must equal
+    # the N-ops the writer ends up writing — the writer asserts it and the tester's scorer reads this
+    # column. Replace the one drawn intron with the introns the split creates, in genomic order.
+    if _station_b_applied and _station_b_microexons and _station_b_intron:
+        _segs = [(int(t.rsplit(':', 1)[1].split('-')[0]), int(t.rsplit(':', 1)[1].split('-')[1]))
+                 for t in _station_b_microexons.split(',') if ':' in t]
+        _new_j = _microexon.split_introns(_segs, _station_b_intron[0], _station_b_intron[1])
+        junctions = sorted(set(tuple(j) for j in junctions
+                               if tuple(j) != tuple(_station_b_intron)) | set(_new_j))
     junctions_str = format_junctions_string(junctions)
 
     # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
@@ -794,6 +839,15 @@ def correct_read_3prime(
         # ISSUE-039 station C: the population's support for the landing site.
         'five_prime_site_support': _site_support,
         'five_prime_landing_established': _landing_established,
+        # ISSUE-040 station B: annotated micro-exons recovered from a junction-adjacent insertion,
+        # the equally good configurations not drawn, how many were tied, and whether it was DRAWN.
+        # The intron coordinates let the writer find the op on the LIVE record instead of by index.
+        'station_b_microexons': _station_b_microexons,
+        'station_b_alternatives': _station_b_alternatives,
+        'station_b_n_tied': _station_b_n_tied or '',
+        'station_b_applied': _station_b_applied,
+        'station_b_intron_start': (_station_b_intron[0] if _station_b_intron else ''),
+        'station_b_intron_end': (_station_b_intron[1] if _station_b_intron else ''),
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

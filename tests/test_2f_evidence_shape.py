@@ -334,6 +334,10 @@ def test_tsv_columns_are_blank_without_a_placed_block():
     cells = _cells(row)
     assert cells['five_prime_exon_identity'] == '' and cells['five_prime_exon_bits'] == ''
     # ISSUE-034 appended the three clip-origin columns after the shape columns.
-    assert CORRECTION_TSV_HEADER[-7:] == ['five_prime_exon_identity', 'five_prime_exon_bits',
-                                          'five_prime_clip_origin', 'five_prime_clip_origin_bits', 'five_prime_clip_prior_bits',
-                                          'five_prime_site_support', 'five_prime_landing_established']
+    assert CORRECTION_TSV_HEADER[-13:] == ['five_prime_exon_identity', 'five_prime_exon_bits',
+                                           'five_prime_clip_origin', 'five_prime_clip_origin_bits',
+                                           'five_prime_clip_prior_bits',
+                                           'five_prime_site_support', 'five_prime_landing_established',
+                                           'station_b_microexons', 'station_b_alternatives',
+                                           'station_b_n_tied', 'station_b_applied',
+                                           'station_b_intron_start', 'station_b_intron_end']

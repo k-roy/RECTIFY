@@ -1004,6 +1004,12 @@ def run(args):
             logger.info(f"  Spike-in reads removed: {spikein_stats.get('spikein_reads', 0):,}")
             logger.info(f"[TIMING] Spike-in filter: {_time.perf_counter() - _t_spikein:.1f}s")
 
+        # The worker payload for everything installed by a module-level setter (ISSUE-034 clip-origin
+        # prior, ISSUE-039 site support, ISSUE-040 micro-exon index). Initialised HERE, at the outer
+        # scope, because the run may skip the 2H block entirely and the payload is still assembled
+        # below — the inner-scope initialiser raised UnboundLocalError on exactly that path.
+        _clip_signal = None
+
         # Module 2H: Junction N-op boundary refinement (optional pre-processing step).
         # When --aligner-bams are provided (or a --junction-pool-cache pkl), replace
         # imprecise N-op boundaries in the consensus BAM with the best-supported
@@ -1033,12 +1039,26 @@ def run(args):
                 logger.info("Module 2H: skipped junction refinement; preparing pool lookup only...")
             else:
                 logger.info("Module 2H: Junction N-op boundary refinement...")
-            _clip_signal = None          # ISSUE-034: the clip-origin prior (set below from the cache or a fresh pool)
             try:
                 from ..splice.junction_refiner import build_junction_pool, refine_bam_junctions
                 from ..consensus.consensus import load_annotated_junctions as _load_annot_j
 
                 _annot_j = _load_annot_j(str(config['annotation_path']))
+
+                # STATION B (ISSUE-040): annotated exons <= 30 nt, indexed per contig. Same file,
+                # same pass cost as the junction load; GENCODE basic holds only ~5,870 of them.
+                from ..splice.microexon import (
+                    load_microexons as _load_mx, set_microexon_index as _set_mx, station_b_mode as _sb_mode,
+                )
+                try:
+                    _mx_index = _load_mx(str(config['annotation_path']))
+                except Exception as _mxe:
+                    logger.warning("  Station B: micro-exon index unavailable (%s); station B inert", _mxe)
+                    _mx_index = {}
+                _set_mx(_mx_index)
+                _mx_contigs = [k for k in _mx_index if k != '__transcripts__']
+                logger.info("  Station B: %d annotated micro-exons <= 30 nt over %d contigs; mode = %s",
+                            sum(len(_mx_index[k]) for k in _mx_contigs), len(_mx_contigs), _sb_mode())
 
                 # Load pre-built junction pool from cache if available.
                 _prebuilt_pool = None
@@ -1347,6 +1367,17 @@ def run(args):
             except Exception as _e:
                 logger.warning("Could not build exclusion detector (proceeding without): %s", _e)
                 _exclusion_detector = None
+
+        # Spawned region workers do not inherit module globals, so everything installed above by a
+        # setter has to ride a payload. `clip_signal` is that channel (parallel.py unpacks it):
+        # ISSUE-034's prior, ISSUE-039's site support, ISSUE-040's micro-exon index.
+        try:
+            from ..splice.microexon import microexon_index as _mx_now
+            if _mx_now():
+                _clip_signal = dict(_clip_signal or {})
+                _clip_signal['microexon_index'] = _mx_now()
+        except Exception as _e:
+            logger.debug("could not attach the micro-exon index to the worker payload: %s", _e)
 
         if streaming_mode:
             if n_threads > 1:

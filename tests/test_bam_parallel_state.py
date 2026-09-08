@@ -89,14 +89,16 @@ import pytest
 # here — no annotation, so no candidate is ever judged). Verified before re-recording
 # (scratchpad golden_check3.py) that stripping the three new keys reproduces the previous
 # golden ae45870b… exactly. Prior golden ae45870b…
-# Re-recorded 2026-09-07 (ISSUE-039, station C), again a pure SCHEMA addition:
-# `five_prime_site_support` and `five_prime_landing_established` joined the result dict
-# (None / None here — no pool cache, so no site support is installed and station C knows
-# nothing). Verified before re-recording, per read, that stripping the two new keys
-# reproduces the previous result set exactly: 36/36 reads byte-identical against a clean
-# 5205d97 worktree. Prior golden cd06c38a…
+# Re-recorded 2026-09-08 (ISSUE-039 station C + ISSUE-040 station B), a pure SCHEMA addition:
+# `five_prime_site_support`, `five_prime_landing_established`, `station_b_microexons`,
+# `station_b_alternatives`, `station_b_n_tied`, `station_b_applied`, `station_b_intron_start`
+# and `station_b_intron_end` joined the result dict — all at their defaults here, since this
+# fixture has no pool cache (station C knows nothing) and no micro-exon index (station B is
+# inert). Verified before re-recording, per read, that stripping the eight new keys reproduces
+# the previous result set exactly: 36/36 reads byte-identical against a clean 5205d97
+# worktree. Prior goldens a767f6b1… and cd06c38a…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "a767f6b12648ad1bead738dac5c088dc42b3b6269a682f4196d7abbb86456354"
+    "534840270ec7934358228ec192a46b79b18a2ec5778816aea13b0f3d20b36e86"
 )
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation

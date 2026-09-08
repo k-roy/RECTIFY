@@ -104,17 +104,22 @@ def test_prior_can_tip_a_close_call_toward_the_intron():
 
 
 def test_tsv_columns_are_appended_last_and_filled():
-    assert CORRECTION_TSV_HEADER[-5:] == ['five_prime_clip_origin', 'five_prime_clip_origin_bits',
-                                          'five_prime_clip_prior_bits',
-                                          'five_prime_site_support', 'five_prime_landing_established']
+    assert CORRECTION_TSV_HEADER[-11:] == ['five_prime_clip_origin', 'five_prime_clip_origin_bits',
+                                           'five_prime_clip_prior_bits',
+                                           'five_prime_site_support', 'five_prime_landing_established',
+                                           'station_b_microexons', 'station_b_alternatives',
+                                           'station_b_n_tied', 'station_b_applied',
+                                           'station_b_intron_start', 'station_b_intron_end']
     clip = GENOME_SEQ[128:140]
     row = bp.correct_read_3prime(_clip_read(clip), GENOME, annotated_junctions=ANNOTATED)[0]
     assert row['five_prime_clip_origin'] == 'intron'
     cells = correction_result_to_tsv_row(row)
     assert len(cells) == len(CORRECTION_TSV_HEADER)
-    assert cells[-5] == 'intron' and cells[-4] != '' and cells[-3] == '0.0'
-    # ISSUE-039: no rescue was drawn, so the station-C columns are blank.
-    assert cells[-2] == '' and cells[-1] == ''
+    assert cells[-11] == 'intron' and cells[-10] != '' and cells[-9] == '0.0'
+    # ISSUE-039: no rescue was drawn, so the station-C columns are blank; ISSUE-040: station B
+    # found nothing on this read, so its columns are blank apart from the 0/1 applied flag.
+    assert cells[-8] == '' and cells[-7] == ''
+    assert cells[-6:] == ['', '', '', '0', '', '']
 
 
 def test_prescan_unspliced_signal_counts_reads_running_through_an_intron_edge():

@@ -102,6 +102,20 @@ CORRECTION_TSV_HEADER = [
     # '' when no rescue was drawn, and 0 when the prescan cache predates the signal.
     'five_prime_site_support',
     'five_prime_landing_established',
+    # ISSUE-040 station B (2026-09-07): annotated micro-exons (<= 30 nt) that consume an insertion of
+    # >= 3 nt sitting beside an N-op EXACTLY and in order — the class a splice aligner structurally
+    # cannot seed. 'chrom:start-end' per segment, comma-joined in genomic order; '' when the read has
+    # no such insertion or no split explains it. REPORT ONLY: the CIGAR is not rewritten in this mode.
+    'station_b_microexons',
+    # The equally good configurations station B did NOT draw (';'-separated), how many were TIED for
+    # best (> 1 means the drawn one was picked at random, seeded by the read name — Kevin 2026-09-07),
+    # whether it was actually drawn into the BAM, and the intron the segments partition. In report
+    # mode `station_b_applied` is 0 and the CIGAR is untouched.
+    'station_b_alternatives',
+    'station_b_n_tied',
+    'station_b_applied',
+    'station_b_intron_start',
+    'station_b_intron_end',
 ]
 
 
@@ -232,6 +246,12 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         _shape_cell(result.get('five_prime_clip_prior_bits'), '{:.1f}'),
         _consensus_cell(result, 'five_prime_site_support'),
         _consensus_cell(result, 'five_prime_landing_established'),
+        result.get('station_b_microexons', '') or '',
+        result.get('station_b_alternatives', '') or '',
+        _consensus_cell(result, 'station_b_n_tied'),
+        str(result.get('station_b_applied', 0) or 0),
+        _consensus_cell(result, 'station_b_intron_start'),
+        _consensus_cell(result, 'station_b_intron_end'),
     ]
 
 

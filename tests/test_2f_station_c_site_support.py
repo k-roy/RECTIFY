@@ -208,8 +208,8 @@ def test_report_mode_still_records_what_the_population_knew(monkeypatch):
 
 
 def test_the_two_columns_are_last_and_blank_without_a_rescue():
-    assert CORRECTION_TSV_HEADER[-2:] == ['five_prime_site_support', 'five_prime_landing_established']
+    assert CORRECTION_TSV_HEADER[-8:-6] == ['five_prime_site_support', 'five_prime_landing_established']
     row = _row(_make_read([(0, 60)], 'C' * 60, name='no_clip'))
     cells = correction_result_to_tsv_row(row)
     assert len(cells) == len(CORRECTION_TSV_HEADER)
-    assert cells[-2] == '' and cells[-1] == ''
+    assert cells[-8] == '' and cells[-7] == ''
