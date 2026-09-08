@@ -589,6 +589,58 @@ def clip_origin(read, strand: str, genome_seq: str, exon_site, exon_bits, exon_a
     return 'ambiguous', (None if _best == float('-inf') else _best), prior, b_int, _exo_val
 
 
+JUNCTION_INDEL_REFUSAL = 'junction_adjacent_indel'
+
+
+def _junction_adjacent_indel_refusal(cigar_ops, strand: str, genome_seq: str,
+                                     intron_start: int, intron_end: int) -> str:
+    """ISSUE-038. Kevin's rule, applied to the 2F exon block: never leave an I/D touching the N.
+
+    Strict for a DELETION — a missing length glued to an N cannot be told apart from a junction shift.
+    An INSERTION is allowed only when every inserted base continues a homopolymer (run >= 3) or a
+    dinucleotide repeat on the exon side, i.e. the base caller over-called a run (Kevin 2026-09-07).
+    The block abuts the intron at its LAST op on the plus strand and at its FIRST op on the minus
+    strand, because the record is written in reference order either way — reading a minus-strand block
+    as if it were plus is what let 74 of these through to the BAM as `N 1D`, `N 3I`, `N 6I`.
+    """
+    ops = [(o, n) for o, n in (cigar_ops or []) if n]
+    if not ops:
+        return ''
+    op, n = ops[-1] if strand == '+' else ops[0]
+    if op not in ('I', 'D', 1, 2):
+        return ''
+    is_del = op in ('D', 2)
+    if is_del:
+        return JUNCTION_INDEL_REFUSAL
+    # an insertion: run-explained or refused. The exon side of the junction is left of intron_start
+    # on the plus strand and right of intron_end on the minus strand.
+    try:
+        if strand == '+':
+            flank = (genome_seq[max(0, intron_start - 8):intron_start] or '').upper()[::-1]
+        else:
+            flank = (genome_seq[intron_end:intron_end + 8] or '').upper()
+    except Exception:
+        return JUNCTION_INDEL_REFUSAL
+    if not flank:
+        return JUNCTION_INDEL_REFUSAL
+    run = 1
+    while run < len(flank) and flank[run] == flank[0]:
+        run += 1
+    # a homopolymer over-call: n bases, all the run's base, and the run itself at least 3 long
+    if run >= 3 and n <= run:
+        return ''
+    # a dinucleotide repeat over-call: the flank starts with >= 2 copies of a 2-mer of DISTINCT bases
+    # (an equal-base 2-mer is the homopolymer case above, and must not get a second, looser chance),
+    # and the insertion is whole copies of it, no longer than the repeat itself.
+    if len(flank) >= 4 and flank[0] != flank[1] and flank[:2] == flank[2:4] and n % 2 == 0:
+        copies = 2
+        while (copies + 1) * 2 <= len(flank) and flank[copies * 2:copies * 2 + 2] == flank[:2]:
+            copies += 1
+        if n <= copies * 2:
+            return ''
+    return JUNCTION_INDEL_REFUSAL
+
+
 def _gap_refusal(cigar_ops) -> str:
     """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer
     than ``E_MAX_GAP`` (env ``RECTIFY_2F_EVIDENCE_MAX_GAP``), else ''."""
@@ -3768,7 +3820,8 @@ def _rescue_3ss_truncation_body(
             # The novel-site verdict in refuse mode names its own, more
             # specific token first (below); E's token stands otherwise.
             _e_tok = (_evidence_floor_refusal(_exon_shape, annotated=bool(_emitted_annotated))
-                      or _gap_refusal(_cigar_ops))
+                      or _gap_refusal(_cigar_ops)
+                      or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
                 _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                     _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
