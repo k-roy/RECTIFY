@@ -754,16 +754,17 @@ def _gap_refusal(cigar_ops, align_seq: str = None, genome_seq: str = None,
     """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer than the cap
     (``max(E_MAX_GAP, matched // E_GAP_PER_MATCHED)``), EXCEPT gaps a homopolymer explains.
 
-    Kevin APPROVED relaxing this on R005/R006 (2026-09-07) — the cap refuses blocks of 25-35 bits at
-    identity 1.00 and its own strongest example is an under-called G-run — but the relaxation is NOT
-    applied yet and the machinery here is deliberately dormant: `_run_explained_gaps` is written and
-    tested, and the call sites pass no sequence, so behaviour is identical to 5d70a92.
-    WHY IT IS PARKED: setting `E_GAP_PER_MATCHED` to 3 makes 04b17fc6 draw again — the control Kevin
-    approved REFUSING ("low quality seq") — and on R007 he asked for that read to be placed at an
-    UPSTREAM ALT EXON (54,808,433 -> 54,809,302, carried by 90 reads), not at the gap-capped site. So
-    relaxing the cap alone gives that read a junction at the wrong place. The operating point has to be
-    chosen with the station-C attachment rule, not before it. Eight pinned replays move when it is
-    relaxed; they are the measurement, not an obstacle.
+    ACTIVATED 2026-09-08 (ISSUE-041) — the call sites now pass sequence, so a gap the reference
+    explains as an over- or under-called homopolymer is EXEMPT from the cap in either direction. That
+    is R006 exactly ("its gap is an under-called G-run … the mirror image of the insertion case").
+    What is NOT changed here is the cap ITSELF: `E_GAP_PER_MATCHED` stays 5. R005 approves relaxing
+    it, but the reason the relaxation was parked still stands on its own — at 3, 04b17fc6 draws again
+    at the GAP-CAPPED site (54,807,802), the control Kevin approved REFUSING, rather than at the
+    upstream alt exon he asked for on R007. So the ratio is an OPERATING POINT to be measured against
+    the replay set, not a constant to be edited: `RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED` sweeps it
+    without a new sha. Measured at the tip, 04b17fc6's gap-capped placement is refused by the
+    IDENTITY floor (0.79 over 15 matched, 13.0 bits) and not by the cap at all, so the two decisions
+    are no longer entangled the way they were at 372d6c5.
     """
     if not cigar_ops:
         return ''
@@ -3964,7 +3965,8 @@ def _rescue_3ss_truncation_body(
             _e_tok = (_evidence_floor_refusal(
                           _exon_shape,
                           annotated=_attachment_tier(best_junction, bool(_emitted_annotated)))
-                      or _gap_refusal(_cigar_ops)
+                      or _gap_refusal(_cigar_ops, _align_seq, genome_seq,
+                                      _intron_start, _intron_end, strand)
                       or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
                 _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
@@ -4190,7 +4192,8 @@ def _rescue_3ss_truncation_body(
             _e_tok4 = (_evidence_floor_refusal(
                            _shape4,
                            annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot4_floor))
-                       or _gap_refusal(_cigar_ops4))
+                       or _gap_refusal(_cigar_ops4, _intronic_seq4 or '', genome_seq,
+                                       intron_start, intron_end, strand))
         if _e_tok4:
             _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                 _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
@@ -4291,7 +4294,8 @@ def _rescue_3ss_truncation_body(
                            (_evidence_floor_refusal(
                                 _shape3,
                                 annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot3))
-                            or _gap_refusal(_ops3)))
+                            or _gap_refusal(_ops3, _seg3, genome_seq,
+                                            intron_start, intron_end, strand)))
                 if _shape3 is None or _e_tok3:
                     _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
                         _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)

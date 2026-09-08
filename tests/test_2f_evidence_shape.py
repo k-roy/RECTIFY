@@ -341,3 +341,40 @@ def test_tsv_columns_are_blank_without_a_placed_block():
                                            'station_b_microexons', 'station_b_alternatives',
                                            'station_b_n_tied', 'station_b_applied',
                                            'station_b_intron_start', 'station_b_intron_end']
+
+
+# ---------------------------------------------------------------- ISSUE-041: the gap cap's HP exemption
+def test_a_homopolymer_explained_gap_is_exempt_from_the_cap_in_both_directions():
+    """Kevin R005/R006 (2026-09-07): relax the gap cap, and never let a homopolymer-explained gap trip
+    it in EITHER direction — R006's own block "is an under-called G-run, the mirror image of the
+    insertion case". Activated 2026-09-08 by passing sequence at the call sites; this test is what
+    says the exemption actually FIRES, rather than passing because it never triggers.
+
+    GENOME_SEQ opens exon 1 with a 20-T run at [0, 20), so a 6-base deletion or insertion of T inside
+    it is a run miscall; the same gap in an aperiodic tail is not. Both shapes carry 25 matched bases,
+    so the cap is max(4, 25 // 5) = 5 and a 6-base gap exceeds it — only the exemption can save it.
+    """
+    from rectify.core.splice.splice_aware_5prime import (
+        EXON_GAP_REFUSAL, _gap_refusal, _run_explained_gaps,
+    )
+    # DELETION: reference span 31 -> the block starts at 9; 3M reaches 12; the 6D covers [12, 18),
+    # wholly inside the T run.
+    clip_del = GENOME_SEQ[9:12] + GENOME_SEQ[18:40]
+    del_ops = _ops('3M6D22M')
+    assert len(clip_del) == 25
+    assert _gap_refusal(del_ops) == EXON_GAP_REFUSAL                     # no sequence: refused
+    assert _run_explained_gaps(del_ops, clip_del, GENOME_SEQ, 40, 140, '+') == {1}
+    assert _gap_refusal(del_ops, clip_del, GENOME_SEQ, 40, 140, '+') == ''
+
+    # INSERTION, the mirror: reference span 25 -> the block starts at 15; the 6 inserted T's sit at
+    # reference 18, inside the same run.
+    clip_ins = GENOME_SEQ[15:18] + 'TTTTTT' + GENOME_SEQ[18:40]
+    ins_ops = _ops('3M6I22M')
+    assert _gap_refusal(ins_ops) == EXON_GAP_REFUSAL
+    assert _run_explained_gaps(ins_ops, clip_ins, GENOME_SEQ, 40, 140, '+') == {1}
+    assert _gap_refusal(ins_ops, clip_ins, GENOME_SEQ, 40, 140, '+') == ''
+
+    # A gap the reference does NOT explain is still refused with the sequence in hand.
+    plain = PLUS_SEQ[9:12] + PLUS_SEQ[18:40]
+    assert _run_explained_gaps(del_ops, plain, PLUS_SEQ, 40, 140, '+') == set()
+    assert _gap_refusal(del_ops, plain, PLUS_SEQ, 40, 140, '+') == EXON_GAP_REFUSAL
