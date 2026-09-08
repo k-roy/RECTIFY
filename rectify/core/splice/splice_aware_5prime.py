@@ -413,6 +413,42 @@ def evidence_floor() -> Tuple[float, float]:
             _env('RECTIFY_2F_EVIDENCE_BITS', E_BITS, float))
 
 
+def _body_resume_ref(read, depth: int, strand: str):
+    """The reference position where the read's body RESUMES after `depth` query bases are peeled off its
+    5' end (transcript orientation). Walk the record; never compute it as candidate_acceptor + depth.
+
+    ISSUE-037 (Kevin 2026-09-07, f1cb0cfd): the arithmetic form is only right when the record's 5' end sits
+    exactly on the candidate acceptor with no indel among the peeled bases. f1cb0cfd is `7S5M1I78M` at
+    51,713,996 with the annotated acceptor at 51,714,002: peeling 14 query bases lands the body exactly on
+    51,714,002 (canonical AG, the junction the baseline draws), while `acceptor + 7` overshoots to a
+    non-canonical position and the rescue was refused as `noncanonical_destination`. One insertion inside
+    the peeled stretch is enough to break the arithmetic.
+    """
+    ops = list(read.cigartuples or [])
+    if not ops:
+        return None
+    if strand == '-':
+        ops = ops[::-1]
+    ref = read.reference_start if strand == '+' else read.reference_end
+    q = 0
+    for op, n in ops:
+        if op in (0, 7, 8):                       # M/=/X consume both
+            take = min(n, depth - q)
+            if take > 0:
+                ref = ref + take if strand == '+' else ref - take
+                q += take
+            if q >= depth:
+                return ref
+            ref = ref + (n - take) if strand == '+' else ref - (n - take)
+        elif op in (1, 4):                        # I/S consume query only
+            q += n
+            if q >= depth:
+                return ref
+        elif op in (2, 3):                        # D/N consume reference only
+            ref = ref + n if strand == '+' else ref - n
+    return None
+
+
 def evidence_floor_annotated_bits() -> float:
     """The bits floor for an ANNOTATED landing (two-tier floor, 2026-09-07):
     ``E_BITS_ANNOTATED`` unless ``RECTIFY_2F_EVIDENCE_BITS_ANNOTATED`` overrides
@@ -1946,6 +1982,9 @@ def _terminal_peel_rescue(
     best_peel: Optional[Dict] = None
     best_depth: Optional[int] = None
     best_peel_norm = base_norm
+    _ct_sweep = read.cigartuples or []
+    _clip0_sweep = (_ct_sweep[0][1] if _ct_sweep and _ct_sweep[0][0] == 4 else 0) if strand == '+' \
+        else (_ct_sweep[-1][1] if _ct_sweep and _ct_sweep[-1][0] == 4 else 0)
     _peel_refusal = ''   # ISSUE-026: a placement refusal seen at some depth
     _peel_shape = (None, None)   # ISSUE-028: the refused block's (identity, anchor run)
     _peel_site = None            # ISSUE-034: the candidate that block was judged at
@@ -1977,6 +2016,24 @@ def _terminal_peel_rescue(
             _OI_COUNTERS['five_prime_peel_prefix_conflict'] = (
                 _OI_COUNTERS.get('five_prime_peel_prefix_conflict', 0) + 1)
             continue
+        # ISSUE-037 (Kevin 2026-09-07, f1cb0cfd "the upstream exon is clearly correct"): a peel that
+        # borrows body bases MOVES the acceptor to wherever the body resumes, and the sweep used to
+        # optimise the block alone and discover the consequence only after the winner was fixed. Depth
+        # 16 scored 24.5 bits and landed the acceptor 2 nt past the annotated one (non-canonical, so the
+        # whole rescue was thrown away), while depth 14 lands exactly on it — the junction the baseline
+        # draws. Judge the destination INSIDE the sweep so the winner is chosen among admissible depths.
+        if d > _clip0_sweep:
+            _r = _body_resume_ref(read, d, strand)
+            if _r is None:
+                continue
+            if strand == '+':
+                _ok = 2 <= _r <= len(genome_seq) and genome_seq[_r - 2:_r].upper() == 'AG'
+            else:
+                _ok = 0 <= _r <= len(genome_seq) - 2 and genome_seq[_r:_r + 2].upper() == 'CT'
+            if not _ok:
+                _OI_COUNTERS['five_prime_peel_depth_noncanonical_skipped'] = (
+                    _OI_COUNTERS.get('five_prime_peel_depth_noncanonical_skipped', 0) + 1)
+                continue
         ed = res.get('edit_distance', -1.0)
         if ed is None or ed < 0:
             continue  # snap-type result from override path — ignore
@@ -2035,7 +2092,11 @@ def _terminal_peel_rescue(
         rj = best_peel.get('rescued_junction')
         if rj is not None:
             j_chrom, js, je = rj
-            new_rj = (j_chrom, js, je + _extra) if strand == '+' else (j_chrom, js - _extra, je)
+            _resume = _body_resume_ref(read, int(best_depth or 0), strand)
+            if _resume is None:                    # unwalkable record: fall back to the arithmetic form
+                new_rj = (j_chrom, js, je + _extra) if strand == '+' else (j_chrom, js - _extra, je)
+            else:                                  # ISSUE-037: the acceptor the WRITER will draw
+                new_rj = (j_chrom, js, int(_resume)) if strand == '+' else (j_chrom, int(_resume), je)
             _gs = len(genome_seq)
             if strand == '+':
                 _acc_ok = new_rj[2] <= _gs and genome_seq[new_rj[2] - 2:new_rj[2]].upper() == 'AG'
