@@ -333,7 +333,10 @@ def choose_split(splits: List[List[Tuple[int, int]]], chrom: str, index, read_na
     rest = [sp for sc, sp in scored if best - sc > TIE_EPSILON]
     rng = random.Random(hashlib.sha1(read_name.encode('utf-8')).hexdigest())
     chosen = rng.choice(tied)
-    alternatives = [sp for sp in tied if sp != chosen] + rest
+    # EQUALLY GOOD means equally good. `rest` lost on evidence — a shorter total match, or segments
+    # that never co-occur in a transcript — and recording a loser beside a tie would blur exactly the
+    # distinction Kevin asked to preserve. `n_tied` says how many were in the draw.
+    alternatives = [sp for sp in tied if sp != chosen]
     return chosen, alternatives, len(tied)
 
 

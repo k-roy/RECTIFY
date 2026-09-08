@@ -308,6 +308,9 @@ def test_a_tie_is_broken_at_random_but_reproducibly_and_the_loser_is_kept():
     again, _, _ = MX.choose_split(splits, CHROM, index, 'read-one')
     assert again == a                                          # reproducible for the same read
     assert MX.format_alternatives(CHROM, alt_a).count(':') == 1
+    # and only TIED configurations are kept as alternatives — a loser is not "equally good"
+    b_only = MX.choose_split([[(200, 206)]], CHROM, index, 'solo')
+    assert b_only[1] == [] and b_only[2] == 1
 
 
 def test_the_higher_scoring_split_is_not_a_tie():
@@ -321,6 +324,8 @@ def test_the_higher_scoring_split_is_not_a_tie():
     index = {CHROM: [(200, 209), (300, 306)]}
     splits = MX.find_microexon_splits(long_seg, CHROM, 60, 460, '+', gg, index)
     assert splits == [[(200, 209)]]
+    chosen, alts, n_tied = MX.choose_split(splits, CHROM, index, 'r')
+    assert chosen == [(200, 209)] and alts == [] and n_tied == 1
 
 
 def test_station_b_stands_down_when_a_5prime_rescue_touches_the_same_intron(monkeypatch):
