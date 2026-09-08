@@ -299,6 +299,10 @@ def run(args: argparse.Namespace) -> int:
             'annotated_set': annotated_set,
             # ISSUE-034: {'unspliced': {junction: n}, 'spliced': {junction: n}} — the clip-origin prior.
             'clip_signal': {'unspliced': dict(clip_signal['unspliced']), 'spliced': dict(clip_signal['spliced'])},
+            # ISSUE-039: {junction: reads crossing it with a clean 20-base anchor both flanks, max over
+            # arms} — the 2F resolver's station-C signal. Additive: a cache written before this key
+            # existed stays valid (same cache_format) and simply leaves station C inert.
+            'site_support': dict(clip_signal.get('site_support') or {}),
             'min_observed_support': args.junction_min_support,
             'max_junction_size': args.junction_max_size,
             'complexity_alpha': args.complexity_alpha,

@@ -109,8 +109,11 @@ def _init_region_worker_state(
     # ISSUE-034: spawned workers do not inherit the parent's module globals — install the
     # clip-origin prior (unspliced/spliced counts per annotated intron) in this process. It is
     # process state, not a per-region kwarg, so it does not travel into _process_region_worker.
-    from ..splice.splice_aware_5prime import set_clip_origin_signal
-    set_clip_origin_signal(_REGION_WORKER_STATE.pop('clip_signal', None))
+    from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
+    _signal = _REGION_WORKER_STATE.pop('clip_signal', None)
+    set_clip_origin_signal(_signal)
+    # ISSUE-039 station C rides the same payload (correct_command folds it in).
+    set_site_support((_signal or {}).get('site_support'))
     _REGION_WORKER_STATE['genome'] = genome
     _REGION_WORKER_STATE['polya_model'] = polya_model
 

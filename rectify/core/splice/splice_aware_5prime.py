@@ -540,6 +540,69 @@ def set_clip_origin_signal(signal) -> None:
                            'spliced': dict((signal or {}).get('spliced', {}) or {})}
 
 
+# ---------------------------------------------------------------------------
+# STATION C for the 5' resolver (ISSUE-039, Kevin 2026-09-07 via R007/04b17fc6)
+# ---------------------------------------------------------------------------
+# The rule: *when a candidate junction is already carried by an independent,
+# well-covered set of reads, a read's own clip faces an ATTACHMENT bar, not a
+# CREATION bar.* The two-tier floor already exists (E_BITS vs E_BITS_ANNOTATED);
+# what station C changes is WHO supplies the tier — today only the annotation
+# does, so a heavily-used NOVEL site is treated as if the read were inventing it.
+#
+# The signal is `site_support` from the prescan pool (junction_scoring:
+# SITE_SUPPORT_ANCHOR / SITE_ESTABLISHED_MIN_READS) — reads of THIS LIBRARY that
+# cross the junction with a clean 20-base anchor on both flanks, max over arms.
+# Counts are not the evidence: each supporting read individually meets the
+# read-level standard, and attaching a read to a site fabricates nothing.
+#
+# DEFAULT IS REPORT MODE. `RECTIFY_2F_STATION_C=attach` opts the tier flip in;
+# with it unset the columns are emitted and nothing that gets drawn changes, so
+# the ON/OFF arms are byte-identical except for the two new TSV columns.
+#
+# Not the same thing as rectify.core.consensus.station_c, which judges junctions
+# AFTER correction from the corrected BAM; this one has to answer before the
+# resolver has decided. Keep them separate.
+_SITE_SUPPORT: Dict[Tuple, int] = {}
+
+
+def set_site_support(support) -> None:
+    """Install the prescan's ``{junction: n_reads_with_clean_20nt_anchors}``
+    (``build_junction_pool(..., return_signal=True)[2]['site_support']``);
+    ``None`` clears it, which puts station C back to knowing nothing."""
+    global _SITE_SUPPORT
+    _SITE_SUPPORT = dict(support or {})
+
+
+def site_support_n(junction) -> int:
+    """Reads of this library that independently carry *junction* with clean anchors."""
+    if junction is None:
+        return 0
+    return int(_SITE_SUPPORT.get(tuple(junction[:3]), 0))
+
+
+def station_c_mode() -> str:
+    """``'report'`` (default — emit the columns, change no drawing) or ``'attach'``
+    (an established site grants the attachment tier). Env RECTIFY_2F_STATION_C."""
+    v = os.environ.get('RECTIFY_2F_STATION_C', '').strip().lower()
+    return 'attach' if v == 'attach' else 'report'
+
+
+def site_established(junction) -> bool:
+    """Whether the population has established *junction* on its own evidence."""
+    from .junction_scoring import SITE_ESTABLISHED_MIN_READS
+    return site_support_n(junction) >= SITE_ESTABLISHED_MIN_READS
+
+
+def _attachment_tier(junction, annotated: bool) -> bool:
+    """Whether this landing is an ATTACHMENT (lower floor) rather than a CREATION.
+
+    Annotated always is. A novel site is too, but only in ``attach`` mode and only
+    when the population has established it."""
+    if annotated:
+        return True
+    return station_c_mode() == 'attach' and site_established(junction)
+
+
 def clip_origin_prior_bits(junction) -> float:
     """log2((unspliced + 1) / (spliced + 1)) at *junction*, capped at ±CLIP_ORIGIN_PRIOR_CAP; 0 without signal."""
     if junction is None:
@@ -2474,6 +2537,19 @@ def rescue_3ss_truncation(
     if _result.get('rescued') and _result.get('reranked_between_annotated'):
         _OI_COUNTERS['five_prime_reranked_between_annotated'] = (
             _OI_COUNTERS.get('five_prime_reranked_between_annotated', 0) + 1)
+    # ISSUE-039 station C, REPORT half (emitted in both modes, for every rescue): how many
+    # reads of this library independently carry the junction this read landed on, and
+    # whether that alone would have earned it the attachment tier. On an annotated landing
+    # the tier came from the annotation, so `established` says what the POPULATION knew,
+    # not which floor was applied — that is the column that makes the ON arm predictable.
+    if _result.get('rescued'):
+        _j = _result.get('rescued_junction')
+        _n = site_support_n(_j)
+        _result['site_support'] = _n
+        _result['landing_established'] = bool(_j is not None and site_established(_j))
+        if _result['landing_established'] and not _result.get('landing_annotated'):
+            _OI_COUNTERS['five_prime_landing_established_novel'] = (
+                _OI_COUNTERS.get('five_prime_landing_established_novel', 0) + 1)
     return _result
 
 
@@ -3884,7 +3960,10 @@ def _rescue_3ss_truncation_body(
             # block with the same floor, so a junk block cannot re-enter there.
             # The novel-site verdict in refuse mode names its own, more
             # specific token first (below); E's token stands otherwise.
-            _e_tok = (_evidence_floor_refusal(_exon_shape, annotated=bool(_emitted_annotated))
+            # ISSUE-039 station C: an ESTABLISHED novel site is an attachment too.
+            _e_tok = (_evidence_floor_refusal(
+                          _exon_shape,
+                          annotated=_attachment_tier(best_junction, bool(_emitted_annotated)))
                       or _gap_refusal(_cigar_ops)
                       or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
@@ -4108,7 +4187,9 @@ def _rescue_3ss_truncation_body(
         if _shape4 is not None and _placed4 >= min_informative_clip_bp():
             # The gap bound applies here too: a snap whose re-placed segment needs a long I/D
             # is a junction with an indel glued to the N (dab60caa's 6D, de84a10a's 5I).
-            _e_tok4 = (_evidence_floor_refusal(_shape4, annotated=_annot4_floor)
+            _e_tok4 = (_evidence_floor_refusal(
+                           _shape4,
+                           annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot4_floor))
                        or _gap_refusal(_cigar_ops4))
         if _e_tok4:
             _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
@@ -4207,7 +4288,10 @@ def _rescue_3ss_truncation_body(
                 _annot3 = (annotated_keys is None
                            or (j_chrom, intron_start, intron_end) in annotated_keys)
                 _e_tok3 = ('' if _shape3 is None else
-                           (_evidence_floor_refusal(_shape3, annotated=_annot3) or _gap_refusal(_ops3)))
+                           (_evidence_floor_refusal(
+                                _shape3,
+                                annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot3))
+                            or _gap_refusal(_ops3)))
                 if _shape3 is None or _e_tok3:
                     _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
                         _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)

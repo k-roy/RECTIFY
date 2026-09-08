@@ -460,6 +460,8 @@ def correct_read_3prime(
     _clip_origin = ''                # ISSUE-034: origin of an unplaced 5' clip (intron / exon:<site> / ambiguous / none)
     _clip_origin_bits = None
     _clip_prior_bits = None
+    _site_support = None             # ISSUE-039: population support for the landing site ('' = no rescue)
+    _landing_established = None
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -522,6 +524,10 @@ def correct_read_3prime(
             _clip_origin = _3ss_result.get('clip_origin', '') or ''
             _clip_origin_bits = _3ss_result.get('clip_origin_bits')
             _clip_prior_bits = _3ss_result.get('clip_prior_bits')
+            # ISSUE-039 station C: '' unless a rescue was drawn (the resolver sets both together).
+            _site_support = _3ss_result.get('site_support')
+            _le = _3ss_result.get('landing_established')
+            _landing_established = None if _le is None else int(bool(_le))
             # ISSUE-032(b): the reanchor pre-pass propagates whether or not a rescue was drawn
             # (the writer's `_apply_reanchor_from_clip_len` runs on reanchor_clip_len alone).
             _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
@@ -785,6 +791,9 @@ def correct_read_3prime(
         'five_prime_clip_origin': _clip_origin,
         'five_prime_clip_origin_bits': _clip_origin_bits,
         'five_prime_clip_prior_bits': _clip_prior_bits,
+        # ISSUE-039 station C: the population's support for the landing site.
+        'five_prime_site_support': _site_support,
+        'five_prime_landing_established': _landing_established,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

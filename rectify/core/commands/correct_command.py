@@ -1074,6 +1074,24 @@ def run(args):
                                         sum(1 for _v in _pool_data['clip_signal'].get('unspliced', {}).values() if _v))
                         else:
                             logger.info("  Pool cache carries no clip-origin prior (pre-ISSUE-034 prescan): prior = 0")
+                        # ISSUE-039 station C: the population's per-junction support. Additive key —
+                        # an older cache leaves it empty and station C simply knows nothing.
+                        from ..splice.splice_aware_5prime import set_site_support, station_c_mode
+                        from ..splice.junction_scoring import SITE_ESTABLISHED_MIN_READS
+                        _site_support = _pool_data.get('site_support') or {}
+                        set_site_support(_site_support)
+                        # Ride the clip_signal payload to the region workers (parallel.py installs
+                        # both from it), so the plumbing stays one parameter wide.
+                        _clip_signal = dict(_clip_signal or {})
+                        _clip_signal['site_support'] = _site_support
+                        if _site_support:
+                            logger.info("  Site support loaded from the pool cache: %d junctions, %d established "
+                                        "(>= %d clean-anchor reads); station C mode = %s",
+                                        len(_site_support),
+                                        sum(1 for _v in _site_support.values() if _v >= SITE_ESTABLISHED_MIN_READS),
+                                        SITE_ESTABLISHED_MIN_READS, station_c_mode())
+                        else:
+                            logger.info("  Pool cache carries no site support (pre-ISSUE-039 prescan): station C inert")
                         logger.info(
                             "  Pre-built pool: %d junctions (%d annotated)",
                             len(_prebuilt_pool), len(_prebuilt_annot_set),
@@ -1090,8 +1108,10 @@ def run(args):
                         return_signal=True,
                     )
                     # ISSUE-034: the unspliced/spliced prior for the 5' clip-origin call.
-                    from ..splice.splice_aware_5prime import set_clip_origin_signal
+                    from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
                     set_clip_origin_signal(_clip_signal)
+                    # ISSUE-039 station C: same build, same third element.
+                    set_site_support((_clip_signal or {}).get('site_support'))
                     logger.info("  Clip-origin prior: unspliced signal at %d annotated introns",
                                 sum(1 for _v in _clip_signal['unspliced'].values() if _v))
                     logger.info(

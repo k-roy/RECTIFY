@@ -490,11 +490,12 @@ class TestRefusalIsReportedNotSwallowed:
         # after it, ISSUE-026 invariant D the exon-2 prefix after those, ISSUE-028
         # invariant E the two block-shape columns after that; every earlier
         # column keeps its absolute index.
-        assert CORRECTION_TSV_HEADER[-9:] == [
+        assert CORRECTION_TSV_HEADER[-11:] == [
             'five_prime_rescue_refused', 'five_prime_landing_annotated',
             'five_prime_novel_evidence', 'five_prime_exon2_prefix',
             'five_prime_exon_identity', 'five_prime_exon_bits',
-            'five_prime_clip_origin', 'five_prime_clip_origin_bits', 'five_prime_clip_prior_bits']
+            'five_prime_clip_origin', 'five_prime_clip_origin_bits', 'five_prime_clip_prior_bits',
+            'five_prime_site_support', 'five_prime_landing_established']
         row = correction_result_to_tsv_row({
             'read_id': 'r', 'chrom': 'chrR', 'strand': '+',
             'original_3prime': 1, 'corrected_3prime': 1,
@@ -503,8 +504,9 @@ class TestRefusalIsReportedNotSwallowed:
             'five_prime_rescue_refused': REFUSAL_REROUTE,
         })
         assert len(row) == len(CORRECTION_TSV_HEADER)
-        assert row[-9] == REFUSAL_REROUTE
-        assert row[-8:] == ['', '', '0', '', '', '', '', '']     # + the three ISSUE-034 clip-origin cells
+        assert row[-11] == REFUSAL_REROUTE
+        # + the three ISSUE-034 clip-origin cells and the two ISSUE-039 station-C cells
+        assert row[-10:] == ['', '', '0', '', '', '', '', '', '', '']
 
     def test_all_three_writers_share_one_implementation(self):
         """write_corrected_bam / write_softclipped_bam / write_dual_bam used to

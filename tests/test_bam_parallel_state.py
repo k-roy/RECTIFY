@@ -89,8 +89,14 @@ import pytest
 # here — no annotation, so no candidate is ever judged). Verified before re-recording
 # (scratchpad golden_check3.py) that stripping the three new keys reproduces the previous
 # golden ae45870b… exactly. Prior golden ae45870b…
+# Re-recorded 2026-09-07 (ISSUE-039, station C), again a pure SCHEMA addition:
+# `five_prime_site_support` and `five_prime_landing_established` joined the result dict
+# (None / None here — no pool cache, so no site support is installed and station C knows
+# nothing). Verified before re-recording, per read, that stripping the two new keys
+# reproduces the previous result set exactly: 36/36 reads byte-identical against a clean
+# 5205d97 worktree. Prior golden cd06c38a…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "cd06c38aab26edb7ff66864596b251e779a7717b3468153ae409137d53bf02e3"
+    "a767f6b12648ad1bead738dac5c088dc42b3b6269a682f4196d7abbb86456354"
 )
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation

@@ -95,6 +95,13 @@ CORRECTION_TSV_HEADER = [
     'five_prime_clip_origin',
     'five_prime_clip_origin_bits',
     'five_prime_clip_prior_bits',
+    # ISSUE-039 station C (2026-09-07): the POPULATION's evidence for the junction this rescue
+    # landed on — reads of this library crossing it with a clean 20-base anchor on both flanks
+    # (max over aligner arms), and whether that reaches the established floor. Emitted in report
+    # mode too, where nothing drawn changes, so the ON/OFF arms can be diffed on these columns.
+    # '' when no rescue was drawn, and 0 when the prescan cache predates the signal.
+    'five_prime_site_support',
+    'five_prime_landing_established',
 ]
 
 
@@ -223,6 +230,8 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         result.get('five_prime_clip_origin', '') or '',
         _shape_cell(result.get('five_prime_clip_origin_bits'), '{:.1f}'),
         _shape_cell(result.get('five_prime_clip_prior_bits'), '{:.1f}'),
+        _consensus_cell(result, 'five_prime_site_support'),
+        _consensus_cell(result, 'five_prime_landing_established'),
     ]
 
 

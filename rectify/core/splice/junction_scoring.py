@@ -206,6 +206,29 @@ def junction_pool_cache_problem(pool_data: Dict[str, Any]) -> Optional[str]:
 # here keeps real junctions while dropping the artifacts. Kevin 2026-05-24.
 DEFAULT_MIN_JUNCTION_ANCHOR = 10
 
+# SITE SUPPORT — the population's own evidence that a junction exists, computed in
+# the SAME pass as the pool (ISSUE-039, "station C for the 2F resolver", 2026-09-07).
+#
+# Not to be confused with :mod:`rectify.core.consensus.station_c`, which is the
+# post-correction, per-junction admission table calibrated on yeast; this is a
+# PRE-correction signal read off the aligner arms so the 5' resolver can consult it
+# while it is still deciding. Both answer "is this site real?", at different stages.
+#
+# A junction is ESTABLISHED when at least SITE_ESTABLISHED_MIN_READS reads of THIS
+# LIBRARY cross it with a clean SITE_SUPPORT_ANCHOR-base anchor on both flanks (no
+# indel inside the anchor, not low-complexity — `_junction_anchor_ok`). That is the
+# arbiter's Ruling-5 truth criterion (i) — "≥ 3 reads/site with ≥ 20 nt matched, no
+# I/D, within library" — reused verbatim rather than invented here. One difference
+# worth knowing: for an M-op aligner (minimap2) the anchor bans indels but cannot ban
+# mismatches, so the anchor is 20 aligned bases, not 20 identities.
+#
+# Counts are taken as the MAX over individual aligner arms, never the sum: the arms
+# are five alignments of the SAME reads, so summing would count one read up to five
+# times (the trap ALIGNER_FAMILY exists to prevent). Cross-LIBRARY recurrence is
+# never consulted — Kevin: recurrence is not truth.
+SITE_SUPPORT_ANCHOR = 20
+SITE_ESTABLISHED_MIN_READS = 3
+
 # Aligner → independent algorithm family. The pool concordance relaxation
 # (build_junction_pool) treats agreement ACROSS distinct families as independent
 # evidence that a short-anchor junction is real, but agreement WITHIN a family is
@@ -678,6 +701,7 @@ def _collect_junction_counts_core(
     min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
     annotated_index=None,
     unspliced_out: Optional[Counter] = None,
+    strict_anchor: int = 0,
 ) -> Tuple[Counter, Counter]:
     """One pass over a BAM → ``(anchor_pass_counts, raw_counts)``.
 
@@ -688,9 +712,16 @@ def _collect_junction_counts_core(
     junction whose every supporting read has a short anchor (e.g. a short
     exon-1) is kept when independently called by multiple aligners, while a
     single-aligner tiny-anchor artifact is dropped.
+
+    ``strict_anchor > 0`` additionally counts, per junction, the reads whose anchor
+    is clean over that many bases on BOTH flanks — the site-support signal (see
+    SITE_SUPPORT_ANCHOR). It rides this pass because the walk is the expensive part.
+    The strict counter is returned as a 4th element whenever ``unspliced_out`` is
+    given, so the caller's tuple shape is 2 (plain) or 4 (signal requested).
     """
     anchor: Counter = Counter()
     raw: Counter = Counter()
+    strict: Counter = Counter()
     try:
         with pysam.AlignmentFile(bam_path, 'rb') as bam:
             for read in bam:
@@ -719,6 +750,9 @@ def _collect_junction_counts_core(
                         if _junction_anchor_ok(
                                 cigar, idx, qpos, query_seq, min_anchor_overhang):
                             anchor[j] += 1
+                        if strict_anchor > 0 and _junction_anchor_ok(
+                                cigar, idx, qpos, query_seq, strict_anchor):
+                            strict[j] += 1
                     if op in _REF_CONSUMING_POS:
                         pos += length
                     if op in _QUERY_CONSUMING:
@@ -726,7 +760,7 @@ def _collect_junction_counts_core(
     except Exception as exc:
         logger.warning("_collect_junction_counts_core(%s): %s", bam_path, exc)
     if unspliced_out is not None:
-        return anchor, raw, unspliced_out       # 3-tuple only when the signal was requested
+        return anchor, raw, unspliced_out, strict   # 4-tuple only when the signal was requested
     return anchor, raw
 
 
@@ -760,10 +794,14 @@ def build_junction_pool(
     """Build union of annotated + per-aligner junctions.
 
     ``return_signal=True`` (ISSUE-034) appends a third element: ``{'unspliced':
-    Counter, 'spliced': Counter}`` over the ANNOTATED introns — reads whose
-    aligned block runs through an intron edge with >= UNSPLICED_SIGNAL_OVERHANG
-    bases on both sides (unspliced / retained-intron signal), and the anchored
-    spliced support — the prior for the 5' clip-origin call.
+    Counter, 'spliced': Counter, 'site_support': dict}``. ``unspliced`` /
+    ``spliced`` are over the ANNOTATED introns — reads whose aligned block runs
+    through an intron edge with >= UNSPLICED_SIGNAL_OVERHANG bases on both sides
+    (unspliced / retained-intron signal), and the anchored spliced support — the
+    prior for the 5' clip-origin call. ``site_support`` is over EVERY observed
+    junction: the number of reads crossing it with a clean SITE_SUPPORT_ANCHOR
+    anchor on both flanks, MAX over arms (ISSUE-039, the 2F resolver's station-C
+    signal).
 
     An observed junction enters the pool when EITHER:
 
@@ -821,12 +859,14 @@ def build_junction_pool(
     per_bam: List[Tuple[Counter, Counter]] = []
     _sig_index = _acceptor_index(annot_3) if return_signal else None
     _unspliced: Counter = Counter()
+    _strict_anchor = SITE_SUPPORT_ANCHOR if return_signal else 0
     if not aligner_bams:
         pass
     elif len(aligner_bams) == 1:
         per_bam.append(_collect_junction_counts_core(
             aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang,
-            annotated_index=_sig_index, unspliced_out=_unspliced))
+            annotated_index=_sig_index, unspliced_out=_unspliced,
+            strict_anchor=_strict_anchor))
     else:
         try:
             from concurrent.futures import ProcessPoolExecutor
@@ -835,7 +875,8 @@ def build_junction_pool(
                 futures = [
                     ex.submit(_collect_junction_counts_core, bp, chrom_filter,
                               max_junction_size, min_anchor_overhang,
-                              _sig_index, Counter() if return_signal else None)
+                              _sig_index, Counter() if return_signal else None,
+                              _strict_anchor)
                     for bp in aligner_bams
                 ]
                 per_bam = [fut.result() for fut in futures]
@@ -851,11 +892,19 @@ def build_junction_pool(
                 for bp in aligner_bams
             ]
 
-    # ISSUE-034: fold the per-BAM unspliced signal (3rd element when requested) and keep 2-tuples for the rank.
+    # ISSUE-034 / ISSUE-039: fold the per-BAM unspliced signal and take the site support as the MAX
+    # over ARMS (never the sum — five arms are five alignments of the same reads); keep 2-tuples for
+    # the rank.
     _pb2 = []
+    _site_support: Dict[Junction, int] = {}
     for _t in per_bam:
-        if len(_t) == 3:
-            _unspliced.update(_t[2]); _pb2.append((_t[0], _t[1]))
+        if len(_t) >= 3:
+            _unspliced.update(_t[2])
+            if len(_t) >= 4 and _t[3]:
+                for _j, _n in _t[3].items():
+                    if _n > _site_support.get(_j, 0):
+                        _site_support[_j] = _n
+            _pb2.append((_t[0], _t[1]))
         else:
             _pb2.append(_t)
     per_bam = _pb2
@@ -894,7 +943,11 @@ def build_junction_pool(
             for _j, _c in _anchor.items():
                 if _j in annot_3:
                     _spliced[_j] += _c
-        return all_j, annot_3, {'unspliced': _unspliced, 'spliced': _spliced}
+        logger.debug("build_junction_pool: %d junctions with site support >= %d",
+                     sum(1 for _v in _site_support.values() if _v >= SITE_ESTABLISHED_MIN_READS),
+                     SITE_ESTABLISHED_MIN_READS)
+        return all_j, annot_3, {'unspliced': _unspliced, 'spliced': _spliced,
+                                'site_support': _site_support}
     return all_j, annot_3
 
 

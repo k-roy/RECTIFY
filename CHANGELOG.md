@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Module 2F — STATION C: the population supplies the attachment tier**
+  (ISSUE-039; Kevin's rule from review card R007, 2026-09-07; `splice/
+  junction_scoring.py`, `splice/splice_aware_5prime.py`, `commands/
+  prescan_command.py`, `commands/correct_command.py`, `bam/{parallel,
+  bam_processor,output}.py`). The two-tier evidence floor already
+  distinguished creating a junction (18 bits) from attaching a read to one
+  that exists (12 bits), but only the ANNOTATION could grant the lower tier,
+  so a heavily used novel junction was treated as if every read landing on it
+  were inventing it. The prescan now records `site_support` per junction — the
+  reads of THIS LIBRARY crossing it with a clean 20-base anchor on both flanks,
+  taken as the max over aligner arms, never the sum — and a junction carried by
+  at least 3 such reads is `established`. Counts are not the evidence: each
+  supporting read individually meets the read-level standard, and attaching a
+  read to an existing site fabricates nothing. Cross-library recurrence never
+  enters. New TSV columns `five_prime_site_support` and
+  `five_prime_landing_established`; `RECTIFY_2F_STATION_C=attach` opts the tier
+  flip in, and the default `report` mode emits the columns while changing
+  nothing that gets drawn.
+
 - **Module 2F — a most-parsimonious ORIGIN for every 5' clip that draws no
   junction** (ISSUE-034; step 2 of Kevin's plan, 2026-09-07; `splice/
   splice_aware_5prime.py`, `splice/junction_scoring.py`, `bam/output.py`,
