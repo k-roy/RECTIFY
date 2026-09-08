@@ -265,6 +265,10 @@ def run(args: argparse.Namespace) -> int:
             min_observed_support=args.junction_min_support,
             max_junction_size=args.junction_max_size,
             return_signal=True,      # ISSUE-034: unspliced/spliced counts per annotated intron (clip-origin prior)
+            # ISSUE-044: junction-proximal mismatch enrichment rides the same BAM pass; it needs the
+            # reference to call a mismatch, and only the read's ALIGNED blocks are fetched, so the
+            # cost is the read length and an intron costs nothing.
+            fasta_path=str(args.genome) if getattr(args, 'genome', None) else None,
         )
         elapsed = time.perf_counter() - t0
         logger.info(
@@ -303,6 +307,12 @@ def run(args: argparse.Namespace) -> int:
             # arms} — the 2F resolver's station-C signal. Additive: a cache written before this key
             # existed stays valid (same cache_format) and simply leaves station C inert.
             'site_support': dict(clip_signal.get('site_support') or {}),
+            # ISSUE-044: {junction: [near_mm, near_bp, far_mm, far_bp, n_reads]} and the recurrent
+            # junction-proximal mismatch positions {(chrom, pos): (n_mismatch_reads, n_covering)} —
+            # the misplacement signal and the input to telling a standing variant from a
+            # misplacement. Additive: an older cache simply carries neither.
+            'junction_mismatch': dict(clip_signal.get('junction_mismatch') or {}),
+            'mismatch_positions': dict(clip_signal.get('mismatch_positions') or {}),
             'min_observed_support': args.junction_min_support,
             'max_junction_size': args.junction_max_size,
             'complexity_alpha': args.complexity_alpha,

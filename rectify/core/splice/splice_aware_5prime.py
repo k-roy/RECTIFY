@@ -597,6 +597,27 @@ def set_site_support(support) -> None:
     _SITE_SUPPORT = dict(support or {})
 
 
+_JUNCTION_MM: Dict[Tuple, list] = {}
+
+
+def set_junction_mismatch(stats) -> None:
+    """Install the prescan's per-junction mismatch block (ISSUE-044); ``None`` clears it."""
+    global _JUNCTION_MM
+    _JUNCTION_MM = dict(stats or {})
+
+
+def junction_mismatch_enrichment(junction):
+    """How much this junction's own neighbourhood is enriched for mismatches against the BODIES of
+    the reads that cross it. ``None`` when the pool carries no measurement for it.
+
+    Above 1 means the mismatches concentrate at the junction rather than spreading over the read.
+    Measured on the SMA panel: reads whose junctions are all annotated sit at 0.80 (a slight
+    DEFICIT), reads with a novel junction at 1.43.
+    """
+    from .junction_scoring import junction_mismatch_enrichment as _e
+    return _e(_JUNCTION_MM, junction)
+
+
 def site_support_n(junction) -> int:
     """Reads of this library that independently carry *junction* with clean anchors."""
     if junction is None:

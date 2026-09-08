@@ -118,6 +118,8 @@ def _init_region_worker_state(
     set_site_support((_signal or {}).get('site_support'))
     from ..splice.microexon import set_microexon_index
     set_microexon_index((_signal or {}).get('microexon_index'))
+    from ..splice.splice_aware_5prime import set_junction_mismatch
+    set_junction_mismatch((_signal or {}).get('junction_mismatch'))
     _REGION_WORKER_STATE['genome'] = genome
     _REGION_WORKER_STATE['polya_model'] = polya_model
 

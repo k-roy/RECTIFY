@@ -1048,8 +1048,12 @@ def run(args):
                 # STATION B (ISSUE-040): annotated exons <= 30 nt, indexed per contig. Same file,
                 # same pass cost as the junction load; GENCODE basic holds only ~5,870 of them.
                 from ..splice.microexon import (
-                    load_microexons as _load_mx, set_microexon_index as _set_mx, station_b_mode as _sb_mode,
+                    load_microexons as _load_mx, set_microexon_index as _set_mx,
+                    station_b_mode as _sb_mode, set_species as _set_species, max_3ss_tier as _mx_tier,
                 )
+                # The 3'SS tier ceiling is a SPECIES knob, not a constant: yeast reaches NBG/NAT,
+                # human stops at RAG (Kevin 2026-09-08). One pipeline, knobs set from --organism.
+                _set_species(config.get('organism'))
                 try:
                     _mx_index = _load_mx(str(config['annotation_path']))
                 except Exception as _mxe:
@@ -1057,8 +1061,10 @@ def run(args):
                     _mx_index = {}
                 _set_mx(_mx_index)
                 _mx_contigs = [k for k in _mx_index if k != '__transcripts__']
-                logger.info("  Station B: %d annotated micro-exons <= 30 nt over %d contigs; mode = %s",
-                            sum(len(_mx_index[k]) for k in _mx_contigs), len(_mx_contigs), _sb_mode())
+                logger.info("  Station B: %d annotated micro-exons <= 30 nt over %d contigs; "
+                            "mode = %s; organism = %s, 3'SS tier ceiling = %d",
+                            sum(len(_mx_index[k]) for k in _mx_contigs), len(_mx_contigs),
+                            _sb_mode(), config.get('organism') or 'unset', _mx_tier())
 
                 # Load pre-built junction pool from cache if available.
                 _prebuilt_pool = None
@@ -1102,8 +1108,16 @@ def run(args):
                         set_site_support(_site_support)
                         # Ride the clip_signal payload to the region workers (parallel.py installs
                         # both from it), so the plumbing stays one parameter wide.
+                        # ISSUE-044: the junction-proximal mismatch block, same rails.
+                        from ..splice.splice_aware_5prime import set_junction_mismatch
+                        _jmm = _pool_data.get('junction_mismatch') or {}
+                        set_junction_mismatch(_jmm)
+                        if _jmm:
+                            logger.info("  Junction mismatch enrichment loaded: %d junctions measured",
+                                        len(_jmm))
                         _clip_signal = dict(_clip_signal or {})
                         _clip_signal['site_support'] = _site_support
+                        _clip_signal['junction_mismatch'] = _jmm
                         if _site_support:
                             logger.info("  Site support loaded from the pool cache: %d junctions, %d established "
                                         "(>= %d clean-anchor reads); station C mode = %s",
@@ -1130,8 +1144,10 @@ def run(args):
                     # ISSUE-034: the unspliced/spliced prior for the 5' clip-origin call.
                     from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
                     set_clip_origin_signal(_clip_signal)
-                    # ISSUE-039 station C: same build, same third element.
+                    # ISSUE-039 station C / ISSUE-044 mismatch enrichment: same build, same element.
                     set_site_support((_clip_signal or {}).get('site_support'))
+                    from ..splice.splice_aware_5prime import set_junction_mismatch
+                    set_junction_mismatch((_clip_signal or {}).get('junction_mismatch'))
                     logger.info("  Clip-origin prior: unspliced signal at %d annotated introns",
                                 sum(1 for _v in _clip_signal['unspliced'].values() if _v))
                     logger.info(
