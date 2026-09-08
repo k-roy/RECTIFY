@@ -467,13 +467,19 @@ class TestChr5Holdout:
         created introns were annotated (11%)."""
         created = self._created(replay)
         rescued = [r for r in replay['rows'] if r['rescued']]
-        assert len(rescued) >= 40, (
+        # ISSUE-028 invariant E (2026-09-06) re-pinned this guard: at 4993253 the
+        # hold-out rescued 47/1000 and created 27 introns (27 annotated); with the
+        # evidence floor (identity >= 0.8, >= 18 bits) it rescues 29 and creates
+        # 24 (24 annotated, 0 non-canonical) — three annotated creations whose
+        # placed block carried < 18 bits are refused, the rest of the drop is
+        # rescues that created no intron. Measured, not chosen; Kevin's call.
+        assert len(rescued) >= 25, (
             f'only {len(rescued)}/1000 hold-out reads rescued — the guards have '
             'disabled the module rather than aiming it')
         assert created, 'no introns created at all'
         annotated = [n for n in created if n in replay['ann']]
-        assert len(annotated) >= 25, (
-            f'{len(annotated)} annotated introns created, baseline was 25')
+        assert len(annotated) >= 22, (
+            f'{len(annotated)} annotated introns created, baseline was 25 (24 under invariant E)')
         assert len(annotated) / len(created) >= 0.70, (
             f'only {len(annotated)}/{len(created)} created introns are annotated '
             '(baseline 25/222 = 11%)')

@@ -64,7 +64,7 @@ Date: 2026-04-11
 """
 
 import re
-from typing import List, Tuple
+from typing import List, NamedTuple, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -76,6 +76,11 @@ _GAP_OPEN   = -4   # penalty for opening a new gap (paid once per gap event)
 _GAP_EXTEND = -1   # penalty per base within a gap
 
 _NEG_INF = float('-inf')
+
+# Buffer (bp) added to the far side of the expected exon window by
+# align_clip_to_exon — and, since ISSUE-020, by the 2F ranking scorers, which
+# must see the SAME reference window as the placement.
+ANCHOR_MAX_INDEL = 5
 
 # CIGAR op codes (pysam / SAM convention)
 _OP_M = 0  # sequence match or mismatch
@@ -470,6 +475,100 @@ def score_left_anchored(query: str, ref: str) -> Tuple[float, int]:
     return best_score, j_best
 
 
+def score_right_anchored(query: str, ref: str) -> Tuple[float, str]:
+    """Best affine-gap score of a RIGHT-anchored semi-global alignment of
+    *query* against *ref* — the score :func:`_align_right_anchored` traces back,
+    without the traceback.
+
+    Query fully consumed; free prefix in *ref*; the alignment must end at
+    ``ref[-1]`` (the last exon-1 base before the donor on the plus strand).
+    Same recurrence, same boundary conditions, same four constants as
+    ``_align_right_anchored`` — so for a given (query, ref) this score is
+    exactly the score of the CIGAR ``align_clip_to_exon`` emits (the ISSUE-020
+    consistency invariant; ``tests/test_2f_anchored_ranking.py``). Rolling rows:
+    O(R) memory, no traceback matrices.
+
+    Returns ``(best_score, end_state)`` with *end_state* in ``'H'/'D'/'I'`` —
+    the state at the anchored end, ``'D'`` meaning the alignment closes with a
+    deletion at the junction (a junction-side gap). Ties are broken H, D, I,
+    as the traceback does.
+    """
+    Q, R = len(query), len(ref)
+    if Q == 0:
+        return 0.0, 'H'
+    if R == 0:
+        return _GAP_OPEN + Q * _GAP_EXTEND, 'I'
+    qu = query.upper()
+    ru = ref.upper()
+    go = _GAP_OPEN + _GAP_EXTEND
+    # Row 0: free prefix — the alignment may start at any ref column for free,
+    # in the match state or "already skipping" in the deletion state.
+    h_prev = [0.0] * (R + 1)
+    d_prev = [0.0] * (R + 1)
+    i_prev = [_NEG_INF] * (R + 1)
+    for i in range(1, Q + 1):
+        qi = qu[i - 1]
+        h_cur = [_NEG_INF] * (R + 1)
+        d_cur = [_NEG_INF] * (R + 1)
+        i_cur = [_NEG_INF] * (R + 1)
+        i_cur[0] = _GAP_OPEN + i * _GAP_EXTEND
+        for j in range(1, R + 1):
+            s = _MATCH if qi == ru[j - 1] else _MISMATCH
+            best_h = max(h_prev[j - 1], d_prev[j - 1], i_prev[j - 1])
+            if best_h > _NEG_INF:
+                h_cur[j] = best_h + s
+            hl = h_cur[j - 1]
+            dl = d_cur[j - 1]
+            d_open = hl + go if hl > _NEG_INF else _NEG_INF
+            d_ext = dl + _GAP_EXTEND if dl > _NEG_INF else _NEG_INF
+            d_cur[j] = d_open if d_open >= d_ext else d_ext
+            hu = h_prev[j]
+            iu = i_prev[j]
+            i_open = hu + go if hu > _NEG_INF else _NEG_INF
+            i_ext = iu + _GAP_EXTEND if iu > _NEG_INF else _NEG_INF
+            i_cur[j] = i_open if i_open >= i_ext else i_ext
+        h_prev, d_prev, i_prev = h_cur, d_cur, i_cur
+    end_h, end_d, end_i = h_prev[R], d_prev[R], i_prev[R]
+    best = max(end_h, end_d, end_i)
+    state = 'H' if end_h == best else ('D' if end_d == best else 'I')
+    return best, state
+
+
+def affine_cigar_score(ops: List[Tuple[int, int]], query: str, ref: str) -> float:
+    """Score an M/I/D CIGAR over *query* and *ref* (both fully consumed) with
+    this module's four constants — the quantity the anchored DPs maximize.
+
+    Each M/=/X base scores ``_MATCH`` or ``_MISMATCH``; each I or D run costs
+    ``_GAP_OPEN + len * _GAP_EXTEND`` (one gap event per run — the DPs never
+    place two gap runs of the same kind back to back, and ``_compress`` merges
+    adjacent ops, so a run IS an event). Used by the ISSUE-020 consistency
+    check: the emitted exon CIGAR scored this way must equal the ranking score.
+
+    Raises ``ValueError`` when the ops do not consume exactly *query* and *ref*.
+    """
+    qi = ri = 0
+    score = 0.0
+    for op, ln in ops:
+        if op in (_OP_M, 7, 8):
+            for k in range(ln):
+                score += _MATCH if query[qi + k].upper() == ref[ri + k].upper() else _MISMATCH
+            qi += ln
+            ri += ln
+        elif op == _OP_I:
+            score += _GAP_OPEN + ln * _GAP_EXTEND
+            qi += ln
+        elif op == _OP_D:
+            score += _GAP_OPEN + ln * _GAP_EXTEND
+            ri += ln
+        else:
+            raise ValueError(f"affine_cigar_score: unsupported op {op}")
+    if qi != len(query) or ri != len(ref):
+        raise ValueError(
+            f"affine_cigar_score: ops consume {qi} query / {ri} ref bases, "
+            f"sequences have {len(query)} / {len(ref)}")
+    return score
+
+
 def affine_score_to_edit_distance(score: float, query_len: int) -> float:
     """Convert an affine-gap alignment score to an approximate edit distance.
 
@@ -767,6 +866,180 @@ def cigar_str_to_ops(cigar_str: str) -> List[Tuple[int, int]]:
 
 
 # ---------------------------------------------------------------------------
+# Evidence shape of a placed exon block (ISSUE-028 / invariant E, 2026-09-06)
+# ---------------------------------------------------------------------------
+
+_OP_S = 4  # soft clip (query consumed, no reference)
+
+#: Genome homopolymer run length at (or above) which a mismatch or an indel
+#: inside the run is charged HALF (DRS basecallers slip inside long runs). The
+#: bundled empirical error table is iteration-4 material; this is the interim.
+EVIDENCE_HP_FORGIVE_RUN = 5
+
+# The evidence SCORE of a placed block, in bits (Kevin's ruling, 2026-09-06):
+# a matched base against a four-letter alphabet is log2(4) = 2 bits of
+# evidence; a mismatch and an affine gap cost the anchored aligner's own
+# constants scaled by 1/2 (_MISMATCH -4 -> -2 bits, _GAP_OPEN -4 -> -2 bits per
+# gap event, _GAP_EXTEND -1 -> -0.5 bits per gap base), so the costs keep the
+# placement model's relative weights while the match keeps its information
+# value (scaling the match too would read a matched base as 1 bit and no
+# 14-nt anchor could reach the cutoffs the model is run at). Inside a genome
+# homopolymer run >= EVIDENCE_HP_FORGIVE_RUN a mismatch or a gap is charged
+# half (the -log2 of the bundled DRS error rates replaces the halving when the
+# error table lands). Worked examples: `6=1X7=` = 26 - 2 = 24 bits; 22f609c6's
+# `1I15M` (13=/2X) = 26 - 4 - 2.5 = 19.5 bits; `5M4D2M` = 14 - 4 = 10 bits;
+# `9=/23X` = 18 - 46 = -28 bits; `11=/15X` = 22 - 30 = -8 bits.
+_BITS_MATCH = 2.0                 # log2(4)
+_BITS_MISMATCH = _MISMATCH / 2.0
+_BITS_GAP_OPEN = _GAP_OPEN / 2.0
+_BITS_GAP_EXTEND = _GAP_EXTEND / 2.0
+
+
+class EvidenceShape(NamedTuple):
+    """What the placed 5' block IS, walked base by base against the genome.
+
+    ``matched`` / ``mismatches`` are raw counts of ``=`` / ``X`` columns;
+    ``identity`` is ``matched / (matched + mismatches_eff)`` with a mismatch
+    inside a genome homopolymer run >= ``EVIDENCE_HP_FORGIVE_RUN`` counting
+    half; ``bits`` is the evidence score of the block (see the module
+    comment above ``_BITS_MATCH``); ``junction_clean_run`` is the number of
+    consecutive matched REFERENCE bases abutting the junction (a mismatch or a
+    deletion breaks it; an insertion consumes no reference and is passed over,
+    the same way the base-by-base review view does not show it) — reported,
+    not gated on (a hard clean-run floor was the wrong primitive: `6=1X7=` is
+    an excellent 14-nt anchor); ``leading_indel_len`` is the number of I / D /
+    S bases at the 5' (free) end before the first aligned base — the S ops
+    :func:`strip_leading_indel` left there, when it ran.
+    """
+    matched: int
+    mismatches: int
+    identity: float
+    bits: float
+    junction_clean_run: int
+    leading_indel_len: int
+
+
+def strip_leading_indel(ops: List[Tuple[int, int]], strand: str) -> Tuple[List[Tuple[int, int]], int]:
+    """A LEADING insertion at the 5' (free) end of an exon CIGAR is a soft clip
+    in disguise (``8I6M`` = six placed bases, not fourteen); a leading deletion
+    consumes no query and is dropped. Returns ``(ops, unplaced_query_bases)``
+    where the leading I bases are re-emitted as one ``S`` op at the 5' end (the
+    writer prepends / appends the exon ops verbatim and counts S as
+    query-consuming in both 5' surgeries, so the bases stay soft-clipped in the
+    BAM). The 5' end is the LEFT end for the plus strand and the RIGHT end for
+    the minus strand (BAM orientation). ``[]`` when nothing aligned survives.
+    """
+    if not ops:
+        return list(ops or []), 0
+    ops = list(ops)
+    if strand != '+':
+        ops.reverse()
+    unplaced = 0
+    while ops and ops[0][0] in (_OP_I, _OP_D, _OP_S):
+        op, ln = ops.pop(0)
+        if op in (_OP_I, _OP_S):
+            unplaced += ln
+    if not ops:
+        return [], unplaced
+    if unplaced:
+        ops.insert(0, (_OP_S, unplaced))
+    if strand != '+':
+        ops.reverse()
+    return ops, unplaced
+
+
+def evidence_shape(
+    cigar_ops: List[Tuple[int, int]],
+    clip_seq: str,
+    genome_seq: str,
+    intron_start: int,
+    intron_end: int,
+    strand: str,
+    hp_forgive_run: int = EVIDENCE_HP_FORGIVE_RUN,
+) -> EvidenceShape:
+    """Walk *cigar_ops* (the placement :func:`align_clip_to_exon` describes,
+    anchored at the junction: right end at ``intron_start`` for ``+``, left end
+    at ``intron_end`` for ``-``) over *clip_seq* and the genome and return the
+    :class:`EvidenceShape`. S / I ops consume query only, D consumes reference
+    only. Sequence comparison is case-insensitive; a query or reference base
+    that is off the end of its sequence counts as a mismatch."""
+    ops = list(cigar_ops or [])
+    ref_len = sum(ln for op, ln in ops if op in (_OP_M, _OP_D, 7, 8))
+    if strand == '+':
+        ref = genome_seq[max(0, intron_start - ref_len):intron_start]
+        ref_off = intron_start - len(ref)
+    else:
+        ref = genome_seq[intron_end:intron_end + ref_len]
+        ref_off = intron_end
+    ref_u = ref.upper()
+    q_u = (clip_seq or '').upper()
+    cols: List[str] = []       # one mark per column in BAM (left -> right) order
+    matched = mism = 0
+    forgiven = 0.0
+    bits = 0.0
+    qi = ri = 0
+
+    def _in_hp_run(ref_pos: int) -> bool:
+        return _homopolymer_run_len(genome_seq, ref_pos)[0] >= hp_forgive_run
+
+    for op, ln in ops:
+        if op in (_OP_M, 7, 8):
+            for k in range(ln):
+                qb = q_u[qi + k] if qi + k < len(q_u) else ''
+                rb = ref_u[ri + k] if ri + k < len(ref_u) else ''
+                if qb and rb and qb == rb:
+                    matched += 1
+                    bits += _BITS_MATCH
+                    cols.append('=')
+                else:
+                    mism += 1
+                    cols.append('X')
+                    if rb and _in_hp_run(ref_off + ri + k):
+                        forgiven += 0.5
+                        bits += _BITS_MISMATCH / 2.0
+                    else:
+                        bits += _BITS_MISMATCH
+            qi += ln
+            ri += ln
+        elif op == _OP_S:
+            # the leading bases strip_leading_indel left unplaced: not part of the block
+            cols.extend('I' * ln)
+            qi += ln
+        elif op in (_OP_I, _OP_D):
+            cols.extend(('I' if op == _OP_I else 'D') * ln)
+            # a gap event: charged where it sits in the genome (an insertion at
+            # the reference position it interrupts, a deletion over its bases)
+            gap_cost = _BITS_GAP_OPEN + ln * _BITS_GAP_EXTEND
+            hp_pos = ref_off + ri if op == _OP_I else ref_off + ri
+            if _in_hp_run(hp_pos) or (op == _OP_D and _in_hp_run(ref_off + ri + ln - 1)):
+                gap_cost /= 2.0
+            bits += gap_cost
+            if op == _OP_I:
+                qi += ln
+            else:
+                ri += ln
+    # Junction side: the RIGHT end for '+', the LEFT end for '-'.
+    junction_first = cols[::-1] if strand == '+' else cols
+    run = 0
+    for c in junction_first:
+        if c == '=':
+            run += 1
+        elif c == 'I':
+            continue
+        else:
+            break
+    lead = 0
+    for c in reversed(junction_first):
+        if c in ('I', 'D'):
+            lead += 1
+        else:
+            break
+    aligned_eff = matched + mism - forgiven
+    identity = (matched / aligned_eff) if aligned_eff > 0 else 0.0
+    return EvidenceShape(matched, mism, identity, bits, run, lead)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -776,7 +1049,7 @@ def align_clip_to_exon(
     intron_start: int,
     intron_end: int,
     strand: str,
-    max_indel: int = 5,
+    max_indel: int = ANCHOR_MAX_INDEL,
 ) -> Tuple[List[Tuple[int, int]], int]:
     """
     Align a 5' soft-clip to the upstream exon using semi-global affine-gap NW.

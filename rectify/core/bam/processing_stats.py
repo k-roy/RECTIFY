@@ -463,6 +463,16 @@ def generate_stats_report(stats: ProcessingStats, protocol: str = 'drs') -> str:
         lines.append(f"  Read-genome walkback:     {stats.ends_walkback_readgenome:>12,} ({100*stats.ends_walkback_readgenome/processed:>5.1f}%)")
         lines.append(f"  NET-seq refinement:       {stats.ends_refined_netseq:>12,} ({100*stats.ends_refined_netseq/processed:>5.1f}%)")
         lines.append(f"  5' soft-clip rescued:     {stats.ends_five_prime_rescued:>12,} ({100*stats.ends_five_prime_rescued/processed:>5.1f}%)")
+        # ISSUE-020: 2F's anchored rank chose a DIFFERENT annotated candidate than
+        # the hp-ED rank would have (per-process instrument; complete when the
+        # correction ran in this process — see overhang_informativeness.COUNTERS).
+        try:
+            from ..splice.overhang_informativeness import COUNTERS as _oi_counters
+            _reranked = int(_oi_counters.get('five_prime_reranked_between_annotated', 0) or 0)
+        except Exception:
+            _reranked = 0
+        if _reranked:
+            lines.append(f"  5' reranked annot->annot: {_reranked:>12,}  (anchored rank vs hp-ED; ISSUE-020)")
         lines.append(f"  Total position shifts:    {stats.total_position_shifts:>12,} ({100*stats.total_position_shifts/processed:>5.1f}%)")
     lines.append("")
 

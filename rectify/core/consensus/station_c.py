@@ -92,7 +92,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -361,12 +361,21 @@ def _canonicalize(chrom_seq: str, start: int, end: int, max_shift: int) -> Tuple
     return start - l_amb, end - l_amb
 
 
-def _anchor_run(ops, i_n: int, direction: int,
-                adj_indel_max_ops: int = 2,
-                adj_indel_max_bp: int = 30) -> Tuple[int, str]:
+#: What ended an anchor walk, by the CIGAR op it stopped on (ISSUE-016 ledger).
+_WALK_STOP = {3: 'n_op', 4: 'softclip', 5: 'hardclip', 6: 'pad'}
+
+
+def _anchor_walk(ops, i_n: int, direction: int,
+                 adj_indel_max_ops: int = 2,
+                 adj_indel_max_bp: int = 30) -> Tuple[int, str, str]:
     """Aligned bases anchoring one side of the N-op at cigar index ``i_n``.
 
-    Returns ``(anchor_bases, adjacent_indel_label)``, the label using the
+    Returns ``(anchor_bases, adjacent_indel_label, stop)``; :func:`_anchor_run`
+    is the two-tuple view every earlier caller uses. ``stop`` names what ended
+    the walk — ``n_op`` (the next intron: a short exon between two N-ops),
+    ``softclip`` / ``hardclip`` / ``pad``, ``read_end``, or the budget it
+    exceeded (``indel_ops`` / ``indel_bp``) — so a REFUSED N-op can say why its
+    anchor was short instead of vanishing (ISSUE-016). The label uses the
     ``747_panel.py::junctions()`` encoding — ``'I1'``, ``'D10'``, or ``''`` for
     the FIRST indel op met walking toward the flank.
 
@@ -428,6 +437,7 @@ def _anchor_run(ops, i_n: int, direction: int,
     n_ops = 0
     n_bp = 0
     label = ''
+    stop = 'read_end'
     for k in rng:
         op, ln = ops[k]
         if op in (0, 7, 8):          # M / = / X
@@ -437,11 +447,100 @@ def _anchor_run(ops, i_n: int, direction: int,
                 label = ('I' if op == 1 else 'D') + str(ln)
             n_ops += 1
             n_bp += ln
-            if n_ops > adj_indel_max_ops or n_bp > adj_indel_max_bp:
+            if n_ops > adj_indel_max_ops:
+                stop = 'indel_ops'
+                break
+            if n_bp > adj_indel_max_bp:
+                stop = 'indel_bp'
                 break
         else:                        # N / S / H / P
+            stop = _WALK_STOP.get(op, 'other')
             break
+    return total, label, stop
+
+
+def _anchor_run(ops, i_n: int, direction: int,
+                adj_indel_max_ops: int = 2,
+                adj_indel_max_bp: int = 30) -> Tuple[int, str]:
+    """``(anchor_bases, adjacent_indel_label)`` — see :func:`_anchor_walk`."""
+    total, label, _stop = _anchor_walk(ops, i_n, direction,
+                                       adj_indel_max_ops, adj_indel_max_bp)
     return total, label
+
+
+def _refusal_reason(lf: int, rt: int, stop_l: str, stop_r: str,
+                    min_anchor: int) -> str:
+    """``L=<stop>`` / ``R=<stop>`` / ``L=<stop>+R=<stop>`` for the short side(s)."""
+    parts = []
+    if lf < min_anchor:
+        parts.append(f'L={stop_l}')
+    if rt < min_anchor:
+        parts.append(f'R={stop_r}')
+    return '+'.join(parts)
+
+
+@dataclass
+class CensusLedger:
+    """Everything ``census_bam`` saw that the junction table cannot show.
+
+    ISSUE-016: the tester matched the junctions RECTIFY *created* on a
+    145k-read slice against ``<prefix>.pool_gate.tsv`` and found 87 % ABSENT at
+    every op budget (0/2/4) and support gate (1/2). Neither knob was binding
+    because the table cannot show two things: it lists NON-annotated junctions
+    only (2F/2H create mostly annotated ones — that is their job), and it keys
+    every junction at the LEFTMOST ambiguity-equivalent coordinate
+    (``_canonicalize``) while the BAM's N-op — and any list derived from it —
+    sits at the motif coordinate. On the 100-read panel: 10 created junctions,
+    0 in the table, 271 censused of which 231 annotated.
+
+    The ledger records every N-op outcome per RAW coordinate, so any junction
+    can be attributed as censused (annotated or reported), refused (with the
+    anchor-walk stop reason per side), or never seen.
+    """
+    n_reads: int = 0
+    reads_skipped: Dict[str, int] = field(default_factory=dict)
+    n_ops_seen: int = 0
+    n_ops_censused: int = 0
+    n_ops_refused: int = 0
+    #: RAW (chrom, start, end) -> refusal reason -> N-op occurrences.
+    refusals: Dict[Tuple[str, int, int], Dict[str, int]] = field(default_factory=dict)
+    #: RAW key -> the best min(anchor) any occurrence reached (how close it came).
+    best_anchor: Dict[Tuple[str, int, int], int] = field(default_factory=dict)
+    #: canonical key -> RAW (start, end) -> occurrences censused under it.
+    raw_keys: Dict[Tuple[str, int, int], Dict[Tuple[int, int], int]] = field(default_factory=dict)
+
+    def note_skip(self, why: str) -> None:
+        self.reads_skipped[why] = self.reads_skipped.get(why, 0) + 1
+
+    def note_census(self, key: Tuple[str, int, int], raw: Tuple[int, int]) -> None:
+        self.n_ops_censused += 1
+        d = self.raw_keys.setdefault(key, {})
+        d[raw] = d.get(raw, 0) + 1
+
+    def note_refusal(self, raw_key: Tuple[str, int, int], reason: str,
+                     anchor: int) -> None:
+        self.n_ops_refused += 1
+        d = self.refusals.setdefault(raw_key, {})
+        d[reason] = d.get(reason, 0) + 1
+        if anchor > self.best_anchor.get(raw_key, -1):
+            self.best_anchor[raw_key] = anchor
+
+    def reason_counts(self) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for reasons in self.refusals.values():
+            for reason, n in reasons.items():
+                out[reason] = out.get(reason, 0) + n
+        return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    def majority_raw(self, key: Tuple[str, int, int]) -> Tuple[int, int, int]:
+        """``(start_raw, end_raw, n_raw_variants)`` for a censused key — the
+        N-op coordinates most supporting reads actually carry; falls back to
+        the key itself when nothing was recorded."""
+        variants = self.raw_keys.get(key)
+        if not variants:
+            return key[1], key[2], 0
+        (s, e), _n = sorted(variants.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        return s, e, len(variants)
 
 
 def _pick_label(counts: Dict[str, int]) -> str:
@@ -452,7 +551,8 @@ def _pick_label(counts: Dict[str, int]) -> str:
 
 
 def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
-               max_q_reads_per_junction: int = 50) -> Dict[Tuple[str, int, int], dict]:
+               max_q_reads_per_junction: int = 50,
+               ledger: Optional[CensusLedger] = None) -> Dict[Tuple[str, int, int], dict]:
     """One streaming pass: per canonical junction, support + q statistics.
 
     ``max_q_reads_per_junction`` caps the per-read overhang scoring (q_max is
@@ -464,32 +564,56 @@ def census_bam(bam_path: str, genome: Dict[str, str], cfg: PoolGateConfig,
     (label -> count over supporting reads) and ``n_adj_indel`` (supporting reads
     with an adjacent indel on either side), so the flag survives into the
     report instead of being silently absorbed.
+
+    ``ledger`` (optional): a :class:`CensusLedger` that receives every N-op
+    outcome — censused under which canonical key from which RAW coordinates,
+    or refused with the anchor-walk reason per side — and every skipped read.
     """
     J: Dict[Tuple[str, int, int], dict] = {}
     with pysam.AlignmentFile(bam_path, 'rb', check_sq=False) as fh:
         for read in fh.fetch(until_eof=True):
-            if (read.is_unmapped or read.is_secondary or read.is_supplementary
-                    or not read.cigartuples):
+            if ledger is not None:
+                ledger.n_reads += 1
+            if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                if ledger is not None:
+                    ledger.note_skip('nonprimary')
+                continue
+            if not read.cigartuples:
+                if ledger is not None:
+                    ledger.note_skip('no_cigar')
                 continue
             chrom = read.reference_name
             chrom_seq = genome.get(chrom)
             if chrom_seq is None:
+                if ledger is not None:
+                    ledger.note_skip('chrom_missing')
                 continue
             offs = None
             ops = read.cigartuples
             ref = read.reference_start
             for i, (op, ln) in enumerate(ops):
                 if op == 3:
-                    lf, adj_l = _anchor_run(ops, i, -1,
-                                            cfg.adj_indel_max_ops,
-                                            cfg.adj_indel_max_bp)
-                    rt, adj_r = _anchor_run(ops, i, +1,
-                                            cfg.adj_indel_max_ops,
-                                            cfg.adj_indel_max_bp)
-                    if min(lf, rt) >= cfg.min_anchor:
+                    lf, adj_l, stop_l = _anchor_walk(ops, i, -1,
+                                                     cfg.adj_indel_max_ops,
+                                                     cfg.adj_indel_max_bp)
+                    rt, adj_r, stop_r = _anchor_walk(ops, i, +1,
+                                                     cfg.adj_indel_max_ops,
+                                                     cfg.adj_indel_max_bp)
+                    if ledger is not None:
+                        ledger.n_ops_seen += 1
+                    if min(lf, rt) < cfg.min_anchor:
+                        if ledger is not None:
+                            ledger.note_refusal(
+                                (chrom, ref, ref + ln),
+                                _refusal_reason(lf, rt, stop_l, stop_r,
+                                                cfg.min_anchor),
+                                min(lf, rt))
+                    else:
                         s, e = _canonicalize(chrom_seq, ref, ref + ln,
                                              cfg.max_ambiguity_shift)
                         key = (chrom, s, e)
+                        if ledger is not None:
+                            ledger.note_census(key, (ref, ref + ln))
                         rec = J.get(key)
                         if rec is None:
                             rec = J[key] = {'support': 0, 'q_max': 0.0,
@@ -734,12 +858,17 @@ def pool_gate(
     cfg: Optional[PoolGateConfig] = None,
     selfhom_bed: Optional[Path] = None,
     background_sv_bed: Optional[Path] = None,
+    attribute: Optional[List[Tuple[str, int, int]]] = None,
 ) -> Tuple[List[dict], dict]:
     """Run Station C v0 over one BAM. Returns (rows, summary).
 
     Rows cover NON-annotated junctions only (one dict per junction, sorted by
     verdict then descending support); annotated junctions are counted in the
-    summary. Report-only: nothing upstream is modified.
+    summary AND listed in ``summary['tables']['annotated']`` (ISSUE-016), the
+    refused N-ops in ``summary['tables']['census_refusals']``, and — when
+    ``attribute`` (RAW junction triples, see :func:`load_junction_list`) is
+    given — one status per listed junction in ``summary['tables']['attribution']``.
+    Report-only: nothing upstream is modified.
 
     A flag whose TRACK does not exist for this genome is reported as
     ``TRACK_UNAVAILABLE`` in its column, never as 0/'' — an absent track and a
@@ -777,14 +906,28 @@ def pool_gate(
             'junction will be reported as a discovery candidate.',
             annotation_path)
 
-    J = census_bam(bam_path, genome, cfg)
+    ledger = CensusLedger()
+    J = census_bam(bam_path, genome, cfg, ledger=ledger)
 
     rows: List[dict] = []
+    annotated_rows: List[dict] = []
     n_annotated = 0
     verdict_counts: Dict[str, int] = {}
     for (chrom, s, e), rec in J.items():
+        raw_s, raw_e, n_raw = ledger.majority_raw((chrom, s, e))
         if (chrom, s, e) in annotated:
             n_annotated += 1
+            # ISSUE-016: annotated junctions were counted but never listed, so
+            # a junction 2F/2H created ONTO the annotation read as ABSENT.
+            annotated_rows.append({
+                'chrom': chrom, 'start': s, 'end': e,
+                'start_raw': raw_s, 'end_raw': raw_e, 'n_raw_variants': n_raw,
+                'support': rec['support'],
+                'q_max': round(rec['q_max'], 2), 'q_2nd': round(rec['q_2nd'], 2),
+                'adj_indel_l': _pick_label(rec['adj_l']),
+                'adj_indel_r': _pick_label(rec['adj_r']),
+                'n_adj_indel': rec['n_adj_indel'],
+            })
             continue
         chrom_seq = genome.get(chrom, '')
         canon = canonical_in_class(chrom_seq, s, e,
@@ -838,6 +981,10 @@ def pool_gate(
         verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
         rows.append({
             'chrom': chrom, 'start': s, 'end': e,
+            # The key above is the LEFTMOST ambiguity-equivalent coordinate;
+            # these are the N-op coordinates most supporting reads carry
+            # (ISSUE-016: what a BAM-derived list will be keyed on).
+            'start_raw': raw_s, 'end_raw': raw_e, 'n_raw_variants': n_raw,
             'support': support,
             'q_max': round(q, 2), 'q_2nd': round(rec['q_2nd'], 2),
             'canonical_in_class': int(canon),
@@ -860,6 +1007,33 @@ def pool_gate(
 
     order = {'admit_candidate': 0, 'review': 1, 'demote_orthogonal_evidence': 2}
     rows.sort(key=lambda r: (order[r['verdict']], -r['support'], -r['q_max']))
+    annotated_rows.sort(key=lambda r: (-r['support'], r['chrom'], r['start']))
+
+    # ISSUE-016: every refused N-op, per RAW coordinate, with why — and whether
+    # the same junction was still censused through other reads.
+    rows_by_key = {(r['chrom'], r['start'], r['end']): r for r in rows}
+    refusal_rows: List[dict] = []
+    for (chrom, rs, re_), reasons in ledger.refusals.items():
+        chrom_seq = genome.get(chrom, '')
+        cs, ce = _canonicalize(chrom_seq, rs, re_, cfg.max_ambiguity_shift)
+        ckey = (chrom, cs, ce)
+        refusal_rows.append({
+            'chrom': chrom, 'start': rs, 'end': re_,
+            'canonical_start': cs, 'canonical_end': ce,
+            'n_ops': sum(reasons.values()),
+            'reasons': ';'.join(f'{k}:{v}' for k, v in sorted(
+                reasons.items(), key=lambda kv: (-kv[1], kv[0]))),
+            'best_anchor': ledger.best_anchor.get((chrom, rs, re_), 0),
+            'annotated': int(ckey in annotated),
+            'censused_elsewhere': int(ckey in J),
+            'in_table': int(ckey in rows_by_key),
+        })
+    refusal_rows.sort(key=lambda r: (-r['n_ops'], r['chrom'], r['start']))
+
+    attribution_rows: List[dict] = []
+    if attribute:
+        attribution_rows = attribute_junctions(
+            attribute, genome, cfg, J, rows_by_key, annotated, ledger)
 
     summary = {
         'bam': str(bam_path),
@@ -880,10 +1054,174 @@ def pool_gate(
         'n_annotated_introns_parsed': len(annotated),
         'n_junctions_with_adjacent_indel': sum(
             1 for r in rows if r['n_adj_indel']),
+        # ISSUE-016: the census ledger — what the table cannot show.
+        'census': {
+            'n_reads': ledger.n_reads,
+            'reads_skipped': dict(ledger.reads_skipped),
+            'n_ops_seen': ledger.n_ops_seen,
+            'n_ops_censused': ledger.n_ops_censused,
+            'n_ops_refused': ledger.n_ops_refused,
+            'n_refused_junctions': len(refusal_rows),
+            'n_refused_junctions_censused_elsewhere': sum(
+                1 for r in refusal_rows if r['censused_elsewhere']),
+            'refusal_reasons': ledger.reason_counts(),
+            'attribution': _attribution_counts(attribution_rows),
+        },
+        # Extra tables. write_pool_gate_outputs() writes each beside the main
+        # TSV and replaces the list here with the file path, so the JSON stays
+        # small; a caller that never writes gets the rows themselves.
+        'tables': {
+            'annotated': annotated_rows,
+            'census_refusals': refusal_rows,
+            'attribution': attribution_rows,
+        },
     }
-    logger.info('station-c: %d junctions censused (%d annotated); verdicts %s',
-                len(J), n_annotated, verdict_counts)
+    logger.info('station-c: %d junctions censused (%d annotated); verdicts %s; '
+                'N-ops seen %d, refused %d (%s)',
+                len(J), n_annotated, verdict_counts, ledger.n_ops_seen,
+                ledger.n_ops_refused, ledger.reason_counts() or 'none')
     return rows, summary
+
+
+#: Attribution statuses, in the order the summary reports them.
+ATTRIBUTION_STATUSES = ('reported', 'annotated', 'refused',
+                        'annotated_not_seen', 'not_seen', 'chrom_missing')
+
+
+def _attribution_counts(rows: List[dict]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for r in rows:
+        out[r['status']] = out.get(r['status'], 0) + 1
+    return {s: out[s] for s in ATTRIBUTION_STATUSES if s in out}
+
+
+def attribute_junctions(listed: List[Tuple[str, int, int]], genome: Dict[str, str],
+                        cfg: PoolGateConfig, J: Dict[Tuple[str, int, int], dict],
+                        rows_by_key: Dict[Tuple[str, int, int], dict],
+                        annotated: set, ledger: CensusLedger) -> List[dict]:
+    """One status per listed junction (RAW N-op coordinates, 0-based half-open).
+
+    Canonicalizes each junction exactly as the census does, then asks the
+    census in order: ``reported`` (a row in the table, with its verdict),
+    ``annotated`` (censused, annotated — listed in the annotated table),
+    ``refused`` (every occurrence failed the anchor gate — reasons attached),
+    ``annotated_not_seen`` (annotated, but no read carried an N-op there),
+    ``not_seen`` (no N-op at those coordinates in the BAM at all — the list was
+    built from a different BAM, or keyed differently), ``chrom_missing``.
+    """
+    refused_by_canon: Dict[Tuple[str, int, int], Dict[str, int]] = {}
+    for (chrom, rs, re_), reasons in ledger.refusals.items():
+        chrom_seq = genome.get(chrom, '')
+        cs, ce = _canonicalize(chrom_seq, rs, re_, cfg.max_ambiguity_shift)
+        d = refused_by_canon.setdefault((chrom, cs, ce), {})
+        for k, v in reasons.items():
+            d[k] = d.get(k, 0) + v
+    out: List[dict] = []
+    for chrom, s, e in listed:
+        row = {'chrom': chrom, 'start': s, 'end': e,
+               'canonical_start': s, 'canonical_end': e,
+               'status': 'not_seen', 'verdict': '', 'support': 0,
+               'reasons': ''}
+        chrom_seq = genome.get(chrom)
+        if chrom_seq is None:
+            row['status'] = 'chrom_missing'
+            out.append(row)
+            continue
+        cs, ce = _canonicalize(chrom_seq, s, e, cfg.max_ambiguity_shift)
+        key = (chrom, cs, ce)
+        row['canonical_start'], row['canonical_end'] = cs, ce
+        reasons = refused_by_canon.get(key) or ledger.refusals.get((chrom, s, e))
+        if key in rows_by_key:
+            row['status'] = 'reported'
+            row['verdict'] = rows_by_key[key]['verdict']
+            row['support'] = rows_by_key[key]['support']
+        elif key in J and key in annotated:
+            row['status'] = 'annotated'
+            row['support'] = J[key]['support']
+        elif reasons:
+            row['status'] = 'refused'
+        elif key in annotated:
+            row['status'] = 'annotated_not_seen'
+        if reasons:
+            row['reasons'] = ';'.join(f'{k}:{v}' for k, v in sorted(
+                reasons.items(), key=lambda kv: (-kv[1], kv[0])))
+        out.append(row)
+    return out
+
+
+def load_junction_list(path: Path) -> List[Tuple[str, int, int]]:
+    """Junctions to attribute, as RAW ``(chrom, start, end)`` triples.
+
+    Accepts a JSON file (a list of ``[chrom, start, end]`` /
+    ``{"chrom","start","end"}`` / ``"chrom:start-end"`` items, or a dict whose
+    keys or values are such items), a headed TSV with ``chrom``/``start``/``end``
+    columns, an ``fpfn_events.tsv`` (``chrom`` + ``new_junction`` ``start-end``,
+    rows with an empty ``new_junction`` skipped), or a headerless BED-like
+    file (first three columns). Duplicates are dropped, order kept.
+    """
+    path = Path(path)
+    items: List[Tuple[str, int, int]] = []
+
+    def _add(chrom, s, e):
+        try:
+            items.append((str(chrom), int(s), int(e)))
+        except (TypeError, ValueError):
+            pass
+
+    def _item(x):
+        if isinstance(x, str):
+            chrom, _, span = x.partition(':')
+            s, _, e = span.partition('-')
+            _add(chrom, s, e)
+        elif isinstance(x, dict):
+            if 'new_junction' in x and x.get('new_junction'):
+                s, _, e = str(x['new_junction']).partition('-')
+                _add(x.get('chrom'), s, e)
+            else:
+                _add(x.get('chrom'), x.get('start'), x.get('end'))
+        elif isinstance(x, (list, tuple)) and len(x) >= 3:
+            _add(x[0], x[1], x[2])
+
+    if path.suffix.lower() == '.json':
+        with open(path) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            for k, v in data.items():
+                if isinstance(v, (list, dict)) and not (
+                        isinstance(v, list) and len(v) >= 3
+                        and not isinstance(v[0], (list, dict, str))):
+                    if isinstance(v, list) and v and isinstance(v[0], (list, dict, str)):
+                        for x in v:
+                            _item(x)
+                    else:
+                        _item(v)
+                else:
+                    _item(k)
+        else:
+            for x in data:
+                _item(x)
+    else:
+        with open(path) as fh:
+            lines = [ln.rstrip('\n') for ln in fh if ln.strip() and not ln.startswith('#')]
+        if not lines:
+            return []
+        head = lines[0].split('\t')
+        if 'chrom' in head and ('new_junction' in head or ('start' in head and 'end' in head)):
+            for ln in lines[1:]:
+                f = dict(zip(head, ln.split('\t')))
+                _item(f)
+        else:
+            for ln in lines:
+                f = ln.split('\t')
+                if len(f) >= 3:
+                    _add(f[0], f[1], f[2])
+    seen = set()
+    out = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
 
 
 def write_pool_gate_outputs(rows: List[dict], summary: dict, out_prefix: Path) -> Tuple[Path, Path]:
@@ -914,11 +1252,51 @@ def write_pool_gate_outputs(rows: List[dict], summary: dict, out_prefix: Path) -
             'canonical_in_class', 'repeat_flag', 'selfhom_flag',
             'background_sv_flag', 'over_max_intron',
             'adj_indel_l', 'adj_indel_r', 'n_adj_indel', 'verdict',
-            'orthogonal_evidence', 'cross_sample_support']
+            'orthogonal_evidence', 'cross_sample_support',
+            # ISSUE-016: appended, so column-name readers are unaffected.
+            'start_raw', 'end_raw', 'n_raw_variants']
     with open(tsv, 'w') as fh:
         fh.write('\t'.join(cols) + '\n')
         for r in rows:
-            fh.write('\t'.join(str(r[c]) for c in cols) + '\n')
+            fh.write('\t'.join(str(r.get(c, '')) for c in cols) + '\n')
+
+    # ISSUE-016 side tables: written beside the main TSV; the JSON keeps the
+    # path, not the rows. A summary that never had them (older callers) is
+    # written unchanged.
+    tables = summary.get('tables')
+    if isinstance(tables, dict):
+        spec = {
+            'annotated': ('.pool_gate.annotated.tsv',
+                          ['chrom', 'start', 'end', 'start_raw', 'end_raw',
+                           'n_raw_variants', 'support', 'q_max', 'q_2nd',
+                           'adj_indel_l', 'adj_indel_r', 'n_adj_indel']),
+            'census_refusals': ('.census_refusals.tsv',
+                                ['chrom', 'start', 'end', 'canonical_start',
+                                 'canonical_end', 'n_ops', 'reasons',
+                                 'best_anchor', 'annotated',
+                                 'censused_elsewhere', 'in_table']),
+            'attribution': ('.attribution.tsv',
+                            ['chrom', 'start', 'end', 'canonical_start',
+                             'canonical_end', 'status', 'verdict', 'support',
+                             'reasons']),
+        }
+        written = {}
+        for name, (suffix, tcols) in spec.items():
+            table_rows = tables.get(name)
+            if not isinstance(table_rows, list):
+                continue
+            if name == 'attribution' and not table_rows:
+                written[name] = None
+                continue
+            tpath = Path(raw + suffix)
+            with open(tpath, 'w') as fh:
+                fh.write('\t'.join(tcols) + '\n')
+                for r in table_rows:
+                    fh.write('\t'.join(str(r.get(c, '')) for c in tcols) + '\n')
+            written[name] = str(tpath)
+        summary = dict(summary)
+        summary['tables'] = written
+
     with open(js, 'w') as fh:
         json.dump(summary, fh, indent=1)
     return tsv, js

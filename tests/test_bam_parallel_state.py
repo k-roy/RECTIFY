@@ -65,9 +65,45 @@ import pytest
 # that stripping the new key from the observed results reproduces the previous
 # golden a41ec734… exactly, i.e. no correction semantics moved.  Prior golden
 # 93af5e77…
+# 2026-09-05 — re-recorded for ISSUE-017 (2F novel-site evidence gate, report
+# mode). A pure SCHEMA addition: `five_prime_landing_annotated` and
+# `five_prime_novel_evidence` joined the result dict. Verified before
+# re-recording that stripping the two new keys reproduces the previous golden
+# 5195e1c0… exactly, i.e. no correction semantics moved (report mode draws
+# every rescue exactly as before). Prior golden 5195e1c0…
+# 2026-09-06 — re-recorded for ISSUE-028 (2F invariant E). A pure SCHEMA addition:
+# `five_prime_exon_identity` and `five_prime_exon_bits` joined the result dict
+# (None on every row here — no annotation, so no 5' block is ever placed).
+# Verified before re-recording (dev/todo_run_20260905/INVARIANT_E_LOG.md) that
+# stripping the two new keys reproduces the previous golden 231aeee1… exactly,
+# i.e. no correction semantics moved. Prior golden 231aeee1…
+# 2026-09-06 — re-recorded for ISSUE-032(b) (the 5'-edge reanchor pre-pass propagates
+# whether or not a rescue is drawn). A per-read diff of the 36 results HEAD vs working
+# tree (scratchpad golden_dump.py) shows exactly ONE row changed, 4e43165e:
+# reanchor_clip_len 0 -> 7 and five_prime_soft_clip_length 0 -> 7 (the reanchored
+# clip now reaches the writer on an unrescued read). No other field on any row moved.
+# Prior golden af5aeac6…
+# 2026-09-07 — re-recorded for ISSUE-034 (the 5' clip-origin call). A pure SCHEMA
+# addition: `five_prime_clip_origin`, `five_prime_clip_origin_bits`,
+# `five_prime_clip_prior_bits` joined the result dict ('' / 'none', None, 0.0 / None
+# here — no annotation, so no candidate is ever judged). Verified before re-recording
+# (scratchpad golden_check3.py) that stripping the three new keys reproduces the previous
+# golden ae45870b… exactly. Prior golden ae45870b…
+# Re-recorded 2026-09-08 (ISSUE-039 station C + ISSUE-040 station B), a pure SCHEMA addition:
+# `five_prime_site_support`, `five_prime_landing_established`, `station_b_microexons`,
+# `station_b_alternatives`, `station_b_n_tied`, `station_b_applied`, `station_b_intron_start`
+# and `station_b_intron_end` joined the result dict — all at their defaults here, since this
+# fixture has no pool cache (station C knows nothing) and no micro-exon index (station B is
+# inert). Verified before re-recording, per read, that stripping the eight new keys reproduces
+# the previous result set exactly: 36/36 reads byte-identical against a clean 5205d97
+# worktree. Prior goldens a767f6b1… and cd06c38a…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "5195e1c04c3124b8ada003dd561e55a1c6cb6a36d01796463f1f2b371d56a265"
+    "534840270ec7934358228ec192a46b79b18a2ec5778816aea13b0f3d20b36e86"
 )
+# Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
+# `five_prime_exon2_prefix` key (schema change only — the bundled validation
+# reads' corrections are unchanged: test_validation_reads{,_upf1d}.py 184 passed
+# / 0 changed on the same tree). Prior golden 625586c3… (34d6852, ISSUE-017 columns).
 # Re-recorded 2026-06-29 (drs-validation-rebuild): the walkback homopolymer-undercall
 # guard (walkback.py large-deletion pre-scan now preserves a deletion flanked 3' by a
 # run of genuine read=ref matches — cat2_plus_1's 9D+39= over a 24-A genomic run) changed

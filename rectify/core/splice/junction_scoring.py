@@ -206,6 +206,29 @@ def junction_pool_cache_problem(pool_data: Dict[str, Any]) -> Optional[str]:
 # here keeps real junctions while dropping the artifacts. Kevin 2026-05-24.
 DEFAULT_MIN_JUNCTION_ANCHOR = 10
 
+# SITE SUPPORT — the population's own evidence that a junction exists, computed in
+# the SAME pass as the pool (ISSUE-039, "station C for the 2F resolver", 2026-09-07).
+#
+# Not to be confused with :mod:`rectify.core.consensus.station_c`, which is the
+# post-correction, per-junction admission table calibrated on yeast; this is a
+# PRE-correction signal read off the aligner arms so the 5' resolver can consult it
+# while it is still deciding. Both answer "is this site real?", at different stages.
+#
+# A junction is ESTABLISHED when at least SITE_ESTABLISHED_MIN_READS reads of THIS
+# LIBRARY cross it with a clean SITE_SUPPORT_ANCHOR-base anchor on both flanks (no
+# indel inside the anchor, not low-complexity — `_junction_anchor_ok`). That is the
+# arbiter's Ruling-5 truth criterion (i) — "≥ 3 reads/site with ≥ 20 nt matched, no
+# I/D, within library" — reused verbatim rather than invented here. One difference
+# worth knowing: for an M-op aligner (minimap2) the anchor bans indels but cannot ban
+# mismatches, so the anchor is 20 aligned bases, not 20 identities.
+#
+# Counts are taken as the MAX over individual aligner arms, never the sum: the arms
+# are five alignments of the SAME reads, so summing would count one read up to five
+# times (the trap ALIGNER_FAMILY exists to prevent). Cross-LIBRARY recurrence is
+# never consulted — Kevin: recurrence is not truth.
+SITE_SUPPORT_ANCHOR = 20
+SITE_ESTABLISHED_MIN_READS = 3
+
 # Aligner → independent algorithm family. The pool concordance relaxation
 # (build_junction_pool) treats agreement ACROSS distinct families as independent
 # evidence that a short-anchor junction is real, but agreement WITHIN a family is
@@ -624,11 +647,152 @@ def collect_junctions_from_bam(
     return junctions
 
 
+UNSPLICED_SIGNAL_OVERHANG = 10   # bases on EACH side of an annotated intron edge a read block must cover
+
+
+def _acceptor_index(annotated_introns) -> Dict[str, Tuple[List[int], List[Tuple[int, int, int]]]]:
+    """chrom -> (sorted edge positions, parallel junction tuples): both edges of every annotated intron."""
+    per: Dict[str, List[Tuple[int, Tuple[int, int, int]]]] = {}
+    for j in annotated_introns or ():
+        if len(j) < 3:
+            continue
+        chrom = standardize_chrom_name(str(j[0])); s_, e_ = int(j[1]), int(j[2])
+        per.setdefault(chrom, []).append((s_, (chrom, s_, e_)))
+        per[chrom].append((e_, (chrom, s_, e_)))
+    out = {}
+    for chrom, lst in per.items():
+        lst.sort(key=lambda t: t[0])
+        out[chrom] = ([t[0] for t in lst], [t[1] for t in lst])
+    return out
+
+
+def _count_unspliced(cigar, ref_start: int, idx_pos: List[int], idx_j: List[Tuple[int, int, int]],
+                     counter: Counter, overhang: int) -> None:
+    """ISSUE-034 (step 2 of Kevin's plan): a read whose ALIGNED block runs straight through an annotated
+    intron edge with >= *overhang* bases on both sides is unspliced / intron-retained signal at that intron."""
+    import bisect
+    pos = ref_start
+    blk_start = None
+    for op, length in cigar:
+        if op in (0, 7, 8, 2):            # M/=/X/D extend the current aligned block
+            if blk_start is None:
+                blk_start = pos
+            pos += length
+        else:
+            if blk_start is not None and pos - blk_start >= 2 * overhang:
+                lo = bisect.bisect_left(idx_pos, blk_start + overhang)
+                hi = bisect.bisect_right(idx_pos, pos - overhang)
+                for k in range(lo, hi):
+                    counter[idx_j[k]] += 1
+            blk_start = None
+            if op == 3:                    # N
+                pos += length
+    if blk_start is not None and pos - blk_start >= 2 * overhang:
+        lo = bisect.bisect_left(idx_pos, blk_start + overhang)
+        hi = bisect.bisect_right(idx_pos, pos - overhang)
+        for k in range(lo, hi):
+            counter[idx_j[k]] += 1
+
+
+
+# ---------------------------------------------------------------------------
+# JUNCTION-PROXIMAL MISMATCH ENRICHMENT (ISSUE-044, Kevin 2026-09-08)
+# ---------------------------------------------------------------------------
+# Kevin's proposal, in his words: "a higher-than-expected frequency of mismatches at proposed
+# junctions relative to the rest of the read should be a strong indication that there is a
+# misplacement ... this separates the ONT error rate which is blind to junctions and more likely to
+# spread across the transcript."
+#
+# Measured before wiring, on 16,107 stock records of the SMA panel (+/- 12 nt windows, per read):
+#
+#   read set                     near-junction   rest of read   ratio   reads > 1.5x
+#   all junctions ANNOTATED          0.41 %          0.51 %      0.80      17.7 %
+#   >= 1 NOVEL junction              1.36 %          0.95 %      1.43      39.3 %
+#
+# The annotated arm is what makes the metric credible: a correctly placed junction shows no proximal
+# excess but a slight DEFICIT, because the aligner anchors on clean sequence. The effect also
+# survives the obvious objection — novel-junction reads are noisier overall (body 0.95 % vs 0.41 %) —
+# because the ratio is taken WITHIN each read, which is why "relative to the rest of the read" is the
+# right framing rather than an absolute threshold.
+#
+# What is accumulated per junction: the mismatches and bases in its own +/- W windows, AND the body
+# mismatches and bases of the reads that cross it. "Far" is a per-READ quantity, so a read with three
+# junctions contributes its body statistics to all three — that is deliberate, and it is what makes
+# each junction's ratio self-controlled.
+JUNCTION_MM_WINDOW = 12
+#: Mismatch positions this far from a junction edge are tallied for the variant/misplacement
+#: discriminator; beyond it a mismatch tells us nothing about a junction.
+JUNCTION_MM_VARIANT_REACH = 30
+#: A position carried by fewer reads than this is noise, not a recurrent series.
+JUNCTION_MM_VARIANT_MIN_READS = 3
+
+
+def junction_mismatch_enrichment(stats, junction) -> Optional[float]:
+    """``near_rate / far_rate`` for *junction* from a pool's ``junction_mismatch`` block, or ``None``
+    when the junction has too little of either to divide. Above 1 means the mismatches concentrate at
+    the junction rather than spreading over the read — Kevin's misplacement signal."""
+    e = (stats or {}).get(tuple(junction[:3]))
+    if not e:
+        return None
+    near_mm, near_bp, far_mm, far_bp = e[:4]
+    if near_bp < 20 or far_bp < 100 or far_mm == 0:
+        return None
+    return (near_mm / near_bp) / (far_mm / far_bp)
+
+
+def _mismatch_bins(read, fa, edges, window, reach):
+    """``(near_mm, near_bp, far_mm, far_bp, [(refpos, is_mismatch)])`` for one read.
+
+    Only the read's ALIGNED blocks are fetched, so the reference read per record is the read's own
+    length, not its genomic span — an intron costs nothing here. A base near two junctions (a short
+    exon) is binned once, against the nearer.
+    """
+    near_mm = near_bp = far_mm = far_bp = 0
+    prox = []
+    seq = read.query_sequence or ''
+    if not seq or not edges:
+        return near_mm, near_bp, far_mm, far_bp, prox
+    chrom = read.reference_name
+    ref_pos = read.reference_start
+    q_pos = 0
+    for op, ln in (read.cigartuples or []):
+        if op in (0, 7, 8):                       # M/=/X consume both
+            try:
+                ref = fa.fetch(chrom, ref_pos, ref_pos + ln).upper()
+            except (ValueError, KeyError):
+                ref = ''
+            qry = seq[q_pos:q_pos + ln].upper()
+            if len(ref) == len(qry) == ln:
+                for i in range(ln):
+                    rp = ref_pos + i
+                    d = min(abs(rp - x) for x in edges)
+                    mm = ref[i] != qry[i] and ref[i] != 'N' and qry[i] != 'N'
+                    if d <= window:
+                        near_bp += 1
+                        near_mm += mm
+                    else:
+                        far_bp += 1
+                        far_mm += mm
+                    if d <= reach:
+                        prox.append((rp, mm))
+            ref_pos += ln
+            q_pos += ln
+        elif op in (2, 3):                        # D/N consume reference only
+            ref_pos += ln
+        elif op in (1, 4):                        # I/S consume query only
+            q_pos += ln
+    return near_mm, near_bp, far_mm, far_bp, prox
+
+
 def _collect_junction_counts_core(
     bam_path: str,
     chrom_filter: Optional[str] = None,
     max_junction_size: Optional[int] = None,
     min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
+    annotated_index=None,
+    unspliced_out: Optional[Counter] = None,
+    strict_anchor: int = 0,
+    fasta_path: Optional[str] = None,
 ) -> Tuple[Counter, Counter]:
     """One pass over a BAM → ``(anchor_pass_counts, raw_counts)``.
 
@@ -639,9 +803,33 @@ def _collect_junction_counts_core(
     junction whose every supporting read has a short anchor (e.g. a short
     exon-1) is kept when independently called by multiple aligners, while a
     single-aligner tiny-anchor artifact is dropped.
+
+    ``strict_anchor > 0`` additionally counts, per junction, the reads whose anchor
+    is clean over that many bases on BOTH flanks — the site-support signal (see
+    SITE_SUPPORT_ANCHOR). It rides this pass because the walk is the expensive part.
+    The strict counter is returned as a 4th element whenever ``unspliced_out`` is
+    given, so the caller's tuple shape is 2 (plain) or 4 (signal requested).
+
+    ``fasta_path`` (ISSUE-044) additionally accumulates junction-proximal mismatch enrichment: per
+    junction the mismatches and bases in its own +/- JUNCTION_MM_WINDOW windows and the BODY
+    mismatches and bases of every read crossing it, plus a per-position tally near junctions for the
+    variant-versus-misplacement discriminator. It rides this pass because the walk is the expensive
+    part; each worker process opens its own FastaFile.
     """
     anchor: Counter = Counter()
     raw: Counter = Counter()
+    strict: Counter = Counter()
+    mm_stats: Dict[Junction, List[int]] = {}
+    var_mm: Counter = Counter()
+    var_cov: Counter = Counter()
+    fa = None
+    if fasta_path:
+        try:
+            fa = pysam.FastaFile(fasta_path)
+        except Exception as exc:
+            logger.warning("_collect_junction_counts_core: cannot open %s (%s); "
+                           "junction mismatch enrichment disabled", fasta_path, exc)
+            fa = None
     try:
         with pysam.AlignmentFile(bam_path, 'rb') as bam:
             for read in bam:
@@ -656,6 +844,9 @@ def _collect_junction_counts_core(
                 if chrom_filter and chrom != chrom_filter:
                     continue
                 cigar = _merge_del_into_intron(read.cigartuples)
+                if annotated_index is not None and unspliced_out is not None and chrom in annotated_index:
+                    _ip, _ij = annotated_index[chrom]
+                    _count_unspliced(cigar, read.reference_start, _ip, _ij, unspliced_out, UNSPLICED_SIGNAL_OVERHANG)
                 query_seq = read.query_sequence or ""
                 pos = read.reference_start
                 qpos = 0
@@ -667,12 +858,53 @@ def _collect_junction_counts_core(
                         if _junction_anchor_ok(
                                 cigar, idx, qpos, query_seq, min_anchor_overhang):
                             anchor[j] += 1
+                        if strict_anchor > 0 and _junction_anchor_ok(
+                                cigar, idx, qpos, query_seq, strict_anchor):
+                            strict[j] += 1
                     if op in _REF_CONSUMING_POS:
                         pos += length
                     if op in _QUERY_CONSUMING:
                         qpos += length
+
+                if fa is not None:
+                    # The read's own junctions define the windows; a read with no N-op has no
+                    # junction to be near and contributes nothing.
+                    r_junc, rp = [], read.reference_start
+                    for op, length in cigar:
+                        if op == _N:
+                            r_junc.append((rp, rp + length))
+                        if op in _REF_CONSUMING_POS:
+                            rp += length
+                    if r_junc:
+                        edges = [x for j in r_junc for x in (j[0], j[1])]
+                        n_mm, n_bp, f_mm, f_bp, prox = _mismatch_bins(
+                            read, fa, edges, JUNCTION_MM_WINDOW, JUNCTION_MM_VARIANT_REACH)
+                        for (js, je) in r_junc:
+                            key = (chrom, js, je)
+                            e = mm_stats.get(key)
+                            if e is None:
+                                e = mm_stats[key] = [0, 0, 0, 0, 0]
+                            e[0] += n_mm
+                            e[1] += n_bp
+                            e[2] += f_mm
+                            e[3] += f_bp
+                            e[4] += 1
+                        for rpos, is_mm in prox:
+                            var_cov[(chrom, rpos)] += 1
+                            if is_mm:
+                                var_mm[(chrom, rpos)] += 1
     except Exception as exc:
         logger.warning("_collect_junction_counts_core(%s): %s", bam_path, exc)
+    if fa is not None:
+        try:
+            fa.close()
+        except Exception:
+            pass
+    if unspliced_out is not None:
+        # 6-tuple when the mismatch pass ran; 4 otherwise. The caller unpacks defensively.
+        if fasta_path:
+            return anchor, raw, unspliced_out, strict, mm_stats, (var_mm, var_cov)
+        return anchor, raw, unspliced_out, strict   # 4-tuple only when the signal was requested
     return anchor, raw
 
 
@@ -701,8 +933,20 @@ def build_junction_pool(
     min_anchor_overhang: int = DEFAULT_MIN_JUNCTION_ANCHOR,
     relax_min_families: int = DEFAULT_RELAX_MIN_FAMILIES,
     aligner_families: Optional[List[str]] = None,
+    return_signal: bool = False,
+    fasta_path: Optional[str] = None,
 ) -> Tuple[Set[Junction], Set[Junction]]:
     """Build union of annotated + per-aligner junctions.
+
+    ``return_signal=True`` (ISSUE-034) appends a third element: ``{'unspliced':
+    Counter, 'spliced': Counter, 'site_support': dict}``. ``unspliced`` /
+    ``spliced`` are over the ANNOTATED introns — reads whose aligned block runs
+    through an intron edge with >= UNSPLICED_SIGNAL_OVERHANG bases on both sides
+    (unspliced / retained-intron signal), and the anchored spliced support — the
+    prior for the 5' clip-origin call. ``site_support`` is over EVERY observed
+    junction: the number of reads crossing it with a clean SITE_SUPPORT_ANCHOR
+    anchor on both flanks, MAX over arms (ISSUE-039, the 2F resolver's station-C
+    signal).
 
     An observed junction enters the pool when EITHER:
 
@@ -758,11 +1002,17 @@ def build_junction_pool(
 
     # Per-aligner (anchor_pass_counts, raw_counts).
     per_bam: List[Tuple[Counter, Counter]] = []
+    _sig_index = _acceptor_index(annot_3) if return_signal else None
+    _unspliced: Counter = Counter()
+    _strict_anchor = SITE_SUPPORT_ANCHOR if return_signal else 0
+    _fa = fasta_path if return_signal else None
     if not aligner_bams:
         pass
     elif len(aligner_bams) == 1:
         per_bam.append(_collect_junction_counts_core(
-            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang))
+            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang,
+            annotated_index=_sig_index, unspliced_out=_unspliced,
+            strict_anchor=_strict_anchor, fasta_path=_fa))
     else:
         try:
             from concurrent.futures import ProcessPoolExecutor
@@ -770,7 +1020,9 @@ def build_junction_pool(
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [
                     ex.submit(_collect_junction_counts_core, bp, chrom_filter,
-                              max_junction_size, min_anchor_overhang)
+                              max_junction_size, min_anchor_overhang,
+                              _sig_index, Counter() if return_signal else None,
+                              _strict_anchor, _fa)
                     for bp in aligner_bams
                 ]
                 per_bam = [fut.result() for fut in futures]
@@ -785,6 +1037,41 @@ def build_junction_pool(
                     bp, chrom_filter, max_junction_size, min_anchor_overhang)
                 for bp in aligner_bams
             ]
+
+    # ISSUE-034 / ISSUE-039: fold the per-BAM unspliced signal and take the site support as the MAX
+    # over ARMS (never the sum — five arms are five alignments of the same reads); keep 2-tuples for
+    # the rank.
+    _pb2 = []
+    _site_support: Dict[Junction, int] = {}
+    _mm: Dict[Junction, List[int]] = {}
+    _var_mm: Counter = Counter()
+    _var_cov: Counter = Counter()
+    for _t in per_bam:
+        if len(_t) >= 3:
+            _unspliced.update(_t[2])
+            if len(_t) >= 4 and _t[3]:
+                for _j, _n in _t[3].items():
+                    if _n > _site_support.get(_j, 0):
+                        _site_support[_j] = _n
+            if len(_t) >= 6:
+                # ISSUE-044: mismatch counts SUM across arms — unlike site support, which takes the
+                # max because the arms are the same reads. Here every arm's view of a junction's
+                # neighbourhood is its own measurement of that placement's quality, and a junction
+                # only one arm draws is exactly the one worth measuring.
+                for _j, _e in (_t[4] or {}).items():
+                    _acc = _mm.get(_j)
+                    if _acc is None:
+                        _mm[_j] = list(_e)
+                    else:
+                        for _i in range(len(_e)):
+                            _acc[_i] += _e[_i]
+                _vm, _vc = _t[5]
+                _var_mm.update(_vm)
+                _var_cov.update(_vc)
+            _pb2.append((_t[0], _t[1]))
+        else:
+            _pb2.append(_t)
+    per_bam = _pb2
 
     # Accumulate anchored support (summed reads) and the set of DISTINCT
     # algorithm families reporting each junction (for the concordance relaxation).
@@ -814,6 +1101,29 @@ def build_junction_pool(
         len(annot_3), n_anchored, min_observed_support,
         n_relaxed, relax_min_families, len(all_j),
     )
+    if return_signal:
+        _spliced: Counter = Counter()
+        for _anchor, _raw in per_bam:
+            for _j, _c in _anchor.items():
+                if _j in annot_3:
+                    _spliced[_j] += _c
+        logger.debug("build_junction_pool: %d junctions with site support >= %d",
+                     sum(1 for _v in _site_support.values() if _v >= SITE_ESTABLISHED_MIN_READS),
+                     SITE_ESTABLISHED_MIN_READS)
+        # Prune the per-position tally to recurrent series: a position one read disagrees with is
+        # ONT error, and keeping it would make the block enormous for no discriminating power.
+        _var = {k: (v, _var_cov.get(k, 0)) for k, v in _var_mm.items()
+                if v >= JUNCTION_MM_VARIANT_MIN_READS}
+        if _mm:
+            _enr = [junction_mismatch_enrichment(_mm, j) for j in _mm]
+            _enr = [x for x in _enr if x is not None]
+            logger.debug("build_junction_pool: mismatch enrichment on %d junctions "
+                         "(%d scorable, %d recurrent positions kept)",
+                         len(_mm), len(_enr), len(_var))
+        return all_j, annot_3, {'unspliced': _unspliced, 'spliced': _spliced,
+                                'site_support': _site_support,
+                                'junction_mismatch': _mm,
+                                'mismatch_positions': _var}
     return all_j, annot_3
 
 

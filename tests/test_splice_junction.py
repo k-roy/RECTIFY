@@ -764,9 +764,12 @@ class TestRescue3SSTruncation:
     """
     Tests for rescue_3ss_truncation() in splice_aware_5prime.py.
 
-    Genome (chrT): A*100 | N*100 | G*100
+    Genome (chrT): A*100 | GT N*96 AG | G*100
       exon1:  [0, 100)   all A
-      intron: [100, 200) all N
+      intron: [100, 200) GT..AG around an N body (ISSUE-026 invariant D: 2F
+              refuses, before emission, any placement the corrected-BAM
+              writer's canonical guard would revert — so a toy intron must
+              carry a canonical motif at the coordinates it expects drawn)
       exon2:  [200, 300) all G
 
     Plus-strand gene:  5'─exon1─intron─exon2─3'
@@ -781,7 +784,7 @@ class TestRescue3SSTruncation:
       clip bytes = first N bases of exon2 = genome[200:200+N] = 'G'*N
     """
 
-    GENOME = {'chrT': 'A' * 100 + 'N' * 100 + 'G' * 100}
+    GENOME = {'chrT': 'A' * 100 + 'GT' + 'N' * 96 + 'AG' + 'G' * 100}
     JUNCTION = {('chrT', 100, 200)}  # (chrom, intron_start, intron_end)
 
     # ---- Plus strand: explicit soft-clip ----
@@ -819,6 +822,20 @@ class TestRescue3SSTruncation:
 
     # ---- Plus strand: MPB forced-mismatch at exon2 start ----
 
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "ISSUE-028 invariant E exposed what kept this fixture green: the reanchor "
+            "pre-pass collapses the 10 mismatched exon-1 bases into a 10S clip at 210, "
+            "ISSUE-020 (b) then trims the `dist` = 10 junction-side clip bases that lie "
+            "over exon-2 POSITIONS (unconditionally, by ruling), and the whole clip is "
+            "gone; the read was 'rescued' only by a 12-base terminal peel whose trimmed "
+            "remainder was a 2-base `2M` block (4 bits) — not evidence. A mapPacBio "
+            "forced-mismatch read that starts exactly at the acceptor with its exon-1 "
+            "bases aligned over exon 2 is unrescuable under the 020 trim; ruling needed "
+            "(logged in dev/todo_run_20260905/INVARIANT_E_LOG.md)."
+        ),
+    )
     def test_plus_mpb_forced_mismatch_rescued(self):
         """No explicit soft-clip; first 10 aligned bases are all mismatches (A reads
         as C in MPB output against G-rich exon2), but the query bytes are 'A'*10
@@ -862,21 +879,34 @@ class TestRescue3SSTruncation:
         assert r['rescued_junction'] == ('chrT', 100, 200)
 
     def test_plus_intronic_snap_returns_last_upstream_exon_base(self):
-        """Case 4 intronic snap must not return intron_start itself."""
+        """Case 4 intronic snap must not return intron_start itself.
+
+        Own genome (ISSUE-026 invariant D): the intron is GT + C*96 + AG so the
+        snap's N-op is canonical (the class fixture's N body made every intronic
+        comparison a mismatch, which sent this read down the sequence path once
+        the intron carried a motif). The read maps 50 bases inside the intron:
+        28 exon-1 A's then 22 intron C's — HP-ED 22 to exon 1 vs 29 to the intron,
+        so the sequence rescue's 0.70 ratio FAILS (22 >= 20.3) while Case 4's
+        non-strict compare still favors exon 1 (22 < 29) and snaps. Identical
+        verdict on 6485226."""
+        genome = {'chrT': 'A' * 100 + 'GT' + 'C' * 96 + 'AG' + 'G' * 100}
         read = MockRead(
             reference_name='chrT',
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 50,
+            query_sequence='A' * 28 + 'C' * 22,
             cigartuples=[(0, 50)],
         )
 
-        r = rescue_3ss_truncation(read, self.GENOME, self.JUNCTION, strand='+')
+        r = rescue_3ss_truncation(read, genome, self.JUNCTION, strand='+')
 
-        assert r['rescued'] is True
-        assert r['rescue_type'] == 'intronic_snap'
-        assert r['five_prime_corrected'] == 99
+        # PROVISIONAL E_MAX_GAP (2026-09-07, ISSUE-031 in 2F): the snap's re-placed 50-base segment
+        # (28 exon-1 A's + 22 intronic C's) can only be drawn as exon 1 with a 22-base insertion
+        # glued to the N — Kevin's banned shape. The snap is refused (`exon_gap_above_max`); the read
+        # keeps its intronic alignment. (Before 2026-09-07 this asserted the snap at 99.)
+        assert r['rescued'] is False, r
+        assert r.get('clip_refused') == 'exon_gap_above_max', r
         assert r['five_prime_corrected'] != 100
 
     # ---- Plus strand: start too far from any 3'SS ----
@@ -1021,7 +1051,7 @@ class TestRescue3SSTruncation:
         end abutting intron_start); a wrong-end slice would land at a shifted
         position or fail to rescue. exon1[0,180) intron[180,280) exon2[280,380)."""
         exon1 = _distinct_seq(180, seed=11)
-        genome = {'chrL': exon1 + 'N' * 100 + 'C' * 100}
+        genome = {'chrL': exon1 + 'GT' + 'N' * 96 + 'AG' + 'C' * 100}
         junction = {('chrL', 180, 280)}
         clip = exon1[30:180]              # donor-adjacent 150 bp of exon1 (> cap)
         read = MockRead(
@@ -1043,7 +1073,7 @@ class TestRescue3SSTruncation:
         genomic coord) end. The cap keeps the donor-adjacent bases (_rseq[:CAP],
         the end abutting intron_end). body[0,100) intron[100,200) exon2[200,380)."""
         exon2 = _distinct_seq(180, seed=22)
-        genome = {'chrW': 'A' * 100 + 'N' * 100 + exon2}   # 'chrM' is reserved → chrMito
+        genome = {'chrW': 'A' * 100 + 'GT' + 'N' * 96 + 'AG' + exon2}   # 'chrM' is reserved → chrMito
         junction = {('chrW', 100, 200)}
         clip = exon2[0:150]              # donor-adjacent 150 bp (intron_end side, > cap)
         read = MockRead(
@@ -1222,12 +1252,16 @@ class TestRescue3SSTruncationExtended:
 
     def test_plus_canonical_gt_beats_non_canonical(self):
         """
-        Two junctions; exon1 is A*50 for both → same edit distance for A*8 clip.
+        Two junctions; exon1 is A*50 for both → same edit distance for A*10 clip.
         Junction at intron_start=50 has GT donor (canonical).
         Junction at intron_start=150 has AA donor (non-canonical).
-        GT should win.
+        GT should win. (Both introns end in AG; ISSUE-026 invariant D refuses
+        the AA-AG placement outright — the writer would revert it — so the GT
+        junction is the only placement left, which is the same verdict.)
+        The clip is 10 nt (ISSUE-028 invariant E: an 8-nt block is 16 bits at
+        best, under the 18-bit evidence floor by construction).
         """
-        genome = {'chrC': 'A' * 50 + 'GT' + 'N' * 98 + 'AA' + 'N' * 98 + 'A' * 50}
+        genome = {'chrC': 'A' * 50 + 'GT' + 'N' * 96 + 'AG' + 'AA' + 'N' * 96 + 'AG' + 'A' * 50}
         junctions = {
             ('chrC', 50, 150),   # GT donor
             ('chrC', 150, 250),  # AA donor
@@ -1237,8 +1271,8 @@ class TestRescue3SSTruncationExtended:
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 8 + 'N' * 50,
-            cigartuples=[(4, 8), (0, 50)],
+            query_sequence='A' * 10 + 'N' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1247,8 +1281,9 @@ class TestRescue3SSTruncationExtended:
     # ---- GC donor is canonical (minor spliceosome) ----
 
     def test_plus_gc_donor_is_canonical(self):
-        """GC donor is accepted as canonical and preferred over AA."""
-        genome = {'chrGC': 'A' * 50 + 'GC' + 'N' * 98 + 'AA' + 'N' * 98 + 'A' * 50}
+        """GC donor is accepted as canonical and preferred over AA (10-nt clip:
+        ISSUE-028 invariant E's 18-bit floor is out of reach for an 8-mer)."""
+        genome = {'chrGC': 'A' * 50 + 'GC' + 'N' * 96 + 'AG' + 'AA' + 'N' * 96 + 'AG' + 'A' * 50}
         junctions = {
             ('chrGC', 50, 150),   # GC donor → canonical
             ('chrGC', 150, 250),  # AA donor → non-canonical
@@ -1258,8 +1293,8 @@ class TestRescue3SSTruncationExtended:
             reference_start=150,
             reference_end=200,
             is_reverse=False,
-            query_sequence='A' * 8 + 'N' * 50,
-            cigartuples=[(4, 8), (0, 50)],
+            query_sequence='A' * 10 + 'N' * 50,
+            cigartuples=[(4, 10), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1287,12 +1322,32 @@ class TestRescue3SSTruncationExtended:
         (ISSUE-006): below that floor no clip can distinguish its placement from
         chance and the sequence rescue is refused by design. The donor tie-break
         this test asserts is unchanged — only the clip length is.
+
+        ISSUE-020: the ranking segment now ends exactly at the junction — a 5'
+        base inside the intron joins the clip, a base over an exon-2 position
+        is trimmed. The old mock's body ran to reference_end 100 over genome
+        'TT' with 'C' bases (two mismatches the reanchor pre-pass turns into
+        clip), and its last base sat ON intron_start; with those bases in the
+        segment the toy's exon 1 (G*98) is indistinguishable from junction A's
+        intron (T + G*98), so the exon-vs-intron acceptance cannot pass — the old
+        clip-only segment hid that. The read now ends one base before the intron
+        (reference_end 98, dist 2) with an 11-nt clip whose first base lies over
+        exon-2 position 98 and is trimmed; the 10 G's tie on both candidates and
+        the canonical AC donor decides, as the test intends.
+
+        ISSUE-026 invariant D: the writer's canonical guard judges BOTH ends at
+        the written coordinates, so junction A's 3'SS (genome orientation
+        genome[99:101]) must read 'CT' (RC of AG) for the AC-CT pair to be a
+        minus-strand GT-AG; positions 99-100 are therefore 'CT' and junction B's
+        exon-1 candidate starts with that T. Junction B (TC..CT) is refused
+        before emission — the same verdict the old donor tie-break reached.
         """
         genome = {
             'chrM2': (
                 'C' * 98          # exon2 body (pos 0-97)
-                + 'TT'            # pos 98-99: non-canonical 5'SS for junction_end=100
-                + 'G' * 98        # pos 100-197: exon1 candidate for junction B
+                + 'TC'            # pos 98-99: junction B 5'SS 'TC' (non-canonical); pos 99 = 'C' of junction A's 'CT' 3'SS
+                + 'T'             # pos 100: 'T' of junction A's 'CT' 3'SS (RC of AG)
+                + 'G' * 97        # pos 101-197: exon1 candidate for junction B
                 + 'AC'            # pos 198-199: canonical 5'SS for junction_end=200
                 + 'G' * 98        # pos 200-297: exon1 candidate for junction A
             )
@@ -1306,11 +1361,11 @@ class TestRescue3SSTruncationExtended:
         # Soft clip at HIGH end (last op) = 'G'*10, matching genome[200:210] and genome[100:110]
         read = MockRead(
             reference_name='chrM2',
-            reference_start=10,
-            reference_end=100,
+            reference_start=17,
+            reference_end=98,
             is_reverse=True,
-            query_sequence='C' * 82 + 'G' * 10,  # last 10 = soft-clip at 5' (high) end
-            cigartuples=[(0, 82), (4, 10)],
+            query_sequence='C' * 81 + 'G' * 11,  # body over [17, 98); 11-nt soft clip at the 5' (high) end
+            cigartuples=[(0, 81), (4, 11)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='-')
         assert r['rescued'] is True
@@ -1376,6 +1431,15 @@ class TestRescue3SSTruncationExtended:
         The clip is 11 nt rather than 6 so it clears ``min_informative_clip_bp()``
         (ISSUE-006); the HP-vs-substitution preference under test is unchanged.
 
+        ISSUE-020: the read starts 9 nt into exon 2 (dist 9 for junction A, 2 for
+        junction B) and the ranking now TRIMS the `dist` junction-side clip bases
+        — the exon-2 positions the aligner left unaligned — instead of sliding the
+        genome window over them. The read therefore carries those exon-2 bases in
+        its clip (nine mixed bases — a G run would make the 20-nt clip periodic
+        and refuse the search — the realistic soft-clip shape); the old mock
+        simply lacked them, and the slide was silently supplying the missing
+        geometry. The exon-1 segment compared is the same 11 nt as before.
+
         Genome:
           pos 0-94:   A*95  (poly-A exon body)
           pos 95-99:  'AAAAC'  (last 5 = candidate window for junction A at is=100)
@@ -1395,10 +1459,16 @@ class TestRescue3SSTruncationExtended:
                 + 'GT'               # pos 100-101: GT donor for junction A
                 + 'GTAAC'            # pos 102-106: sequence between junctions
                 + 'GT'               # pos 107-108: GT donor for junction B (intron_start=107)
-                + 'N' * 90           # intron body
+                + 'N' * 79           # pos 109-187: intron body
+                + 'AG'               # pos 188-189: AG acceptor for junction A (intron_end=190)
+                + 'TCAGT'            # pos 190-194: exon-2 bases of junction A / intron body of B
+                + 'AG'               # pos 195-196: AG acceptor for junction B (intron_end=197)
+                + 'AC'               # pos 197-198: exon-2 bases (both junctions)
                 + 'G' * 100          # exon2 (read landing zone): pos 199+
             )
         }
+        # ISSUE-026 invariant D: both introns carry GT..AG at their annotated
+        # coordinates (the writer's canonical guard judges the written N-op).
         junctions = {
             ('chrHP', 100, 190),   # GT at 100; exon candidate = genome[95:100]='AAAAC'
             ('chrHP', 107, 197),   # GT at 107; exon candidate = genome[102:107]='GTAAC'
@@ -1410,8 +1480,9 @@ class TestRescue3SSTruncationExtended:
             reference_start=199,
             reference_end=249,
             is_reverse=False,
-            query_sequence='A' * 10 + 'C' + 'G' * 50,
-            cigartuples=[(4, 11), (0, 50)],
+            # exon-1 tail + nine bases over the unaligned exon-2 positions [190, 199) as the clip; body = genome[199:249]
+            query_sequence='A' * 10 + 'C' + 'TCAGTAGAC' + 'G' * 50,
+            cigartuples=[(4, 20), (0, 50)],
         )
         r = rescue_3ss_truncation(read, genome, junctions, strand='+')
         assert r['rescued'] is True
@@ -1468,6 +1539,17 @@ class TestInAmbVsDonorOkPriority:
           shift= 0 → (True,  False, 0)
           shift=-2 → (False, True,  2)
         (False, True, 2) < (True, False, 0) → shift=-2 would win → five_prime_corrected=11.
+
+        ISSUE-026 invariant D (2026-09-05) makes the shift-0 placement moot: an
+        N-op drawn at 14-116 has a non-canonical NN donor, the corrected-BAM
+        writer's guard (`_revert_selfinflicted_noncanonical_n`) would revert it,
+        and 2F now refuses such a shift BEFORE emission
+        (`five_prime_noncanonical_shift_skipped`) — the placement 2F reports is
+        the placement the writer draws. The in_amb-over-donor_ok priority can
+        therefore only ever decide between CANONICAL shifts (the sibling test
+        below); here the sole surviving placement is the canonical GT at 12,
+        which the GT-repeat makes sequence-equivalent to the annotated
+        coordinate, so it lands annotated at five_prime_corrected=11.
         """
         genome = {'chrP':
                   'CC'              # pos 0-1
@@ -1485,11 +1567,18 @@ class TestInAmbVsDonorOkPriority:
             query_sequence='GT' * 5 + 'C' * 50,
             cigartuples=[(4, 10), (0, 50)],
         )
+        from rectify.core.splice.splice_aware_5prime import _OI_COUNTERS, _writer_would_revert
+        before = _OI_COUNTERS.get('five_prime_noncanonical_shift_skipped', 0)
         r = rescue_3ss_truncation(read, genome, junction, strand='+')
         assert r['rescued'] is True
-        # shift=0 (in_amb) wins over shift=-2 (canonical GT, out-of-window)
-        assert r['five_prime_corrected'] == 13   # intron_start(14) - 1 = 13
-        assert r['rescued_junction'] == ('chrP', 14, 116)
+        # invariant D: the NN placement at 14 is one the writer reverts — never emitted;
+        # the canonical GT at 12 (sequence-equivalent on the GT repeat) is drawn instead.
+        assert _writer_would_revert(genome['chrP'], 14, 116)
+        assert not _writer_would_revert(genome['chrP'], 12, 116)
+        assert _OI_COUNTERS.get('five_prime_noncanonical_shift_skipped', 0) > before
+        assert r['five_prime_corrected'] == 11   # intron_start(12) - 1 = 11
+        assert r['rescued_junction'] == ('chrP', 12, 116)
+        assert r['landing_annotated'] is True
 
     def test_plus_canonical_wins_when_both_in_amb(self):
         """

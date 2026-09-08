@@ -24,7 +24,7 @@ def run_pool_gate(args: argparse.Namespace) -> int:
     from rectify.core.consensus.station_c import (
         PoolGateConfig, derive_pool_gate_max_intron,
         find_bundled_background_sv_bed,
-        find_bundled_selfhom_bed, pool_gate,
+        find_bundled_selfhom_bed, load_junction_list, pool_gate,
         write_pool_gate_outputs,
     )
 
@@ -65,9 +65,16 @@ def run_pool_gate(args: argparse.Namespace) -> int:
         adj_indel_max_ops=args.adj_indel_max_ops,
         adj_indel_max_bp=args.adj_indel_max_bp,
     )
+    listed = None
+    if getattr(args, 'attribute', None):
+        listed = load_junction_list(Path(args.attribute))
+        if not listed:
+            print(f"ERROR: --attribute {args.attribute}: no (chrom, start, end) "
+                  f"junctions could be read from it.", file=sys.stderr)
+            return 1
     rows, summary = pool_gate(
         args.input, genome, Path(args.annotation), cfg=cfg, selfhom_bed=selfhom,
-        background_sv_bed=background_sv,
+        background_sv_bed=background_sv, attribute=listed,
     )
     tsv, js = write_pool_gate_outputs(rows, summary, Path(args.output))
 
@@ -77,6 +84,37 @@ def run_pool_gate(args: argparse.Namespace) -> int:
           f"admit_candidate={v.get('admit_candidate', 0)} "
           f"review={v.get('review', 0)} "
           f"demote_orthogonal_evidence={v.get('demote_orthogonal_evidence', 0)}")
+    # ISSUE-016: the census ledger — every N-op is accounted for somewhere.
+    c = summary.get('census') or {}
+    if c:
+        reasons = ', '.join(f'{k} {n}' for k, n in (c.get('refusal_reasons') or {}).items())
+        skipped = ', '.join(f'{k} {n}' for k, n in (c.get('reads_skipped') or {}).items())
+        print(f"  census: {c.get('n_ops_seen', 0)} N-ops seen in {c.get('n_reads', 0)} "
+              f"reads — {c.get('n_ops_censused', 0)} censused, "
+              f"{c.get('n_ops_refused', 0)} refused at the anchor gate"
+              + (f" ({reasons})" if reasons else "")
+              + (f"; reads skipped: {skipped}" if skipped else ""))
+        # The writer replaces the row lists with file paths in the JSON it
+        # writes (the in-memory summary keeps the rows); read the paths back.
+        try:
+            import json as _json
+            with open(js) as _fh:
+                tables = _json.load(_fh).get('tables') or {}
+        except (OSError, ValueError):
+            tables = {}
+        print(f"  annotated junctions ({summary['n_annotated']}, censused but not "
+              f"in the table — 2F/2H create mostly these): "
+              f"{tables.get('annotated') or '(none)'}")
+        print(f"  refused N-ops by raw junction ({c.get('n_refused_junctions', 0)}, "
+              f"{c.get('n_refused_junctions_censused_elsewhere', 0)} of them still "
+              f"censused through other reads): {tables.get('census_refusals') or '(none)'}")
+        if listed is not None:
+            att = c.get('attribution') or {}
+            print(f"  attribution of {len(listed)} listed junctions: "
+                  + ', '.join(f'{k} {n}' for k, n in att.items())
+                  + f" -> {tables.get('attribution')}")
+            print("    (table keys are the LEFTMOST ambiguity-equivalent coordinates; "
+                  "start_raw/end_raw carry the N-op coordinates reads actually have)")
     if selfhom:
         print(f"  self-homology track: {selfhom}")
     else:
@@ -172,6 +210,20 @@ def create_pool_gate_parser(subparsers) -> argparse.ArgumentParser:
                    help='Multiplier on that quantile (default 2 — the same 2x '
                         'margin multi_aligner.derive_max_intron applies to the '
                         'longest annotated intron)')
+    p.add_argument('--attribute', default=None, metavar='FILE',
+                   help='ISSUE-016: a junction list to attribute against the '
+                        'census — a created-junction JSON ([chrom,start,end] / '
+                        '{chrom,start,end} / "chrom:start-end" items), a headed '
+                        'TSV with chrom/start/end, an fpfn_events.tsv (chrom + '
+                        'new_junction), or a BED-like file; RAW N-op '
+                        'coordinates, 0-based half-open. Writes '
+                        '<prefix>.attribution.tsv with one status per junction: '
+                        'reported (in the table, with its verdict), annotated '
+                        '(censused; listed in <prefix>.pool_gate.annotated.tsv), '
+                        'refused (anchor gate; reasons per side), '
+                        'annotated_not_seen, not_seen. The main table keys '
+                        'junctions at the LEFTMOST ambiguity-equivalent '
+                        'coordinate — match on start_raw/end_raw, or use this.')
 
     from rectify.data import add_organism_args
     add_organism_args(p)

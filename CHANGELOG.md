@@ -10,6 +10,241 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **STATION B — micro-exons the aligner orphaned as an insertion beside a
+  junction** (ISSUE-040; Kevin 2026-09-07; new `splice/microexon.py`, plus
+  `bam/{bam_processor,bam_writer,output,parallel}.py`,
+  `commands/correct_command.py`). A splice aligner cannot seed a 6- or 9-nt
+  internal exon — tested, `--junc-bed` at bonus 9 AND 30 gives minimap2 a
+  byte-identical CIGAR — so it parks the exon's bases as an insertion beside
+  the intron it did find. In one library 32 of 153 such insertions (21 %)
+  exactly contain an annotated exon of 30 nt or less from inside that same
+  intron. Station B enumerates those exons and accepts only an ordered set
+  that consumes the inserted bases EXACTLY, with every resulting intron a
+  legal PAIR (GT-AG / GC-AG / AT-AC in transcript orientation, never two
+  independently-checked ends) and no indel left beside any N. Where several
+  configurations are equally plausible one is drawn at random — seeded by the
+  read name, so the pick is arbitrary but reproducible — and the others are
+  kept: BAM tags `XB` (drawn) and `XV` (equally good, not drawn), TSV columns
+  `station_b_microexons`, `station_b_alternatives`, `station_b_n_tied`,
+  `station_b_applied`, `station_b_intron_start/end`. The search reads the
+  aligner's record before 2F and the draw happens in the writer after it, so a
+  micro-exon can never become a 5' landing that skipped the evidence floor.
+  `RECTIFY_STATION_B=apply` draws; the default `report` records only.
+
+- **Module 2F — STATION C: the population supplies the attachment tier**
+  (ISSUE-039; Kevin's rule from review card R007, 2026-09-07; `splice/
+  junction_scoring.py`, `splice/splice_aware_5prime.py`, `commands/
+  prescan_command.py`, `commands/correct_command.py`, `bam/{parallel,
+  bam_processor,output}.py`). The two-tier evidence floor already
+  distinguished creating a junction (18 bits) from attaching a read to one
+  that exists (12 bits), but only the ANNOTATION could grant the lower tier,
+  so a heavily used novel junction was treated as if every read landing on it
+  were inventing it. The prescan now records `site_support` per junction — the
+  reads of THIS LIBRARY crossing it with a clean 20-base anchor on both flanks,
+  taken as the max over aligner arms, never the sum — and a junction carried by
+  at least 3 such reads is `established`. Counts are not the evidence: each
+  supporting read individually meets the read-level standard, and attaching a
+  read to an existing site fabricates nothing. Cross-library recurrence never
+  enters. New TSV columns `five_prime_site_support` and
+  `five_prime_landing_established`; `RECTIFY_2F_STATION_C=attach` opts the tier
+  flip in, and the default `report` mode emits the columns while changing
+  nothing that gets drawn.
+
+- **Module 2F — a most-parsimonious ORIGIN for every 5' clip that draws no
+  junction** (ISSUE-034; step 2 of Kevin's plan, 2026-09-07; `splice/
+  splice_aware_5prime.py`, `splice/junction_scoring.py`, `bam/output.py`,
+  `bam/bam_writer.py`). Attribution is not creation: a clip that fails the
+  creation floor is scored three ways with the same E bits — continuing into
+  the intron at the read's own 5' edge (unspliced / retained-intron /
+  degraded), the best vetted exon overhang 2F already judged, and a capped
+  log2 prior from the prescan's unspliced-vs-spliced counts at the annotated
+  intron (`build_junction_pool(..., return_signal=True)`; a read whose aligned
+  block runs through an annotated intron edge with >= 10 bases on both sides
+  is unspliced signal). The winner needs a 3-bit lead, else `ambiguous`; a
+  clip under the informative floor is `none`. Emitted as TSV columns
+  `five_prime_clip_origin` / `_bits` / `_prior_bits` (appended last) and BAM
+  tag `XO:Z`; never an N-op — station C decides sites, this decides counts.
+
+### Fixed
+
+- **Module 2F — the annotated placement holds unless a shift wins by a margin;
+  the gap bound scales with the block** (`splice/splice_aware_5prime.py`; T1 of
+  the two-tier sha, 2026-09-07). Seven baseline-true annotated rescues had
+  re-landed on a novel site 2–5 nt away because the per-candidate shift sweep
+  ranks on the anchored deficit and the shift won by a hair (7f779873:
+  annotated 24.5 bits vs a −3 GC donor at 26.0). When the sweep's winner is not
+  the unslid coordinate of an annotated candidate, the two placements are
+  compared in E bits and the annotated one holds unless the shift beats it by
+  `ANNOTATED_SHIFT_MARGIN` = 6 bits (three clean bases; env
+  `RECTIFY_2F_ANNOTATED_SHIFT_MARGIN`; counter
+  `five_prime_annotated_shift_held`). The flat gap cap had refused 320 true
+  rescues on T1, 306 of them at ≥ 18 bits; the cap is now
+  `max(E_MAX_GAP, matched // E_GAP_PER_MATCHED)` (4, 5; env
+  `RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED`), so a 6-base deletion in a 45-match
+  block passes and the same gap in a 24-match block does not. And a terminal
+  peel that borrows body bases now REPORTS the junction it draws: the writer
+  absorbs the peeled bases by lengthening the N on the acceptor side, so the
+  reported acceptor shifts by the peel depth, is re-checked for a canonical
+  motif and re-judged at the tier of its own provenance (bcd90cad: the TSV
+  named the annotated acceptor while the record's N ended 4 nt past it; now
+  refused, TSV == BAM).
+- **Module 2F two-tier evidence floor — attaching a read to an annotated
+  junction is not creating a junction** (`splice/splice_aware_5prime.py`,
+  `bam/bam_writer.py`; Kevin's ruling on the read-review queue, 2026-09-07).
+  A NOVEL landing keeps the 18-bit creation floor; an ANNOTATED landing is
+  judged at `E_BITS_ANNOTATED` = 12 bits (a wrong attachment miscounts one read
+  at an existing site, it fabricates nothing; env
+  `RECTIFY_2F_EVIDENCE_BITS_ANNOTATED`). Identity and the leading-I/D strip
+  apply to both tiers. Case 3 (proximity) now DRAWS the clip's anchored block
+  at the annotated donor when it passes the attachment tier, with the sequence
+  loop's exon-2 prefix bookkeeping and invariant C, instead of naming the
+  intron without placing the clip. On the Sumner chrX T0 the 18-bit floor had
+  removed 110 rescues the tester scored true (57 at 14–18 bits, identity
+  ≥ 0.9); the tier returns most of them and neither reviewed wrong control.
+  Landed with it: (a) the ROOT CAUSE of ISSUE-030 — the terminal peel judged
+  clip + peeled body bases but only the clip length reached the writer, so
+  every peel rescue arrived with a span mismatch the flat-M fallback hid; the
+  peel depth now rides on `five_prime_upstream_trim`, and a peel on a read
+  that starts inside exon 2 is discarded (it relabels body bases and forces a
+  D against the N); (b) the writer's acceptor repair (a body-side D glued to
+  the N) is disabled under the no-indel-next-to-an-N rule
+  (`RECTIFY_2F_ACCEPTOR_REPAIR=1` restores it for comparison); (c) a
+  PROVISIONAL bound `E_MAX_GAP` = 4 — no single I/D in a placed block above 4
+  bases (`exon_gap_above_max`; env `RECTIFY_2F_EVIDENCE_MAX_GAP`) — because the
+  bits model prices a 6-base deletion inside 21 placed bases at 4.5 bits and
+  such a block is a misplacement, not ONT error; the error-table gap costs of
+  iteration 4 replace it.
+- **Module 2F invariant E — the placed 5' block must be evidence for EVERY
+  landing (ISSUE-028)** (`align/local_aligner.py`, `splice/splice_aware_5prime.py`,
+  `bam/bam_processor.py`, `bam/output.py`). Two unchanged controls of the Sumner
+  T0 review gained rescues onto ANNOTATED junctions with placed blocks of 28 %
+  and 42 % identity (an annotated landing bypassed the novel-site verdict; the
+  indel-burden bound ignores mismatches), and two baseline exon CIGARs STARTED
+  with an insertion (`8I6M`). Now every placed block, annotated or novel, in
+  both gate modes, must carry identity >= 0.8 and an evidence score >= 18 bits
+  (a match = 2 bits, mismatch / affine gap at the anchored aligner's constants
+  over 2, homopolymer-run errors half); a leading I/D is stripped and emitted
+  as S. The bits cutoff is derived from the chance-match model (shuffled real
+  clips through the production aligner: 18 bits = the ~3 % per-read family-wise
+  rate of the clean-run rule it replaces; 22 bits ~1 %), overridable with
+  `RECTIFY_2F_EVIDENCE_BITS` / `RECTIFY_2F_EVIDENCE_IDENTITY`. Refusal tokens
+  `exon_identity_below_floor` / `exon_bits_below_floor`; two new trailing TSV
+  columns `five_prime_exon_identity` and `five_prime_exon_bits`. The Case-4
+  snap's re-placed block is judged when the aligner placed >= 10 query bases
+  BEFORE the leading-indel strip (a `5I6M` -> `5S6M` block is 11 placed bases,
+  12 bits: refused). True-positive cost, reported not loosened: the bundled
+  yeast validation read cat3_plus_1 (10-nt clip, one homopolymer over-call,
+  `4M1I5M`, identity 1.00, 15.5 bits) is no longer rescued — the four
+  `TestCategory3JunctionRescue[cat3_plus_1]` tests fail pending Kevin's ruling
+  on the floor (the full list is `LOST_TP_AT_18` in
+  `dev/todo_run_20260905/INVARIANT_E_LOG.md`).
+
+- **Module 2F ranks 5' rescue candidates with the anchored placement model
+  (ISSUE-020)** (`splice/splice_aware_5prime.py`, `align/local_aligner.py`,
+  `bam/processing_stats.py`). The rescue RANKED candidates with an unanchored
+  sweep — the 5' segment compared by homopolymer-aware edit distance to a
+  genome window slid up to `junction_proximity_bp` (10) bases away from the
+  junction, an unpenalized junction-side gap — and then PLACED the winner with
+  the anchored affine aligner (`align_clip_to_exon`, junction end fixed). The
+  GTRAGT +5 GT decoy 4 nt into the intron won the ranking through that gap
+  freedom (the six residual "+4 by evidence" reads only at offsets 2/10/7/3/3;
+  at offset 0 the annotated window was better on all six) and the placement
+  then spent a `4D` at the junction. Now every candidate is scored, at its own
+  coordinate and at the best few nearby shifts, with the SAME Gotoh affine DP
+  the placement runs (`score_right_anchored` / `score_left_anchored`, same
+  constants, same reference window); the lowest deficit (`2*len - score`)
+  wins, the annotated-first and geometry tie-breakers follow it, and hp-ED
+  survives only as the shift prune. The compared segment always ends at the
+  junction: a 5' end inside the intron compares the soft clip PLUS the
+  intron-mapped bases (the string the placement aligns — the old clip-only
+  segment ended 1–3 bases short and the slide was compensating for it), and an
+  alignment that starts past the acceptor trims the bases over those exon-2
+  positions from the READ, never slides the genome; and a shift that would
+  collapse the intron to zero or negative length is no longer tried (the
+  anchored rank otherwise finds the read's own unspliced placement there).
+  Consistency invariant — the ranking score of
+  the chosen candidate is the score of the emitted placement and no scored
+  candidate did better — asserted by `tests/test_2f_anchored_ranking.py` and,
+  in debug mode `RECTIFY_2F_CHECK_CONSISTENCY=1`, inside the code. New result
+  keys `anchored_deficit` / `reranked_between_annotated`; new per-process
+  counters `five_prime_anchored_dps`, `exon2_trim_consumed_clip` and
+  `five_prime_reranked_between_annotated` (the anchored rank picked a
+  different annotated candidate than hp-ED would have; printed in the
+  `correct` stats block when nonzero). On the tester's 10-read bundle every
+  read lands on the annotated junction with no junction-side gap
+  (`novel_exon_gap_at_junction` stays as instrumentation and is 0 there);
+  the three within-1-nt reads the writer used to walk onto the decoy with a
+  compensating `3D` (ISSUE-023) now arrive annotated, so the repair has
+  nothing to move.
+- **Module 2F: the off-by-4 decoy placement (ISSUE-017) and candidate order
+  (ISSUE-019)** (`splice/splice_aware_5prime.py`). On the Sumner human cohort
+  106/160 near-annotated novel junctions sat exactly 4 nt into the intron, on
+  the GTRAGT +5 GT. Mechanism, confirmed by replaying the reads: when the
+  alignment started inside the intron the rescue compared only the FIRST 1–2
+  bases of the soft clip (`rescue_seq[:_n_intr]` took the 5'-most bases, not
+  the intron-mapped ones), a 1–2-mer found edit distance 0 somewhere in the
+  shift × offset sweep, and the nearest canonical donor won. Now the whole
+  clip plus the intron-mapped bases are compared (both strands), a truncated
+  comparison below the informative floor is not a sequence search (the
+  structural Case-4 snap decides), an equal-edit-distance tie across
+  candidates goes to the ANNOTATED candidate before any geometry tiebreaker,
+  and every candidate collection is iterated in a documented order (annotated
+  first, then coordinate; Case 4 by snap distance) so no outcome depends on
+  set order (PYTHONHASHSEED-invariant, tested). Replayed reads flip from the
+  decoy to the annotated junction at the clip's own edit distance.
+  Follow-up (ISSUE-023b): when the 5' end sits inside the rescued intron the
+  equivalence extension no longer borrows the overshoot base(s) a second
+  time — the exon CIGAR consumed clip + 2·overshoot query bases, so the BAM
+  writer's `extend` fell back to a flat M block and the evidence ops never
+  reached the BAM. The exon CIGAR now consumes exactly the intron-mapped
+  run the writer converts (tested on the Sumner replay bundle).
+- **Module 2F: provenance-aware evidence gate for novel landing sites
+  (ISSUE-017)** (`splice/splice_aware_5prime.py`, `bam/bam_processor.py`).
+  On the 16-library Sumner cohort 83 % of RECTIFY's false junctions were 2F
+  rescues that placed 1–8 matched bases across a NEW intron onto an
+  unannotated pool candidate (exon CIGARs `4M`, `2M5D1M`, `2M8I2M2I1M1D1M`);
+  the ISSUE-006 floor covered only the soft-clip path, and the correct
+  annotated rescues share the same 5' shape. `rescue_3ss_truncation` now takes
+  `annotated_junctions=`: a rescue (sequence, terminal peel, or Case-4
+  intronic snap) onto an ANNOTATED junction keeps its historical acceptance;
+  onto any other candidate the placed segment is judged: >= 10 matched bases,
+  no gap at the junction-side end, a bounded indel burden, and an exon CIGAR
+  at all. What the verdict does is a mode — `rectify correct --2f-novel-gate
+  {report,refuse}` / `RECTIFY_2F_NOVEL_GATE`. **`report` (default)** draws the
+  rescue and records the verdict; `refuse` refuses only the sequence/snap
+  rescue (the structural paths stay live) and puts the token in
+  `five_prime_rescue_refused`. Two new trailing `corrected_reads.tsv` columns
+  make provenance an offline join: `five_prime_landing_annotated` (1 / 0 / ''
+  when not rescued) and `five_prime_novel_evidence` (`pass`,
+  `novel_exon_matched_below_floor`, `novel_exon_gap_at_junction`,
+  `novel_exon_indel_burden`, `novel_exon_no_cigar`; '' on an annotated site).
+  The shape verdict was measured NON-selective on recurrence and on Snaptron
+  support (tester R2a), which is why it reports rather than refuses by
+  default. A caller without an annotation (`annotated_junctions=None`) keeps
+  the legacy behavior: nothing is novel. The corrected-TSV header grows
+  44 -> 46 columns; `correct` refuses to resume a pre-existing checkpoint
+  (delete the checkpoint directory).
+- **Station C's census now accounts for every N-op (ISSUE-016)**
+  (`consensus/station_c.py`, `rectify pool-gate`). On real corrected output
+  87 % of the junctions RECTIFY created read as ABSENT from
+  `<prefix>.pool_gate.tsv` at every anchor-walk budget and support gate. Neither
+  knob was binding: the table lists non-annotated junctions only (2F/2H create
+  mostly annotated ones — that is their job), and it keys each junction at the
+  leftmost ambiguity-equivalent coordinate while the BAM's N-op sits at the
+  motif coordinate. Now: `<prefix>.pool_gate.annotated.tsv` lists the censused
+  annotated junctions; `<prefix>.census_refusals.tsv` lists every N-op refused
+  at the anchor gate by raw coordinate with the walk's stop reason per side
+  (`L=indel_ops`, `R=softclip`, `read_end`, `n_op`, `indel_bp`, …); the main
+  table gains `start_raw` / `end_raw` / `n_raw_variants`; the JSON gains a
+  `census` block (N-ops seen / censused / refused, reasons, reads skipped);
+  and `--attribute FILE` scores a supplied junction list (created-junction
+  JSON, `fpfn_events.tsv`, headed TSV or BED) as reported / annotated /
+  refused / annotated_not_seen / not_seen in `<prefix>.attribution.tsv`. On
+  the 100-read Sumner panel: 10 created junctions, 0 in the table before, 9
+  annotated + 1 annotated_not_seen after, none refused.
+
+### Added
+
 - **`rectify prescan --complexity-alpha` — structural pool-admission gate,
   ON BY DEFAULT at `0.01`** (`prescan_command.py`,
   `splice/overhang_informativeness.py`). A novel junction is admitted to the

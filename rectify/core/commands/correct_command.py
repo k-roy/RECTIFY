@@ -784,6 +784,11 @@ def run(args):
 
     # Capture stage start time for provenance sidecar (must be before any work).
     _stage_started_at = datetime.now(timezone.utc).isoformat()
+    # ISSUE-017: the --2f-novel-gate flag mirrors into the environment so the
+    # spawned region workers (and every 2F entry point) read one answer.
+    if getattr(args, 'novel_gate_2f', None):
+        import os as _os_gate
+        _os_gate.environ['RECTIFY_2F_NOVEL_GATE'] = str(args.novel_gate_2f)
 
     # Determine thread count and set limits BEFORE numpy import
     n_threads = args.threads if args.threads > 0 else get_available_cpus()
@@ -999,6 +1004,12 @@ def run(args):
             logger.info(f"  Spike-in reads removed: {spikein_stats.get('spikein_reads', 0):,}")
             logger.info(f"[TIMING] Spike-in filter: {_time.perf_counter() - _t_spikein:.1f}s")
 
+        # The worker payload for everything installed by a module-level setter (ISSUE-034 clip-origin
+        # prior, ISSUE-039 site support, ISSUE-040 micro-exon index). Initialised HERE, at the outer
+        # scope, because the run may skip the 2H block entirely and the payload is still assembled
+        # below — the inner-scope initialiser raised UnboundLocalError on exactly that path.
+        _clip_signal = None
+
         # Module 2H: Junction N-op boundary refinement (optional pre-processing step).
         # When --aligner-bams are provided (or a --junction-pool-cache pkl), replace
         # imprecise N-op boundaries in the consensus BAM with the best-supported
@@ -1034,6 +1045,27 @@ def run(args):
 
                 _annot_j = _load_annot_j(str(config['annotation_path']))
 
+                # STATION B (ISSUE-040): annotated exons <= 30 nt, indexed per contig. Same file,
+                # same pass cost as the junction load; GENCODE basic holds only ~5,870 of them.
+                from ..splice.microexon import (
+                    load_microexons as _load_mx, set_microexon_index as _set_mx,
+                    station_b_mode as _sb_mode, set_species as _set_species, max_3ss_tier as _mx_tier,
+                )
+                # The 3'SS tier ceiling is a SPECIES knob, not a constant: yeast reaches NBG/NAT,
+                # human stops at RAG (Kevin 2026-09-08). One pipeline, knobs set from --organism.
+                _set_species(config.get('organism'))
+                try:
+                    _mx_index = _load_mx(str(config['annotation_path']))
+                except Exception as _mxe:
+                    logger.warning("  Station B: micro-exon index unavailable (%s); station B inert", _mxe)
+                    _mx_index = {}
+                _set_mx(_mx_index)
+                _mx_contigs = [k for k in _mx_index if k != '__transcripts__']
+                logger.info("  Station B: %d annotated micro-exons <= 30 nt over %d contigs; "
+                            "mode = %s; organism = %s, 3'SS tier ceiling = %d",
+                            sum(len(_mx_index[k]) for k in _mx_contigs), len(_mx_contigs),
+                            _sb_mode(), config.get('organism') or 'unset', _mx_tier())
+
                 # Load pre-built junction pool from cache if available.
                 _prebuilt_pool = None
                 _prebuilt_annot_set = None
@@ -1059,6 +1091,41 @@ def run(args):
                     else:
                         _prebuilt_pool = _pool_data['all_junctions']
                         _prebuilt_annot_set = _pool_data['annotated_set']
+                        # ISSUE-034: a pool written by a prescan that carried the clip-origin prior.
+                        from ..splice.splice_aware_5prime import set_clip_origin_signal
+                        _clip_signal = _pool_data.get('clip_signal')
+                        set_clip_origin_signal(_clip_signal)
+                        if _pool_data.get('clip_signal'):
+                            logger.info("  Clip-origin prior loaded from the pool cache (%d annotated introns with unspliced signal)",
+                                        sum(1 for _v in _pool_data['clip_signal'].get('unspliced', {}).values() if _v))
+                        else:
+                            logger.info("  Pool cache carries no clip-origin prior (pre-ISSUE-034 prescan): prior = 0")
+                        # ISSUE-039 station C: the population's per-junction support. Additive key —
+                        # an older cache leaves it empty and station C simply knows nothing.
+                        from ..splice.splice_aware_5prime import set_site_support, station_c_mode
+                        from ..splice.junction_scoring import SITE_ESTABLISHED_MIN_READS
+                        _site_support = _pool_data.get('site_support') or {}
+                        set_site_support(_site_support)
+                        # Ride the clip_signal payload to the region workers (parallel.py installs
+                        # both from it), so the plumbing stays one parameter wide.
+                        # ISSUE-044: the junction-proximal mismatch block, same rails.
+                        from ..splice.splice_aware_5prime import set_junction_mismatch
+                        _jmm = _pool_data.get('junction_mismatch') or {}
+                        set_junction_mismatch(_jmm)
+                        if _jmm:
+                            logger.info("  Junction mismatch enrichment loaded: %d junctions measured",
+                                        len(_jmm))
+                        _clip_signal = dict(_clip_signal or {})
+                        _clip_signal['site_support'] = _site_support
+                        _clip_signal['junction_mismatch'] = _jmm
+                        if _site_support:
+                            logger.info("  Site support loaded from the pool cache: %d junctions, %d established "
+                                        "(>= %d clean-anchor reads); station C mode = %s",
+                                        len(_site_support),
+                                        sum(1 for _v in _site_support.values() if _v >= SITE_ESTABLISHED_MIN_READS),
+                                        SITE_ESTABLISHED_MIN_READS, station_c_mode())
+                        else:
+                            logger.info("  Pool cache carries no site support (pre-ISSUE-039 prescan): station C inert")
                         logger.info(
                             "  Pre-built pool: %d junctions (%d annotated)",
                             len(_prebuilt_pool), len(_prebuilt_annot_set),
@@ -1067,12 +1134,22 @@ def run(args):
                 if _prebuilt_pool is None and config.get('aligner_bams'):
                     _warn_self_pool(config, logger)
                     _min_support = int(config.get('junction_min_observed_support') or 1)
-                    _prebuilt_pool, _prebuilt_annot_set = build_junction_pool(
+                    _prebuilt_pool, _prebuilt_annot_set, _clip_signal = build_junction_pool(
                         config['aligner_bams'],
                         _annot_j,
                         min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
+                        return_signal=True,
                     )
+                    # ISSUE-034: the unspliced/spliced prior for the 5' clip-origin call.
+                    from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
+                    set_clip_origin_signal(_clip_signal)
+                    # ISSUE-039 station C / ISSUE-044 mismatch enrichment: same build, same element.
+                    set_site_support((_clip_signal or {}).get('site_support'))
+                    from ..splice.splice_aware_5prime import set_junction_mismatch
+                    set_junction_mismatch((_clip_signal or {}).get('junction_mismatch'))
+                    logger.info("  Clip-origin prior: unspliced signal at %d annotated introns",
+                                sum(1 for _v in _clip_signal['unspliced'].values() if _v))
                     logger.info(
                         "  Built junction pool: %d junctions (%d annotated, "
                         "%d observed with support >= %d)",
@@ -1307,6 +1384,17 @@ def run(args):
                 logger.warning("Could not build exclusion detector (proceeding without): %s", _e)
                 _exclusion_detector = None
 
+        # Spawned region workers do not inherit module globals, so everything installed above by a
+        # setter has to ride a payload. `clip_signal` is that channel (parallel.py unpacks it):
+        # ISSUE-034's prior, ISSUE-039's site support, ISSUE-040's micro-exon index.
+        try:
+            from ..splice.microexon import microexon_index as _mx_now
+            if _mx_now():
+                _clip_signal = dict(_clip_signal or {})
+                _clip_signal['microexon_index'] = _mx_now()
+        except Exception as _e:
+            logger.debug("could not attach the micro-exon index to the worker payload: %s", _e)
+
         if streaming_mode:
             if n_threads > 1:
                 # Parallel streaming: region workers + stream output to disk
@@ -1334,6 +1422,7 @@ def run(args):
                     variant_aware=config['variant_aware'],
                     variant_output_path=variant_output_path,
                     annotated_junctions=annotated_junctions,
+                    clip_signal=_clip_signal,
                     pool_chrom_index=_pool_chrom_index,
                     apply_3ss_rescue=config['apply_3ss_rescue'],
                     gene_interval_trees=gene_interval_trees,
@@ -1404,6 +1493,7 @@ def run(args):
                 variant_aware=config['variant_aware'],
                 variant_output_path=variant_output_path,
                 annotated_junctions=annotated_junctions,
+                clip_signal=_clip_signal,
                 pool_chrom_index=_pool_chrom_index,
                 apply_3ss_rescue=config['apply_3ss_rescue'],
                 gene_interval_trees=gene_interval_trees,
@@ -2469,6 +2559,22 @@ def create_correct_parser(subparsers):
              'be moved onto. Annotated junctions are never subject to this. '
              'Raise to 2 to require corroboration (this is `rectify prescan`\'s '
              '--junction-min-support for the inline pool).'
+    )
+    junc_group.add_argument(
+        '--2f-novel-gate',
+        dest='novel_gate_2f',
+        choices=['report', 'refuse'],
+        default=None,
+        help='Module 2F novel-site evidence gate (ISSUE-017). A 5\' rescue onto '
+             'an UNANNOTATED candidate (pool junction, the read\'s own N-op) is '
+             'judged on the placed exon segment: >= 10 matched bases, no gap at '
+             'the junction-side end, bounded indel burden, a CIGAR at all. '
+             '"report" (default) draws the rescue and records the verdict in '
+             'five_prime_novel_evidence (pass or the token); "refuse" refuses '
+             'the sequence/snap rescue and also puts the token in '
+             'five_prime_rescue_refused. Annotated landing sites are never '
+             'gated; five_prime_landing_annotated (0/1) is emitted for every '
+             'rescue. Mirrors RECTIFY_2F_NOVEL_GATE.'
     )
     junc_group.add_argument(
         '--junction-max-candidates-per-nop',

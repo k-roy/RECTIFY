@@ -486,7 +486,18 @@ class TestRefusalIsReportedNotSwallowed:
         from rectify.core.bam.output import (
             CORRECTION_TSV_HEADER, correction_result_to_tsv_row,
         )
-        assert CORRECTION_TSV_HEADER[-1] == 'five_prime_rescue_refused'
+        # ISSUE-017 (2026-09-05) appended the two provenance/evidence columns
+        # after it, ISSUE-026 invariant D the exon-2 prefix after those, ISSUE-028
+        # invariant E the two block-shape columns after that; every earlier
+        # column keeps its absolute index.
+        assert CORRECTION_TSV_HEADER[-17:] == [
+            'five_prime_rescue_refused', 'five_prime_landing_annotated',
+            'five_prime_novel_evidence', 'five_prime_exon2_prefix',
+            'five_prime_exon_identity', 'five_prime_exon_bits',
+            'five_prime_clip_origin', 'five_prime_clip_origin_bits', 'five_prime_clip_prior_bits',
+            'five_prime_site_support', 'five_prime_landing_established',
+            'station_b_microexons', 'station_b_alternatives', 'station_b_n_tied',
+            'station_b_applied', 'station_b_intron_start', 'station_b_intron_end']
         row = correction_result_to_tsv_row({
             'read_id': 'r', 'chrom': 'chrR', 'strand': '+',
             'original_3prime': 1, 'corrected_3prime': 1,
@@ -495,7 +506,10 @@ class TestRefusalIsReportedNotSwallowed:
             'five_prime_rescue_refused': REFUSAL_REROUTE,
         })
         assert len(row) == len(CORRECTION_TSV_HEADER)
-        assert row[-1] == REFUSAL_REROUTE
+        assert row[-17] == REFUSAL_REROUTE
+        # + the ISSUE-034 clip-origin cells, the ISSUE-039 station-C cells and the ISSUE-040
+        # station-B cells (applied is a 0/1 flag, so it is '0' rather than '')
+        assert row[-16:] == ['', '', '0', '', '', '', '', '', '', '', '', '', '', '0', '', '']
 
     def test_all_three_writers_share_one_implementation(self):
         """write_corrected_bam / write_softclipped_bam / write_dual_bam used to

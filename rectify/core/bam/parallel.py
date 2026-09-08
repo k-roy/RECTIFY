@@ -106,6 +106,20 @@ def _init_region_worker_state(
     genome = load_genome(genome_path)
     polya_model = load_polya_model(Path(polya_model_path) if polya_model_path else None)
     _REGION_WORKER_STATE = dict(shared_kwargs)
+    # ISSUE-034: spawned workers do not inherit the parent's module globals — install the
+    # clip-origin prior (unspliced/spliced counts per annotated intron) in this process. It is
+    # process state, not a per-region kwarg, so it does not travel into _process_region_worker.
+    from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
+    _signal = _REGION_WORKER_STATE.pop('clip_signal', None)
+    set_clip_origin_signal(_signal)
+    # ISSUE-039 station C and ISSUE-040 station B ride the same payload (correct_command folds
+    # them in) — a spawned worker inherits no module globals, and a silently missing signal is how
+    # 278982d shipped a parallel path that scored 0/17.
+    set_site_support((_signal or {}).get('site_support'))
+    from ..splice.microexon import set_microexon_index
+    set_microexon_index((_signal or {}).get('microexon_index'))
+    from ..splice.splice_aware_5prime import set_junction_mismatch
+    set_junction_mismatch((_signal or {}).get('junction_mismatch'))
     _REGION_WORKER_STATE['genome'] = genome
     _REGION_WORKER_STATE['polya_model'] = polya_model
 
@@ -714,6 +728,7 @@ def process_bam_file_parallel(
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
+    clip_signal: Optional[Dict] = None,       # ISSUE-034: the clip-origin prior for the workers
     pool_chrom_index: Optional[Dict] = None,
     apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
@@ -857,6 +872,7 @@ def process_bam_file_parallel(
         apply_indel_correction=apply_indel_correction,
         netseq_dir=netseq_dir,
         annotated_junctions=annotated_junctions,
+        clip_signal=clip_signal,
         pool_chrom_index=pool_chrom_index,
         apply_3ss_rescue=apply_3ss_rescue,
         gene_interval_trees=gene_interval_trees,
@@ -1155,6 +1171,7 @@ def process_bam_streaming_parallel(
     variant_aware: bool = False,
     variant_output_path: Optional[str] = None,
     annotated_junctions: Optional[set] = None,
+    clip_signal: Optional[Dict] = None,       # ISSUE-034: the clip-origin prior for the workers
     pool_chrom_index: Optional[Dict] = None,
     apply_3ss_rescue: bool = True,
     gene_interval_trees: Optional[Dict] = None,
@@ -1306,6 +1323,7 @@ def process_bam_streaming_parallel(
         apply_indel_correction=apply_indel_correction,
         netseq_dir=netseq_dir,
         annotated_junctions=annotated_junctions,
+        clip_signal=clip_signal,
         pool_chrom_index=pool_chrom_index,
         apply_3ss_rescue=apply_3ss_rescue,
         gene_interval_trees=gene_interval_trees,

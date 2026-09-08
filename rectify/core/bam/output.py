@@ -58,6 +58,64 @@ CORRECTION_TSV_HEADER = [
     # token keeps the decision auditable instead of silently dropping it.
     # Appended last (the codebase convention: newest column last, every existing column keeps its absolute index).
     'five_prime_rescue_refused',
+    # Provenance of the 5' rescue's landing site (2026-09-05, ISSUE-017):
+    # 1 = the rescued junction is in the annotation, 0 = a novel candidate
+    # (pool junction, the read's own N-op), '' = not rescued. Lets a rescue be
+    # partitioned by provenance OFFLINE from the TSV — re-deriving it from
+    # coordinates is the leftmost-vs-motif trap that produced ISSUE-016.
+    'five_prime_landing_annotated',
+    # The novel-site evidence verdict for THIS rescue's placed segment
+    # (splice_aware_5prime.NOVEL_EXON_REFUSALS), '' = passed or annotated site.
+    # In RECTIFY_2F_NOVEL_GATE=report mode the rescue is still drawn and the
+    # token here says what refuse mode would have done; in refuse mode the
+    # same token also appears in five_prime_rescue_refused.
+    'five_prime_novel_evidence',
+    # ISSUE-026 invariant D (2026-09-05): junction-side 5' soft-clip bases that
+    # lie over exon-2 positions (the alignment starts that many bases into exon
+    # 2). The writer draws them as M between the N-op and the body, so the N-op
+    # ends at the reported acceptor instead of the read's live edge. 0 = none.
+    'five_prime_exon2_prefix',
+    # ISSUE-028 invariant E (2026-09-06): the placed 5' block's shape, so every
+    # threshold question is an offline join on the TSV (RULING 1 R4-3).
+    # five_prime_exon_identity = matched / (matched + mismatches) over the
+    # block, 2 decimals, a mismatch inside a genome homopolymer run >= 5
+    # counting half; five_prime_exon_bits = the block's evidence score in bits
+    # (a match +2, a mismatch / affine gap at the anchored aligner's constants
+    # over 2, homopolymer-run errors half; local_aligner.evidence_shape), 1
+    # decimal. Filled for every read whose 5' block was placed and judged —
+    # drawn OR refused (the refusal token sits in five_prime_rescue_refused /
+    # five_prime_novel_evidence); '' when no block was placed. Appended last.
+    'five_prime_exon_identity',
+    'five_prime_exon_bits',
+    # ISSUE-034 (2026-09-07): the most-parsimonious ORIGIN of a 5' clip that drew no junction —
+    # 'intron' (continues into the intron: unspliced / retained / degraded), 'exon:<chrom>:<donor>'
+    # (the vetted overhang 2F judged, below the creation floor), 'ambiguous', 'none' (clip below the
+    # informative floor); '' when a junction WAS drawn. bits = the winning side's score; prior = the
+    # capped log2 unspliced/spliced prior from the prescan. Quantitation only; never a junction.
+    'five_prime_clip_origin',
+    'five_prime_clip_origin_bits',
+    'five_prime_clip_prior_bits',
+    # ISSUE-039 station C (2026-09-07): the POPULATION's evidence for the junction this rescue
+    # landed on — reads of this library crossing it with a clean 20-base anchor on both flanks
+    # (max over aligner arms), and whether that reaches the established floor. Emitted in report
+    # mode too, where nothing drawn changes, so the ON/OFF arms can be diffed on these columns.
+    # '' when no rescue was drawn, and 0 when the prescan cache predates the signal.
+    'five_prime_site_support',
+    'five_prime_landing_established',
+    # ISSUE-040 station B (2026-09-07): annotated micro-exons (<= 30 nt) that consume an insertion of
+    # >= 3 nt sitting beside an N-op EXACTLY and in order — the class a splice aligner structurally
+    # cannot seed. 'chrom:start-end' per segment, comma-joined in genomic order; '' when the read has
+    # no such insertion or no split explains it. REPORT ONLY: the CIGAR is not rewritten in this mode.
+    'station_b_microexons',
+    # The equally good configurations station B did NOT draw (';'-separated), how many were TIED for
+    # best (> 1 means the drawn one was picked at random, seeded by the read name — Kevin 2026-09-07),
+    # whether it was actually drawn into the BAM, and the intron the segments partition. In report
+    # mode `station_b_applied` is 0 and the CIGAR is untouched.
+    'station_b_alternatives',
+    'station_b_n_tied',
+    'station_b_applied',
+    'station_b_intron_start',
+    'station_b_intron_end',
 ]
 
 
@@ -178,7 +236,33 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         _consensus_cell(result, 'consensus_n_agree'),
         _consensus_cell(result, 'consensus_tied'),
         result.get('five_prime_rescue_refused', '') or '',
+        _consensus_cell(result, 'five_prime_landing_annotated'),
+        result.get('five_prime_novel_evidence', '') or '',
+        str(result.get('five_prime_exon2_prefix', 0) or 0),
+        _shape_cell(result.get('five_prime_exon_identity'), '{:.2f}'),
+        _shape_cell(result.get('five_prime_exon_bits'), '{:.1f}'),
+        result.get('five_prime_clip_origin', '') or '',
+        _shape_cell(result.get('five_prime_clip_origin_bits'), '{:.1f}'),
+        _shape_cell(result.get('five_prime_clip_prior_bits'), '{:.1f}'),
+        _consensus_cell(result, 'five_prime_site_support'),
+        _consensus_cell(result, 'five_prime_landing_established'),
+        result.get('station_b_microexons', '') or '',
+        result.get('station_b_alternatives', '') or '',
+        _consensus_cell(result, 'station_b_n_tied'),
+        str(result.get('station_b_applied', 0) or 0),
+        _consensus_cell(result, 'station_b_intron_start'),
+        _consensus_cell(result, 'station_b_intron_end'),
     ]
+
+
+def _shape_cell(value, fmt: str) -> str:
+    """One invariant-E shape cell — ``''`` when no block was placed (None)."""
+    if value is None or value == '':
+        return ''
+    try:
+        return fmt.format(float(value))
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def write_output_tsv(results: List[Dict], output_path: str):

@@ -933,7 +933,7 @@ def softclip_intronic_tail_5prime(
             op, length = cigar[-1]
             if op in _REF_CONSUMING:
                 trim = min(length, excess_ref)
-                if op == 3 and trim < length:
+                if op == 3:
                     # ISSUE-007, second call site: clip_boundary falls INSIDE a
                     # junction the aligner already called, and soft-clipping to
                     # it would SHORTEN that junction — the read would silently
@@ -943,6 +943,15 @@ def softclip_intronic_tail_5prime(
                     # not see because both edges are still CT-AC. Refuse; the
                     # caller leaves the read unmodified, which is correct — no
                     # 5' surgery is defensible when it costs a real junction.
+                    #
+                    # ISSUE-026 invariant B (2026-09-05): the same holds when the
+                    # N-op lies WHOLLY inside the tail (trim == length) — a 5'
+                    # rescue may never remove an aligner-called N-op. T0 chrX
+                    # 771560c4: the candidate 15827372-15845378 contained the
+                    # read's own 15827374-15831447 and its terminal exon; the
+                    # writer re-placed the whole run and the aligner's junction
+                    # vanished. An N that ends exactly at clip_boundary never
+                    # reaches here (the loop breaks on cur_end <= clip_boundary).
                     return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
@@ -1005,9 +1014,10 @@ def softclip_intronic_tail_5prime(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
-                if op == 3 and trim < length:
+                if op == 3:
                     # Mirror of the minus-strand guard above (ISSUE-007): never
-                    # shorten a junction the aligner already called.
+                    # shorten a junction the aligner already called — and
+                    # (ISSUE-026 invariant B) never remove one whole either.
                     return False
                 if op in _QUERY_CONSUMING:
                     soft_clip_bases += trim
@@ -1141,7 +1151,7 @@ def reroute_intronic_tail_5prime_via_junction(
             excess = cur_end - clip_boundary
             if op in _REF_CONSUMING:
                 trim = min(length, excess)
-                if op == 3 and trim < length:
+                if op == 3:
                     # clip_boundary falls INSIDE a junction the aligner already
                     # called. Continuing would shorten that N and the merge block
                     # below would then fuse the remnant with the new N, silently
@@ -1150,8 +1160,16 @@ def reroute_intronic_tail_5prime_via_junction(
                     # replaced six real junctions). Refuse instead — the writer
                     # falls back to softclip_intronic_tail_5prime.
                     #
-                    # Keyed on the N being CUT, not on the terminal op being N:
-                    # the legitimate Case-5 `n_boundary_adjust` merge has a FULLY
+                    # ISSUE-026 invariant B (2026-09-05): a junction that lies
+                    # WHOLLY inside the re-placed run (trim == length) is refused
+                    # too — a 5' rescue may never remove an aligner-called N-op.
+                    # T0 chrX 771560c4 (- strand): the candidate 15827372-15845378
+                    # contained the read's own 15827374-15831447 plus its 123-nt
+                    # terminal exon; the reroute re-placed all 141 query bases as
+                    # the exon block across an 18,006-nt N and the aligner's
+                    # junction was gone (exon-skip collapse).
+                    #
+                    # The legitimate Case-5 `n_boundary_adjust` merge has a FULLY
                     # INTACT N ending exactly at clip_boundary, which never
                     # reaches here because the loop breaks on cur_end <=
                     # clip_boundary first.
@@ -1240,13 +1258,14 @@ def reroute_intronic_tail_5prime_via_junction(
             if op in _REF_CONSUMING:
                 deficit = clip_boundary - ref_pos
                 trim = min(length, deficit)
-                if op == 3 and trim < length:
+                if op == 3:
                     # Mirror of the minus-strand guard above (ISSUE-007):
                     # clip_boundary falls inside an aligner-called junction, and
                     # the merge below would fuse its remnant with the new N,
-                    # deleting every junction in between. The legitimate Case-5
-                    # abutting merge has an INTACT N and breaks out of the loop
-                    # before reaching this branch.
+                    # deleting every junction in between; ISSUE-026 invariant B:
+                    # a junction wholly inside the re-placed run is refused too.
+                    # The legitimate Case-5 abutting merge has an INTACT N and
+                    # breaks out of the loop before reaching this branch.
                     return False
                 cigar[0] = (op, length - trim)
                 if cigar[0][1] == 0:
@@ -1298,6 +1317,7 @@ def projected_5prime_rescue_intron_edge(
     soft_clip_len: int,
     strand: str,
     upstream_trim: int = 0,
+    exon2_prefix: int = 0,
 ) -> Optional[int]:
     """Exon-2-side reference edge of the N-op :func:`extend_read_5prime_for_junction_rescue`
     would draw on *read*, or ``None`` when that function would not run at all.
@@ -1313,7 +1333,9 @@ def projected_5prime_rescue_intron_edge(
 
     The ``effective_trim`` logic mirrors ``extend``'s own guard exactly
     (L1359-1366 / L1425-1432), so this is a projection of that function, not an
-    independent re-derivation.
+    independent re-derivation. ``exon2_prefix`` (ISSUE-026 invariant D) mirrors
+    the exon-2 M block ``extend`` draws between the N-op and the body: the N-op
+    then ends that many bases BEFORE the live edge.
     """
     cigar = list(read.cigartuples or [])
     if not cigar or read.is_unmapped or soft_clip_len <= 0:
@@ -1323,7 +1345,8 @@ def projected_5prime_rescue_intron_edge(
     if strand == '+':
         if cigar[0][0] != 4:
             return None
-        cigar.pop(0)
+        actual_sc = cigar.pop(0)[1]
+        k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
         effective_trim = (
             upstream_trim
             if (upstream_trim > 0 and cigar and cigar[0][0] in _MX_OPS
@@ -1332,11 +1355,12 @@ def projected_5prime_rescue_intron_edge(
         )
         if read.reference_start is None:
             return None
-        return read.reference_start + effective_trim
+        return read.reference_start + effective_trim - k
 
     if cigar[-1][0] != 4:
         return None
-    cigar.pop()
+    actual_sc = cigar.pop()[1]
+    k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
     effective_trim = (
         upstream_trim
         if (upstream_trim > 0 and cigar and cigar[-1][0] in _MX_OPS
@@ -1345,7 +1369,7 @@ def projected_5prime_rescue_intron_edge(
     )
     if read.reference_end is None:
         return None
-    return read.reference_end - effective_trim
+    return read.reference_end - effective_trim + k
 
 
 def _cigar_ref_end(ref_start: int, cigar: list) -> int:
@@ -1365,9 +1389,19 @@ def extend_read_5prime_for_junction_rescue(
     strand: str,
     exon_cigar_str: str = '',
     upstream_trim: int = 0,
+    exon2_prefix: int = 0,
 ) -> bool:
     """
     Extend a read's 5' alignment to cover a rescued splice-junction exon.
+
+    ``exon2_prefix`` (ISSUE-026 invariant D): the junction-side ``k`` bases of
+    the soft clip lie over EXON-2 positions — the alignment starts ``k`` bases
+    into exon 2 and the aligner left them unaligned. They are not exon-1
+    sequence: the exon ops consume ``soft_clip - k`` (+ trim) query bases and
+    the ``k`` bases are drawn as an M block between the N-op and the body, so
+    the N-op ends at the reported acceptor rather than at the read's live edge
+    (which used to put the drawn acceptor ``k`` bases past the reported one —
+    silently wrong at 6485226, refused as non-canonical at f53d770).
 
     For Cat3 reads where :func:`rescue_3ss_truncation` rescued the 5' soft-clip
     to an upstream exon, this converts the soft-clip to exon CIGAR ops and
@@ -1442,6 +1476,8 @@ def extend_read_5prime_for_junction_rescue(
             return False
         actual_sc = cigar.pop(0)[1]
         n = actual_sc
+        # ISSUE-026 invariant D: the clip's last k bases are exon-2 sequence.
+        k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
 
         # Equivalence-extension: trim *upstream_trim* ref-AND-query bases off
         # the START of the body's first M/=/X op. The trimmed query bases get
@@ -1459,20 +1495,29 @@ def extend_read_5prime_for_junction_rescue(
             effective_trim = upstream_trim
 
         # Body M was trimmed by `effective_trim` ref bases → reference_start shifts
-        # right by that much. intron_len uses the post-trim reference_start.
-        intron_len = (read.reference_start + effective_trim) - five_prime_position - 1
+        # right by that much. intron_len uses the post-trim reference_start; the
+        # exon-2 prefix block sits at [reference_start - k, reference_start).
+        intron_len = (read.reference_start + effective_trim - k) - five_prime_position - 1
 
         if exon_ops is None:
-            exon_ops = [(0, n + effective_trim)]  # flat M fallback (extended clip + borrowed)
+            exon_ops = [(0, n + effective_trim - k)]  # flat M fallback (extended clip + borrowed)
 
         exon_ref_span = sum(l for op, l in exon_ops if op in _ref_consuming_exon)
         exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
         # Guard: with equivalence-extension the exon must consume actual_sc + effective_trim
-        # query bases. Without extension it must consume exactly actual_sc.
-        expected_query = actual_sc + effective_trim
+        # query bases (minus the exon-2 prefix). Without extension it must consume exactly actual_sc.
+        expected_query = actual_sc + effective_trim - k
         if exon_query_span != expected_query:
-            exon_ops = [(0, expected_query)]
-            exon_ref_span = expected_query
+            # ISSUE-030 (Kevin's review 2026-09-06: 26f8fb45 `2M` drawn as `32M` 9/32, 04b17fc6
+            # `26M` 11/26, 5cef5ebb `11M` 3/11, 166079f3 `21M` 11/21, 03c312ab `15M` 10/15): the
+            # flat-M fallback drew a block 2F never scored. A block with no score is not evidence
+            # (ISSUE-028); the writer REFUSES instead and the read keeps its record.
+            logger.debug(
+                "extend_read_5prime_for_junction_rescue: exon ops consume %d query bases, "
+                "expected %d for read %s — ISSUE-030, refusing (no flat-M fallback)",
+                exon_query_span, expected_query, read.query_name,
+            )
+            return False
         # New reference_start = five_prime_position - exon_ref_span + 1
         new_ref_start = five_prime_position - exon_ref_span + 1
 
@@ -1488,6 +1533,8 @@ def extend_read_5prime_for_junction_rescue(
         if new_ref_start < 0:
             return False
 
+        if k:
+            cigar.insert(0, (0, k))  # exon-2 prefix: M over [reference_start - k, reference_start)
         if intron_len <= 0:
             # No intron gap — just prepend exon ops.
             for op_tup in reversed(exon_ops):
@@ -1496,7 +1543,7 @@ def extend_read_5prime_for_junction_rescue(
             read.reference_start = new_ref_start
             return True
 
-        # Prepend: exon_ops + N(intron_len)
+        # Prepend: exon_ops + N(intron_len) (+ the exon-2 prefix M already in place)
         cigar.insert(0, (3, intron_len))  # N
         for op_tup in reversed(exon_ops):
             cigar.insert(0, op_tup)
@@ -1509,6 +1556,9 @@ def extend_read_5prime_for_junction_rescue(
             return False
         actual_sc = cigar.pop()[1]
         n = actual_sc
+        # ISSUE-026 invariant D: the clip's first k bases (junction side, BAM
+        # orientation) are exon-2 sequence.
+        k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
 
         # Equivalence-extension: trim *upstream_trim* ref-AND-query bases off
         # the END of the body's last M/=/X op (now at cigar[-1] after popping S).
@@ -1525,16 +1575,23 @@ def extend_read_5prime_for_junction_rescue(
             effective_trim = upstream_trim
 
         # Body M was trimmed by `effective_trim` ref bases → reference_end shifts
-        # left by that much.  intron_len uses the post-trim reference_end.
-        intron_len = five_prime_position - (read.reference_end - effective_trim)
+        # left by that much.  intron_len uses the post-trim reference_end plus
+        # the exon-2 prefix block at [reference_end, reference_end + k).
+        intron_len = five_prime_position - (read.reference_end - effective_trim + k)
 
         if exon_ops is None:
-            exon_ops = [(0, n + effective_trim)]  # flat M fallback (extended clip + borrowed)
+            exon_ops = [(0, n + effective_trim - k)]  # flat M fallback (extended clip + borrowed)
 
         exon_query_span = sum(l for op, l in exon_ops if op in _query_consuming_exon)
-        expected_query = actual_sc + effective_trim
+        expected_query = actual_sc + effective_trim - k
         if exon_query_span != expected_query:
-            exon_ops = [(0, expected_query)]
+            # ISSUE-030 (minus-strand mirror): refuse rather than draw an unscored flat M.
+            logger.debug(
+                "extend_read_5prime_for_junction_rescue: exon ops consume %d query bases, "
+                "expected %d for read %s (minus) — ISSUE-030, refusing (no flat-M fallback)",
+                exon_query_span, expected_query, read.query_name,
+            )
+            return False
 
         # 🔴 Contig-edge REFUSAL (planning/719, mirror of the plus-strand
         # guard): the minus-strand rescue extends reference_end rightward,
@@ -1555,18 +1612,20 @@ def extend_read_5prime_for_junction_rescue(
                 l for op, l in cigar if op in (0, 2, 3, 7, 8))
             _exon_ref_span = sum(
                 l for op, l in exon_ops if op in _ref_consuming_exon)
-            _new_ref_end = (read.reference_start + _body_ref_span
+            _new_ref_end = (read.reference_start + _body_ref_span + k
                             + max(intron_len, 0) + _exon_ref_span)
             if _new_ref_end > _clen:
                 return False
 
+        if k:
+            cigar.append((0, k))  # exon-2 prefix: M over [reference_end, reference_end + k)
         if intron_len <= 0:
             for op_tup in exon_ops:
                 cigar.append(op_tup)
             read.cigartuples = cigar
             return True
 
-        # Append: N(intron_len) then exon_ops
+        # Append: (exon-2 prefix M) N(intron_len) then exon_ops
         cigar.append((3, intron_len))  # N
         for op_tup in exon_ops:
             cigar.append(op_tup)

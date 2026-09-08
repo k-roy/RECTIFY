@@ -78,6 +78,8 @@ from ..splice.splice_aware_5prime import (
     DEFAULT_PEEL_MAX_BP as _PEEL_MAX_BP,
 )
 from ..splice import false_junction_filter as _fjf
+from ..splice import microexon as _microexon
+from ..splice.overhang_informativeness import COUNTERS as _OI_COUNTERS
 
 # Backwards-compat re-exports for callers that still reach in via this module.
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
@@ -452,6 +454,54 @@ def correct_read_3prime(
     _five_prime_intron_clip_pos = -1 # set for intronic-snap reads (Case 4) only
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
     _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
+    _five_prime_exon2_prefix = 0     # ISSUE-026 invariant D: clip bases over exon 2, drawn as M after the N
+    _landing_annotated = None        # ISSUE-017: provenance of the rescue's landing site (None = no rescue)
+    _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
+    _exon_identity = None            # ISSUE-028: identity of the placed 5' block (None = no block placed)
+    _exon_bits = None                # ISSUE-028: evidence score of that block, bits
+    _clip_origin = ''                # ISSUE-034: origin of an unplaced 5' clip (intron / exon:<site> / ambiguous / none)
+    _clip_origin_bits = None
+    _clip_prior_bits = None
+    _site_support = None             # ISSUE-039: population support for the landing site ('' = no rescue)
+    _landing_established = None
+    _station_b_microexons = ''       # ISSUE-040: annotated micro-exons found inside a junction-adjacent insertion
+    _station_b_alternatives = ''     # equally good configurations NOT drawn (Kevin 2026-09-07)
+    _station_b_n_tied = 0            # how many were tied for best; > 1 = the draw picked arbitrarily
+    _station_b_calls = []            # every explainable insertion, not only the first (ISSUE-043)
+    _sb_starts = ''                  # comma-joined intron starts, parallel to the calls
+    _sb_ends = ''
+    _station_b_applied = 0           # 1 when apply mode drew it (the writer does the surgery)
+
+    # STATION B (ISSUE-040), report pass: an insertion of >= 3 nt glued to an N is where a splice
+    # aligner leaves a micro-exon it cannot seed. Read the ALIGNER's own record, before any 2F
+    # surgery, and ask whether annotated exons <= 30 nt inside that intron consume the inserted
+    # bases exactly and in order. In report mode the finding is a TSV column only; the CIGAR
+    # rewrite exists and is tested (microexon.rewrite_with_microexons) but is not applied here.
+    if _microexon.microexon_index():
+        try:
+            _mx = _microexon.recover_all_microexons(
+                read, genome.get(chrom_std) or genome.get(chrom) or '', strand,
+                _microexon.microexon_index())
+        except Exception as _mxe:                       # never let a report column fail a read
+            logger.debug("station B microexon scan failed for %s: %s", read.query_name, _mxe)
+            _mx = []
+        if _mx:
+            (_station_b_microexons, _station_b_alternatives,
+             _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(chrom_std, _mx)
+            _station_b_calls = _mx
+            _station_b_applied = 1 if _microexon.station_b_mode() == 'apply' else 0
+            _OI_COUNTERS['station_b_microexon_reads'] = _OI_COUNTERS.get('station_b_microexon_reads', 0) + 1
+            _OI_COUNTERS['station_b_microexon_segments'] = (
+                _OI_COUNTERS.get('station_b_microexon_segments', 0) + sum(len(c.segments) for c in _mx))
+            if len(_mx) > 1:
+                _OI_COUNTERS['station_b_microexon_multi_call_reads'] = (
+                    _OI_COUNTERS.get('station_b_microexon_multi_call_reads', 0) + 1)
+            if any(c.ambiguous for c in _mx):
+                _OI_COUNTERS['station_b_microexon_ambiguous'] = (
+                    _OI_COUNTERS.get('station_b_microexon_ambiguous', 0) + 1)
+            if _station_b_applied:
+                _OI_COUNTERS['station_b_microexon_applied'] = (
+                    _OI_COUNTERS.get('station_b_microexon_applied', 0) + 1)
 
     # Module 2E (pre-pass): filter poly(A)-artifact junctions before 5' rescue
     # so they are never used as 3'SS rescue candidates.
@@ -497,13 +547,37 @@ def correct_read_3prime(
                                          five_prime_position + _w + 1):
                     _ss_junctions.add((chrom_std, _iv.data[0], _iv.data[1]))
         if _ss_junctions:
-            _3ss_result = _rescue_3ss(read, genome, _ss_junctions, strand)
+            # The annotated subset of the candidates: a sequence rescue onto any
+            # OTHER candidate (pool junction, the read's own N-op) must carry
+            # full evidence (splice_aware_5prime novel-site gate, 2026-09-05).
+            _3ss_result = _rescue_3ss(
+                read, genome, _ss_junctions, strand,
+                annotated_junctions=(annotated_junctions
+                                     if annotated_junctions is not None else set()),
+            )
+            _landing_annotated = _3ss_result.get('landing_annotated')
+            _novel_evidence = str(_3ss_result.get('novel_evidence', '') or '')
+            # ISSUE-028 invariant E: the placed block's shape, drawn or refused
+            # (None = no block was placed for this read).
+            _exon_identity = _3ss_result.get('exon_identity')
+            _exon_bits = _3ss_result.get('exon_bits')
+            _clip_origin = _3ss_result.get('clip_origin', '') or ''
+            _clip_origin_bits = _3ss_result.get('clip_origin_bits')
+            _clip_prior_bits = _3ss_result.get('clip_prior_bits')
+            # ISSUE-039 station C: '' unless a rescue was drawn (the resolver sets both together).
+            _site_support = _3ss_result.get('site_support')
+            _le = _3ss_result.get('landing_established')
+            _landing_established = None if _le is None else int(bool(_le))
+            # ISSUE-032(b): the reanchor pre-pass propagates whether or not a rescue was drawn
+            # (the writer's `_apply_reanchor_from_clip_len` runs on reanchor_clip_len alone).
+            _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
             if _3ss_result['rescued']:
                 five_prime_rescued = True
                 five_prime_position = _3ss_result['five_prime_corrected']
                 _five_prime_exon_cigar = _3ss_result.get('five_prime_exon_cigar', '')
                 _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
                 _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
+                _five_prime_exon2_prefix = int(_3ss_result.get('five_prime_exon2_prefix', 0) or 0)
                 # five_prime_intron_clip_pos ("icp") = the exon-2-side intron
                 # boundary, recorded whenever the alignment's 5' end sits inside
                 # the rescued intron — Case 4 (intronic_snap) and Cases 1/2 alike,
@@ -559,6 +633,37 @@ def correct_read_3prime(
             _junc_tuple = (_r_start, _r_end)
             if _junc_tuple not in junctions:
                 junctions = list(junctions) + [_junc_tuple]
+    # ISSUE-040 + ISSUE-024: when station B will draw micro-exons, the TSV's `junctions` must equal
+    # the N-ops the writer ends up writing — the writer asserts it and the tester's scorer reads this
+    # column. Replace the one drawn intron with the introns the split creates, in genomic order.
+    #
+    # First, the one interaction that could make the two disagree: the writer applies the 5' rescue
+    # surgery BEFORE station B, so a rescue that rewrites the same intron moves the geometry out from
+    # under the row's coordinates and the writer then (correctly) skips the draw — leaving the TSV
+    # claiming two introns where the BAM has one. Rather than let the writer's skip be silent, the
+    # row stands down here: a read whose 5' rescue touches the station-B intron is not applied at all.
+    # Same rule as `predict_5prime_rescue_refusal` — predict the writer's refusal, never out-run it.
+    if _station_b_applied and _station_b_calls and '_3ss_result' in locals():
+        _rj_sb = _3ss_result.get('rescued_junction') if _3ss_result.get('rescued') else None
+        if _rj_sb is not None and len(_rj_sb) >= 3:
+            _lo, _hi = int(_rj_sb[1]), int(_rj_sb[2])
+            _keep = [c for c in _station_b_calls
+                     if (_hi <= c.intron[0] or _lo >= c.intron[1])]
+            if len(_keep) != len(_station_b_calls):
+                _OI_COUNTERS['station_b_stood_down_for_5prime_rescue'] = (
+                    _OI_COUNTERS.get('station_b_stood_down_for_5prime_rescue', 0) + 1)
+                _station_b_calls = _keep
+                (_station_b_microexons, _station_b_alternatives,
+                 _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(
+                     chrom_std, _station_b_calls)
+                if not _keep:
+                    _station_b_applied = 0
+    if _station_b_applied and _station_b_calls:
+        _j = set(tuple(x) for x in junctions)
+        for _c in _station_b_calls:
+            _j.discard(tuple(_c.intron))
+            _j |= set(_microexon.split_introns(_c.segments, _c.intron[0], _c.intron[1]))
+        junctions = sorted(_j)
     junctions_str = format_junctions_string(junctions)
 
     # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
@@ -632,6 +737,7 @@ def correct_read_3prime(
                 'five_prime_upstream_trim': _five_prime_upstream_trim,
                 'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
                 'reanchor_clip_len': _reanchor_clip_len,
+                'five_prime_exon2_prefix': _five_prime_exon2_prefix,
                 'strand': strand,
             },
             genome,
@@ -654,6 +760,7 @@ def correct_read_3prime(
                 # reproduces exactly what the refusal already produced.
                 five_prime_rescued = False
                 _five_prime_intron_clip_pos = -1
+                _five_prime_exon2_prefix = 0
             # For softclipped_no_junction the intronic bases ARE hidden at the
             # true acceptor, so five_prime_rescued and the icp must survive or the
             # writer would skip that surgery and leave the bases mapped inside the
@@ -729,11 +836,44 @@ def correct_read_3prime(
         # reanchor did not materially modify the CIGAR. > 0 signals bam_writer
         # to apply the same reanchor before realign + 5'-rescue surgery.
         'reanchor_clip_len': _reanchor_clip_len,
+        # ISSUE-026 invariant D: junction-side soft-clip bases that lie over
+        # exon-2 positions; the writer draws them as M between the N-op and the
+        # body so the N-op ends at the reported acceptor (0 = none).
+        'five_prime_exon2_prefix': _five_prime_exon2_prefix,
         # '' when the 5' rescue reached the corrected BAM (or none was found);
         # otherwise the bam_writer REFUSAL_* token saying why it did not, with
         # five_prime_rescued/exon_cigar/intron_clip_pos already downgraded and the
         # rescued junction dropped from `junctions`.
         'five_prime_rescue_refused': _five_prime_rescue_refused,
+        # ISSUE-017: provenance + evidence verdict of the 5' rescue (TSV
+        # columns; '' when the row carries no drawn rescue).
+        # Provenance of the rescue this row FOUND (drawn or not — a writer
+        # refusal or a refuse-mode verdict keeps it): '' only when no rescue
+        # was found at all (tester FAST 34d6852, defect a).
+        'five_prime_landing_annotated': (
+            int(bool(_landing_annotated)) if _landing_annotated is not None else ''),
+        'five_prime_novel_evidence': _novel_evidence,
+        # ISSUE-028 invariant E: the placed 5' block's identity and evidence
+        # score in bits (TSV columns; '' when no block was placed). Kept when
+        # the placement was refused — they describe the block judged.
+        'five_prime_exon_identity': _exon_identity,
+        'five_prime_exon_bits': _exon_bits,
+        # ISSUE-034: most-parsimonious origin of a clip that drew no junction (quantitation only).
+        'five_prime_clip_origin': _clip_origin,
+        'five_prime_clip_origin_bits': _clip_origin_bits,
+        'five_prime_clip_prior_bits': _clip_prior_bits,
+        # ISSUE-039 station C: the population's support for the landing site.
+        'five_prime_site_support': _site_support,
+        'five_prime_landing_established': _landing_established,
+        # ISSUE-040 station B: annotated micro-exons recovered from a junction-adjacent insertion,
+        # the equally good configurations not drawn, how many were tied, and whether it was DRAWN.
+        # The intron coordinates let the writer find the op on the LIVE record instead of by index.
+        'station_b_microexons': _station_b_microexons,
+        'station_b_alternatives': _station_b_alternatives,
+        'station_b_n_tied': _station_b_n_tied or '',
+        'station_b_applied': _station_b_applied,
+        'station_b_intron_start': _sb_starts,
+        'station_b_intron_end': _sb_ends,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

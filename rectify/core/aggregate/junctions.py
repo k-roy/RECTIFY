@@ -135,6 +135,13 @@ def aggregate_junctions(
     junction_counts: Dict[Tuple[str, int, int, str], int] = defaultdict(int)
     junction_reads: Dict[Tuple[str, int, int, str], List[str]] = defaultdict(list)
     junction_umis: Dict[Tuple[str, int, int, str], set] = defaultdict(set)
+    # ISSUE-040 station B: which junctions exist because a micro-exon was drawn, and what the
+    # equally good configurations were. Read off the BAM tags the writer stamps (XB = drawn,
+    # XV = equally good, not drawn) so the junction table carries the ambiguity the read carries —
+    # Kevin 2026-09-07: "keep the other one as a noted equally good alternative … also in our
+    # junction parquet/tsv".
+    junction_station_b: Dict[Tuple[str, int, int, str], int] = defaultdict(int)
+    junction_station_b_alts: Dict[Tuple[str, int, int, str], set] = defaultdict(set)
 
     bam = pysam.AlignmentFile(bam_path, 'rb')
 
@@ -154,12 +161,25 @@ def aggregate_junctions(
             except KeyError:
                 read_umi = None
 
+        try:
+            _xb = read.get_tag('XB')
+        except KeyError:
+            _xb = ''
+        try:
+            _xv = read.get_tag('XV')
+        except KeyError:
+            _xv = ''
+
         for intron_start, intron_end in junctions:
             key = (chrom, intron_start, intron_end, strand)
             junction_counts[key] += 1
             junction_reads[key].append(read.query_name)
             if read_umi:
                 junction_umis[key].add(read_umi)
+            if _xb:
+                junction_station_b[key] += 1
+                if _xv:
+                    junction_station_b_alts[key].add(str(_xv))
 
     bam.close()
 
@@ -212,6 +232,14 @@ def aggregate_junctions(
         }
         if umi_tag is not None:
             row['n_distinct_umis'] = len(junction_umis[(chrom, intron_start, intron_end, strand)])
+        # Station B provenance, always emitted (0 / '' when the station never ran): how many of the
+        # supporting reads reached this junction through a micro-exon draw, and the equally good
+        # configurations those reads did NOT draw. A junction with station_b_reads == its whole
+        # support exists only because station B drew it; one with a mix is corroborated by reads
+        # the aligner placed unaided.
+        _k = (chrom, intron_start, intron_end, strand)
+        row['station_b_reads'] = junction_station_b.get(_k, 0)
+        row['station_b_alternatives'] = ';'.join(sorted(junction_station_b_alts.get(_k, ()))[:4])
         results.append(row)
 
     df = pd.DataFrame(results)

@@ -23,6 +23,7 @@ Date: 2026-03-09
 from typing import Dict, Optional, Tuple
 import copy
 import logging
+import os
 import pysam
 
 from ...utils.genome import get_chrom_sequence
@@ -130,16 +131,28 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_5p_cig  = hdr.index('five_prime_exon_cigar')       if 'five_prime_exon_cigar'       in hdr else -1
             i_5p_trim = hdr.index('five_prime_upstream_trim')    if 'five_prime_upstream_trim'    in hdr else -1
             i_5p_reanc = hdr.index('reanchor_clip_len')          if 'reanchor_clip_len'           in hdr else -1
+            i_5p_e2    = hdr.index('five_prime_exon2_prefix')    if 'five_prime_exon2_prefix'     in hdr else -1
             # Cat2 soft-clip rescue columns (v2.9.1)
             i_sc_ext   = hdr.index('sc_homopolymer_extension')  if 'sc_homopolymer_extension'  in hdr else -1
             i_sc_seq   = hdr.index('sc_rescued_seq')             if 'sc_rescued_seq'             in hdr else -1
             i_sc_sclen = hdr.index('sc_original_softclip_len')  if 'sc_original_softclip_len'  in hdr else -1
             # Case 4 intronic-snap BAM hard-clip column (v2.9.8)
             i_5p_icp   = hdr.index('five_prime_intron_clip_pos') if 'five_prime_intron_clip_pos' in hdr else -1
+            # ISSUE-034: most-parsimonious origin of an unplaced 5' clip (BAM tag XO)
+            i_5p_orig  = hdr.index('five_prime_clip_origin')     if 'five_prime_clip_origin'     in hdr else -1
             # Over-call rescue columns
             i_oc_ext   = hdr.index('oc_homopolymer_extension')   if 'oc_homopolymer_extension'   in hdr else -1
             i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
             i_oc_term  = hdr.index('oc_terminal_base')           if 'oc_terminal_base'           in hdr else -1
+            # ISSUE-040 station B: the micro-exon configuration to DRAW, the equally good ones to
+            # record (BAM tags XB / XV), and the intron the writer locates on the LIVE record.
+            # Measured 2026-09-08: omitting these here is how the ON arm's TSV claimed a split the
+            # BAM never got — the row reaches the writer only through this loader.
+            i_sb_seg   = hdr.index('station_b_microexons')        if 'station_b_microexons'       in hdr else -1
+            i_sb_alt   = hdr.index('station_b_alternatives')      if 'station_b_alternatives'     in hdr else -1
+            i_sb_app   = hdr.index('station_b_applied')           if 'station_b_applied'          in hdr else -1
+            i_sb_is    = hdr.index('station_b_intron_start')      if 'station_b_intron_start'     in hdr else -1
+            i_sb_ie    = hdr.index('station_b_intron_end')        if 'station_b_intron_end'       in hdr else -1
 
             for line in _f:
                 parts = line.rstrip('\n').split('\t')
@@ -158,6 +171,8 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 five_prime_exon_cig = parts[i_5p_cig]        if i_5p_cig >= 0  and len(parts) > i_5p_cig  and parts[i_5p_cig]  else ''
                 five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
                 five_prime_reanc   = int(parts[i_5p_reanc])  if i_5p_reanc >= 0 and len(parts) > i_5p_reanc and parts[i_5p_reanc] else 0
+                five_prime_e2      = int(parts[i_5p_e2])     if i_5p_e2 >= 0 and len(parts) > i_5p_e2 and parts[i_5p_e2] else 0
+                five_prime_orig    = parts[i_5p_orig]        if i_5p_orig >= 0 and len(parts) > i_5p_orig else ''
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
                 sc_seq   = parts[i_sc_seq]         if i_sc_seq   >= 0 and len(parts) > i_sc_seq   else ''
@@ -169,6 +184,11 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 oc_ext  = int(parts[i_oc_ext])  if i_oc_ext  >= 0 and len(parts) > i_oc_ext  and parts[i_oc_ext]  else 0
                 oc_cnt  = int(parts[i_oc_cnt])  if i_oc_cnt  >= 0 and len(parts) > i_oc_cnt  and parts[i_oc_cnt]  else 0
                 oc_term = parts[i_oc_term]      if i_oc_term >= 0 and len(parts) > i_oc_term else ''
+                sb_seg  = parts[i_sb_seg] if i_sb_seg >= 0 and len(parts) > i_sb_seg else ''
+                sb_alt  = parts[i_sb_alt] if i_sb_alt >= 0 and len(parts) > i_sb_alt else ''
+                sb_app  = 1 if (i_sb_app >= 0 and len(parts) > i_sb_app and parts[i_sb_app] == '1') else 0
+                sb_is   = parts[i_sb_is] if i_sb_is >= 0 and len(parts) > i_sb_is else ''
+                sb_ie   = parts[i_sb_ie] if i_sb_ie >= 0 and len(parts) > i_sb_ie else ''
 
                 corrections[rid] = {
                     'corrected_3prime':           corr_pos,
@@ -179,13 +199,20 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'five_prime_exon_cigar':      five_prime_exon_cig,
                     'five_prime_upstream_trim':   five_prime_trim,
                     'reanchor_clip_len':          five_prime_reanc,
+                    'five_prime_exon2_prefix':    five_prime_e2,
                     'five_prime_intron_clip_pos': five_prime_icp,
+                    'five_prime_clip_origin':     five_prime_orig,
                     'sc_homopolymer_extension':   sc_ext,
                     'sc_rescued_seq':             sc_seq,
                     'sc_original_softclip_len':   sc_sclen,
                     'oc_homopolymer_extension':   oc_ext,
                     'oc_overcall_count':          oc_cnt,
                     'oc_terminal_base':           oc_term,
+                    'station_b_microexons':       sb_seg,
+                    'station_b_alternatives':     sb_alt,
+                    'station_b_applied':          sb_app,
+                    'station_b_intron_start':     sb_is,
+                    'station_b_intron_end':       sb_ie,
                 }
     except OSError as exc:
         raise OSError(
@@ -265,6 +292,10 @@ def _n_op_intervals(read: pysam.AlignedSegment) -> Tuple[Tuple[int, int], ...]:
 # about placement, not about lost terminal bases, and the junction should be
 # refused rather than massaged.
 _MAX_ACCEPTOR_REPAIR_BP = 3
+# ISSUE-031 (2026-09-07): the acceptor repair plants a D on the body side of the N. Disabled
+# under Kevin's rule; a non-canonical rescued N is reverted instead. Kept switchable for the
+# replay comparison only (RECTIFY_2F_ACCEPTOR_REPAIR=1).
+_ACCEPTOR_REPAIR_DISABLED = os.environ.get('RECTIFY_2F_ACCEPTOR_REPAIR', '').strip() != '1'
 
 
 def _repair_acceptor_overshoot(
@@ -287,6 +318,13 @@ def _repair_acceptor_overshoot(
     passed over for a farther one (on the bundled upf1d cat3_plus_2 read both
     delta=2 — the annotated GT-AG — and delta=4 are canonical).
     """
+    # ISSUE-031 in the writer (Kevin 2026-09-06/07, "never put a D next to an N"; ISSUE-023's
+    # open policy decided by that rule): pulling a rescued N back onto a canonical acceptor
+    # by planting a D on the body side IS the banned construct (ea0a56cb: `…1077N2D114M`).
+    # A rescue whose drawn junction is non-canonical is reverted by
+    # _revert_selfinflicted_noncanonical_n (REFUSAL_NONCANONICAL) instead of repaired.
+    if _ACCEPTOR_REPAIR_DISABLED:
+        return False
     cigar = list(read.cigartuples or [])
     if not (0 <= n_index < len(cigar)) or cigar[n_index][0] != 3:
         return False
@@ -494,6 +532,9 @@ def apply_5prime_rescue_surgery(
     _rescued_flag = bool(correction.get('five_prime_rescued'))
     _rescued = _rescued_flag and correction.get('five_prime_position') is not None
 
+    # ISSUE-026 invariant D: junction-side clip bases over exon-2 positions,
+    # drawn as M after the N-op so it ends at the reported acceptor.
+    _e2 = int(correction.get('five_prime_exon2_prefix', 0) or 0)
     _extend_ok = True
     if _rescued and _icp >= 0:
         _edge = projected_5prime_rescue_intron_edge(
@@ -501,6 +542,7 @@ def apply_5prime_rescue_surgery(
             correction['five_prime_soft_clip'],
             correction['strand'],
             correction.get('five_prime_upstream_trim', 0),
+            exon2_prefix=_e2,
         )
         _extend_ok = (_edge is not None and _edge == _icp)
 
@@ -514,6 +556,7 @@ def apply_5prime_rescue_surgery(
             correction['strand'],
             exon_cigar_str=_exon_cig,
             upstream_trim=correction.get('five_prime_upstream_trim', 0),
+            exon2_prefix=_e2,
         )
         if not modified:
             refusal = REFUSAL_EXTEND
@@ -610,6 +653,69 @@ def predict_5prime_rescue_refusal(
     return refusal
 
 
+def _parse_segment_list(text: str):
+    """``'chr1:10-16,chr1:40-49'`` -> ``[(10, 16), (40, 49)]``; ``[]`` on anything unparseable."""
+    out = []
+    for tok in (text or '').split(','):
+        tok = tok.strip()
+        if not tok or ':' not in tok or '-' not in tok:
+            continue
+        try:
+            _c, span = tok.rsplit(':', 1)
+            a, b = span.split('-', 1)
+            out.append((int(a), int(b)))
+        except ValueError:
+            return []
+    return out
+
+
+def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> bool:
+    """Draw the row's micro-exon configurations into *read*'s CIGAR (ISSUE-040/043). True when it
+    changed. Applies EVERY call the row carries, not only the first.
+
+    Record-driven, never index-driven: the row names each intron by COORDINATES, and this walks the
+    LIVE CIGAR to find the N op with exactly that reference span together with an adjacent insertion
+    whose length equals that call's segments. If the geometry has moved, that call is skipped rather
+    than applied to the wrong op — a coordinate computed instead of read from the record is the
+    failure mode CLAUDE.md names. The calls are independent (drawing one only subdivides its own
+    intron), so a skipped call cannot invalidate the others.
+
+    The result never leaves an I or a D beside an N: each insertion is wholly consumed as M
+    (ISSUE-031/038), and both the query span and the reference span are conserved.
+    """
+    if correction.get('station_b_applied') not in (1, '1', True):
+        return False
+    from ..splice.microexon import parse_calls, rewrite_with_microexons
+    calls = parse_calls(correction.get('station_b_microexons') or '',
+                        str(correction.get('station_b_intron_start') or ''),
+                        str(correction.get('station_b_intron_end') or ''))
+    if not calls:
+        return False
+    changed = False
+    for (i_start, i_end), segs in calls:
+        if not segs:
+            continue
+        total = sum(e - s for s, e in segs)
+        cigar = list(read.cigartuples or [])
+        if not cigar:
+            break
+        ref = read.reference_start
+        for idx, (op, ln) in enumerate(cigar):
+            if op == 3 and ref == i_start and ref + ln == i_end:
+                for j in (idx - 1, idx + 1):
+                    if 0 <= j < len(cigar) and cigar[j][0] == 1 and cigar[j][1] == total:
+                        try:
+                            read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
+                            changed = True
+                        except AssertionError:
+                            pass
+                        break
+                break
+            if op in (0, 2, 3, 7, 8):
+                ref += ln
+    return changed
+
+
 def apply_corrected_edits_to_read(
     read: pysam.AlignedSegment,
     correction: Optional[Dict],
@@ -654,6 +760,14 @@ def apply_corrected_edits_to_read(
     _5p_modified, _ = apply_5prime_rescue_surgery(read, correction, genome)
     modified |= _5p_modified
 
+    # STATION B (ISSUE-040): draw annotated micro-exons the aligner orphaned as an insertion beside
+    # a junction. Applied HERE, after the 5' surgery, deliberately: the search reads the ALIGNER's
+    # record in bam_processor, and drawing it in the writer means station B's new N-ops are never
+    # candidates for this read's own 2F rescue — a micro-exon must not become a 5' landing that
+    # skipped the evidence floor. The row carries the intron and the segments; the op indices are
+    # re-derived from the LIVE record here, so a 2F edit elsewhere in the CIGAR cannot misplace it.
+    modified |= apply_station_b_microexons(read, correction)
+
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):
         modified |= extend_read_3prime_for_softclip_rescue(
@@ -685,6 +799,18 @@ def apply_corrected_edits_to_read(
 
     # Tag the final corrected 3' end so it is visible in IGV / samtools view.
     read.set_tag('cp', correction['corrected_3prime'])
+    # ISSUE-034: the 5' clip's most-parsimonious origin (quantitation; never a junction).
+    _xo = correction.get('five_prime_clip_origin') or ''
+    if _xo:
+        read.set_tag('XO', _xo)
+    # ISSUE-040: the micro-exon configuration DRAWN (XB) and the equally good ones NOT drawn (XV).
+    # Kevin 2026-09-07: where several are equally plausible, draw one and keep the others noted.
+    _xb = correction.get('station_b_microexons') or ''
+    if _xb and correction.get('station_b_applied') in (1, '1', True):
+        read.set_tag('XB', _xb)
+        _xv = correction.get('station_b_alternatives') or ''
+        if _xv:
+            read.set_tag('XV', _xv)
 
     return modified
 
