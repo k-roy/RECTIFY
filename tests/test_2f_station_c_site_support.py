@@ -176,7 +176,10 @@ def test_a_novel_clip_between_the_two_floors_is_drawn_only_when_the_site_is_esta
     row_off = _row(_clip_read(12, name='between_off'))
     assert not row_off['five_prime_rescued']
     assert row_off['five_prime_exon_bits'] == pytest.approx(24.0)
-    assert row_off['five_prime_site_support'] in ('', None)     # nothing drawn -> blank columns
+    # The refusal still reports what the population knew about the site it was judged at — with no
+    # support installed that is 0, not blank (see the REFUSED-read test below).
+    assert row_off['five_prime_site_support'] == 0
+    assert row_off['five_prime_landing_established'] == 0
 
     monkeypatch.setenv('RECTIFY_2F_STATION_C', 'attach')
     S.set_site_support({JUNCTION: SITE_ESTABLISHED_MIN_READS})
@@ -205,6 +208,23 @@ def test_report_mode_still_records_what_the_population_knew(monkeypatch):
     assert row['five_prime_site_support'] == 9
     assert row['five_prime_landing_established'] == 1
     assert S.station_c_mode() == 'report'
+
+
+def test_the_columns_are_emitted_on_a_REFUSED_read_too(monkeypatch):
+    """The instrument has to describe the population it exists to change.
+
+    Measured on the 2026-09-08 OFF arm with the columns on drawn rescues only: 1,871 established
+    landings and ZERO of them novel — because the reads station C would change are exactly the ones
+    that were REFUSED, and those carried no columns at all. A column blank precisely where the
+    mechanism acts cannot measure the mechanism. The refused read now reports the site it was LAST
+    judged at, the same source `five_prime_exon_bits` already uses on a refusal."""
+    _floors(monkeypatch, 30, 12)                 # creation floor above the block: the read is refused
+    S.set_site_support({JUNCTION: 7})
+    row = _row(_clip_read(12, name='refused_but_reported'))
+    assert not row['five_prime_rescued']
+    assert row['five_prime_exon_bits'] == pytest.approx(24.0)
+    assert row['five_prime_site_support'] == 7
+    assert row['five_prime_landing_established'] == 1
 
 
 def test_the_two_columns_are_last_and_blank_without_a_rescue():

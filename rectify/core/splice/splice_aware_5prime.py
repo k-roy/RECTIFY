@@ -2538,16 +2538,22 @@ def rescue_3ss_truncation(
     if _result.get('rescued') and _result.get('reranked_between_annotated'):
         _OI_COUNTERS['five_prime_reranked_between_annotated'] = (
             _OI_COUNTERS.get('five_prime_reranked_between_annotated', 0) + 1)
-    # ISSUE-039 station C, REPORT half (emitted in both modes, for every rescue): how many
-    # reads of this library independently carry the junction this read landed on, and
-    # whether that alone would have earned it the attachment tier. On an annotated landing
-    # the tier came from the annotation, so `established` says what the POPULATION knew,
-    # not which floor was applied — that is the column that makes the ON arm predictable.
-    if _result.get('rescued'):
-        _j = _result.get('rescued_junction')
-        _n = site_support_n(_j)
-        _result['site_support'] = _n
-        _result['landing_established'] = bool(_j is not None and site_established(_j))
+    # ISSUE-039 station C, REPORT half: how many reads of this library independently carry the
+    # junction this read was judged against, and whether that alone would have earned it the
+    # attachment tier. On an annotated landing the tier came from the annotation, so `established`
+    # says what the POPULATION knew, not which floor was applied.
+    #
+    # 🔴 Emitted for a REFUSED read too, at the site it was last judged at (`exon_site`, the same
+    # source `five_prime_exon_bits` already uses on refusals). Measured 2026-09-08: with the columns
+    # on drawn rescues only, the OFF arm reported 1,871 established landings and ZERO of them novel —
+    # because the reads station C would change are exactly the ones that were REFUSED, and those
+    # carried no columns at all. A column that is blank precisely on the population it exists to
+    # describe cannot measure its own mechanism; that is the same shape as scoring a metric on the
+    # wrong population (CLAUDE.md, "vet at the individual-read level").
+    _j = _result.get('rescued_junction') if _result.get('rescued') else _result.get('exon_site')
+    if _j is not None:
+        _result['site_support'] = site_support_n(_j)
+        _result['landing_established'] = bool(site_established(_j))
         if _result['landing_established'] and not _result.get('landing_annotated'):
             _OI_COUNTERS['five_prime_landing_established_novel'] = (
                 _OI_COUNTERS.get('five_prime_landing_established_novel', 0) + 1)

@@ -118,7 +118,9 @@ def test_tsv_columns_are_appended_last_and_filled():
     assert cells[-11] == 'intron' and cells[-10] != '' and cells[-9] == '0.0'
     # ISSUE-039: no rescue was drawn, so the station-C columns are blank; ISSUE-040: station B
     # found nothing on this read, so its columns are blank apart from the 0/1 applied flag.
-    assert cells[-8] == '' and cells[-7] == ''
+    # ISSUE-039: a refused read still reports the site it was judged at, so these are '0'/'0'
+    # rather than blank; only a read with no judged site at all leaves them empty.
+    assert cells[-8] in ('', '0') and cells[-7] in ('', '0')
     assert cells[-6:] == ['', '', '', '0', '', '']
 
 
