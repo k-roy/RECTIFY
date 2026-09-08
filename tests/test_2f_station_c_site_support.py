@@ -127,15 +127,18 @@ def test_a_pool_without_the_signal_leaves_station_c_inert():
 
 
 # -------------------------------------------------------------- the tier decision
-def test_established_grants_the_attachment_tier_only_in_attach_mode(monkeypatch):
+def test_established_grants_the_attachment_tier_and_report_is_the_opt_out(monkeypatch):
+    """Kevin flipped the default ON for the integration wave (2026-09-08), so `attach` is what a
+    plain run does and `report` is the escape hatch that reproduces the pre-stations baseline."""
     S.set_site_support({JUNCTION: SITE_ESTABLISHED_MIN_READS})
     assert S.site_established(JUNCTION)
+    assert S.station_c_mode() == 'attach'                  # the DEFAULT
+    assert S._attachment_tier(JUNCTION, False)             # an established novel site is an attachment
+    assert S._attachment_tier(JUNCTION, True)              # annotated is one regardless
+    monkeypatch.setenv('RECTIFY_2F_STATION_C', 'report')
     assert S.station_c_mode() == 'report'
-    assert not S._attachment_tier(JUNCTION, False)         # report mode changes no tier
-    assert S._attachment_tier(JUNCTION, True)              # annotated is an attachment regardless
-    monkeypatch.setenv('RECTIFY_2F_STATION_C', 'attach')
-    assert S.station_c_mode() == 'attach'
-    assert S._attachment_tier(JUNCTION, False)
+    assert not S._attachment_tier(JUNCTION, False)         # opted out: the tier is unchanged
+    assert S._attachment_tier(JUNCTION, True)
 
 
 def test_support_one_below_the_floor_is_not_established(monkeypatch):
@@ -202,6 +205,7 @@ def test_attach_mode_does_not_rescue_a_clip_that_fails_the_attachment_floor_too(
 
 def test_report_mode_still_records_what_the_population_knew(monkeypatch):
     """A rescue that draws anyway carries the support, so the ON arm is predictable from the OFF arm."""
+    monkeypatch.setenv('RECTIFY_2F_STATION_C', 'report')
     S.set_site_support({JUNCTION: 9})
     row = _row(_clip_read(20, name='clean20'))                 # 40 bits: over both floors
     assert row['five_prime_rescued']
@@ -218,7 +222,10 @@ def test_the_columns_are_emitted_on_a_REFUSED_read_too(monkeypatch):
     that were REFUSED, and those carried no columns at all. A column blank precisely where the
     mechanism acts cannot measure the mechanism. The refused read now reports the site it was LAST
     judged at, the same source `five_prime_exon_bits` already uses on a refusal."""
-    _floors(monkeypatch, 30, 12)                 # creation floor above the block: the read is refused
+    # Both floors above the block's 24 bits so the read is refused whichever tier applies — with
+    # station C now ON by default an established site would otherwise take the attachment tier
+    # and draw, and the column under test would never be reached.
+    _floors(monkeypatch, 30, 26)
     S.set_site_support({JUNCTION: 7})
     row = _row(_clip_read(12, name='refused_but_reported'))
     assert not row['five_prime_rescued']

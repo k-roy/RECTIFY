@@ -626,10 +626,16 @@ def site_support_n(junction) -> int:
 
 
 def station_c_mode() -> str:
-    """``'report'`` (default — emit the columns, change no drawing) or ``'attach'``
-    (an established site grants the attachment tier). Env RECTIFY_2F_STATION_C."""
+    """``'attach'`` (DEFAULT since 2026-09-08 — an established site grants the attachment tier) or
+    ``'report'`` (emit the columns, change no drawing). Env RECTIFY_2F_STATION_C=report opts out.
+
+    Kevin flipped the default on the integration wave: "Let's have all stations be default ON."
+    Measured before the flip, T1 over 15 libraries, stations off -> on: FP 182 -> 188, TP
+    8,607 -> 9,018 — 411 more true changes for 6 more false ones. `report` remains the arm that
+    reproduces the pre-stations baseline byte for byte, which is what the tier comparison uses.
+    """
     v = os.environ.get('RECTIFY_2F_STATION_C', '').strip().lower()
-    return 'attach' if v == 'attach' else 'report'
+    return 'report' if v == 'report' else 'attach'
 
 
 def site_established(junction) -> bool:

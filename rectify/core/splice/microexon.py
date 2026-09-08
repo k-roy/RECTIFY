@@ -154,9 +154,15 @@ def microexon_index() -> Dict[str, List[Tuple[int, int]]]:
 
 
 def station_b_mode() -> str:
-    """``'report'`` (default — record what the search found, rewrite nothing) or ``'apply'``.
-    Env RECTIFY_STATION_B."""
-    return 'apply' if os.environ.get('RECTIFY_STATION_B', '').strip().lower() == 'apply' else 'report'
+    """``'apply'`` (DEFAULT since 2026-09-08 — draw the micro-exons) or ``'report'`` (record what the
+    search found, rewrite nothing). Env RECTIFY_STATION_B=report opts out.
+
+    Kevin flipped the default on the integration wave: "Let's have all stations be default ON."
+    The evidence for this one specifically: 304 draws over the SMA panel with ZERO of 304 applied
+    rows disagreeing between the TSV and the BAM, against a pre-existing ISSUE-024 rate of 0.8 %,
+    and it is the one class a splice aligner structurally cannot reach.
+    """
+    return 'report' if os.environ.get('RECTIFY_STATION_B', '').strip().lower() == 'report' else 'apply'
 
 
 def _transcript_id(attrs: str) -> str:

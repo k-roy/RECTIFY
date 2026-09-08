@@ -167,8 +167,13 @@ def test_the_index_loads_only_short_exons(tmp_path):
     assert MX.transcripts_of(idx, 'chrX', 200, 206) == frozenset({'t', 't2'})
 
 
-def test_station_b_is_report_by_default(monkeypatch):
+def test_station_b_is_apply_by_default_and_report_is_the_opt_out(monkeypatch):
+    """Kevin flipped the default ON for the integration wave (2026-09-08). The evidence for this one:
+    304 draws over the SMA panel with ZERO of 304 applied rows disagreeing between the TSV and the
+    BAM, and it is the one exon class a splice aligner structurally cannot reach."""
     monkeypatch.delenv('RECTIFY_STATION_B', raising=False)
+    assert MX.station_b_mode() == 'apply'
+    monkeypatch.setenv('RECTIFY_STATION_B', 'report')
     assert MX.station_b_mode() == 'report'
     monkeypatch.setenv('RECTIFY_STATION_B', 'apply')
     assert MX.station_b_mode() == 'apply'
@@ -232,7 +237,7 @@ def test_report_mode_records_but_draws_nothing(monkeypatch):
     import rectify.core.bam.bam_processor as bp
     from rectify.core.bam.bam_writer import apply_station_b_microexons
 
-    monkeypatch.delenv('RECTIFY_STATION_B', raising=False)
+    monkeypatch.setenv('RECTIFY_STATION_B', 'report')     # the opt-out; apply is now the default
     MX.set_microexon_index(INDEX)
     try:
         read = _orphan_read(MICRO, name='report')
