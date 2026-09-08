@@ -378,3 +378,58 @@ def test_a_homopolymer_explained_gap_is_exempt_from_the_cap_in_both_directions()
     plain = PLUS_SEQ[9:12] + PLUS_SEQ[18:40]
     assert _run_explained_gaps(del_ops, plain, PLUS_SEQ, 40, 140, '+') == set()
     assert _gap_refusal(del_ops, plain, PLUS_SEQ, 40, 140, '+') == EXON_GAP_REFUSAL
+
+
+# ---------------------------------------------- ISSUE-042: the CONDITIONED gap-cap relaxation
+def test_the_relaxed_gap_ratio_needs_BOTH_a_bounded_burden_and_an_established_site(monkeypatch):
+    """Kevin, 2026-09-08: "condition the relaxation on burden <= 0.5 and an established site."
+
+    The two conditions are not redundant, and this test is the record of why: on the SMA panel each
+    one excludes a DIFFERENT read that ratio 3 alone re-admits. 04b17fc6 (the read Kevin ruled should
+    be refused) has a passable burden of 0.375 and is excluded by support; 869b5245 sits on a site
+    carried by 50 clean-anchor reads and is excluded by burden 0.73.
+    """
+    from rectify.core.splice import splice_aware_5prime as S
+
+    S.set_site_support(None)
+    j = ('chrT', 40, 140)
+    # 24 matched, one 6-nt deletion: cap 4 at the ratio in force, cap 8 at the relaxed one.
+    ops = _ops('6M1I9M6D3M1D3M1I3M')
+    matched = sum(n for o, n in ops if o in (0, 7, 8))
+    assert matched == 24 and max(n for o, n in ops if o in (1, 2)) == 6
+
+    # neither condition met -> refused
+    assert S._gap_refusal(ops, junction=j) == S.EXON_GAP_REFUSAL
+    # burden alone (9/24 = 0.375) is not enough while the population knows nothing
+    assert not S._gap_relax_allowed(ops, matched, j)
+    # the site established -> the relaxation applies and the 6D fits under cap 8
+    S.set_site_support({j: 12})
+    try:
+        assert S._gap_relax_allowed(ops, matched, j)
+        assert S._gap_refusal(ops, junction=j) == ''
+        # ... and support alone is not enough either: the same site with a heavy block stays refused
+        heavy = _ops('7M1I4M1I3M1D12M12I1M2I9M8I6M13I10M')      # 869b5245's real block, burden 0.73
+        m2 = sum(n for o, n in heavy if o in (0, 7, 8))
+        assert sum(n for o, n in heavy if o in (1, 2)) / m2 > 0.5
+        assert not S._gap_relax_allowed(heavy, m2, j)
+        assert S._gap_refusal(heavy, junction=j) == S.EXON_GAP_REFUSAL
+        # no junction named -> never relaxed (a caller that cannot say where it landed gets the cap)
+        assert S._gap_refusal(ops) == S.EXON_GAP_REFUSAL
+        # and the whole thing is switchable off
+        monkeypatch.setenv('RECTIFY_2F_GAP_RELAX', 'off')
+        assert S._gap_refusal(ops, junction=j) == S.EXON_GAP_REFUSAL
+    finally:
+        S.set_site_support(None)
+
+
+def test_annotation_alone_does_not_relax_the_cap():
+    """The licence is that the site is real AND heavily used, not that it is catalogued. Reversible,
+    but state it: an annotated site with no read support keeps the cap in force."""
+    from rectify.core.splice import splice_aware_5prime as S
+
+    S.set_site_support(None)
+    j = ('chrT', 40, 140)
+    ops = _ops('6M1I9M6D3M1D3M1I3M')
+    # _attachment_tier would call an annotated landing an attachment; the gap relaxation does not.
+    assert S._attachment_tier(j, True) is True
+    assert not S._gap_relax_allowed(ops, 24, j)

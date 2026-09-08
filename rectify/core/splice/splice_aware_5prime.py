@@ -386,6 +386,30 @@ E_MAX_GAP = 4
 # 6D refused), 638af58a (28 -> 5, 9D refused), de84a10a (14 -> 4, 5I refused), dab60caa (45 -> 9, 6D
 # allowed), 2277f7b3 (4I on 18 matched, allowed). Env RECTIFY_2F_EVIDENCE_GAP_PER_MATCHED.
 E_GAP_PER_MATCHED = 5
+# ISSUE-042 — the CONDITIONED relaxation (Kevin, 2026-09-08: "condition the relaxation on burden
+# <= 0.5 and an established site. --> Agreed.")
+#
+# Kevin approved relaxing the cap on cards R005/R006, and the ratio was left as an env sweep rather
+# than an edited constant. The sweep then said why that mattered. Measured on the SMA panel at ratio
+# 3 (15 libraries, T1 at 936ee76): the relaxation admits 155 blocks the ratio of 5 refuses, and they
+# are mostly not the class he approved it for — median indel burden 0.45, 47 % of them ABOVE the 0.5
+# burden the ISSUE-026 invariant-C bound sets, 28 with more inserted and deleted bases than matched
+# ones, and a median site support of 1. It also re-admits 04b17fc6, the read he ruled should be
+# refused, at exactly the placement he refused.
+#
+# Two conditions fix that, and they are not redundant — each excludes a different problem read:
+#   * indel burden (I + D) / matched <= E_GAP_RELAX_MAX_BURDEN. 869b5245 fails here (0.73) though
+#     the population carries its site on 50 clean-anchor reads.
+#   * the landing site is ESTABLISHED, station C's own definition (site_support >= 3 within the
+#     library). 04b17fc6 fails here (support 1) though its burden is a passable 0.375.
+# Both of the cards Kevin approved survive: 45ee5864 (burden 0.26, support 21) and 638af58a (0.43,
+# support 58). 37 of the 155 pass both.
+#
+# ANNOTATION ALONE DOES NOT RELAX THE CAP — the population must carry the site. The cap is a claim
+# about the block's shape, and what licenses a looser shape is that the site is not only real but
+# heavily used. Reversible in one line if Kevin wants annotated sites in too.
+E_GAP_PER_MATCHED_RELAXED = 3
+E_GAP_RELAX_MAX_BURDEN = 0.5
 EXON_IDENTITY_REFUSAL = 'exon_identity_below_floor'
 EXON_BITS_REFUSAL = 'exon_bits_below_floor'
 EXON_GAP_REFUSAL = 'exon_gap_above_max'
@@ -749,8 +773,29 @@ def _run_len(genome_seq: str, pos: int, base: str) -> int:
     return n
 
 
+def gap_relax_mode() -> str:
+    """``'conditioned'`` (default — ISSUE-042) or ``'off'``. Env RECTIFY_2F_GAP_RELAX."""
+    return 'off' if os.environ.get('RECTIFY_2F_GAP_RELAX', '').strip().lower() == 'off' else 'conditioned'
+
+
+def _gap_relax_allowed(cigar_ops, matched: int, junction) -> bool:
+    """Whether this block earns the relaxed gap ratio: a bounded indel burden AND a site the
+    population has established. See E_GAP_PER_MATCHED_RELAXED for why both, and which read each
+    condition excludes."""
+    if junction is None or matched <= 0 or gap_relax_mode() == 'off':
+        return False
+    burden = sum(ln for op, ln in cigar_ops if op in (1, 2)) / float(matched)
+    raw = os.environ.get('RECTIFY_2F_GAP_RELAX_MAX_BURDEN', '').strip()
+    try:
+        limit = float(raw) if raw else E_GAP_RELAX_MAX_BURDEN
+    except ValueError:
+        limit = E_GAP_RELAX_MAX_BURDEN
+    return burden <= limit and site_established(junction)
+
+
 def _gap_refusal(cigar_ops, align_seq: str = None, genome_seq: str = None,
-                 intron_start: int = None, intron_end: int = None, strand: str = None) -> str:
+                 intron_start: int = None, intron_end: int = None, strand: str = None,
+                 junction=None) -> str:
     """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer than the cap
     (``max(E_MAX_GAP, matched // E_GAP_PER_MATCHED)``), EXCEPT gaps a homopolymer explains.
 
@@ -779,6 +824,12 @@ def _gap_refusal(cigar_ops, align_seq: str = None, genome_seq: str = None,
     except ValueError:
         per = E_GAP_PER_MATCHED
     matched = sum(ln for op, ln in cigar_ops if op in (0, 7, 8))
+    if _gap_relax_allowed(cigar_ops, matched, junction):
+        raw3 = os.environ.get('RECTIFY_2F_GAP_PER_MATCHED_RELAXED', '').strip()
+        try:
+            per = int(raw3) if raw3 else E_GAP_PER_MATCHED_RELAXED
+        except ValueError:
+            per = E_GAP_PER_MATCHED_RELAXED
     cap = max(cap, matched // per) if per > 0 else cap
     exempt = set()
     if align_seq is not None and genome_seq is not None and intron_start is not None:
@@ -3972,7 +4023,8 @@ def _rescue_3ss_truncation_body(
                           _exon_shape,
                           annotated=_attachment_tier(best_junction, bool(_emitted_annotated)))
                       or _gap_refusal(_cigar_ops, _align_seq, genome_seq,
-                                      _intron_start, _intron_end, strand)
+                                      _intron_start, _intron_end, strand,
+                                      junction=best_junction)
                       or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
                 _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
@@ -4199,7 +4251,8 @@ def _rescue_3ss_truncation_body(
                            _shape4,
                            annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot4_floor))
                        or _gap_refusal(_cigar_ops4, _intronic_seq4 or '', genome_seq,
-                                       intron_start, intron_end, strand))
+                                       intron_start, intron_end, strand,
+                                       junction=(j_chrom, intron_start, intron_end)))
         if _e_tok4:
             _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                 _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
@@ -4301,7 +4354,8 @@ def _rescue_3ss_truncation_body(
                                 _shape3,
                                 annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot3))
                             or _gap_refusal(_ops3, _seg3, genome_seq,
-                                            intron_start, intron_end, strand)))
+                                            intron_start, intron_end, strand,
+                                            junction=(j_chrom, intron_start, intron_end))))
                 if _shape3 is None or _e_tok3:
                     _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
                         _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)
