@@ -346,3 +346,65 @@ def test_station_b_stands_down_when_a_5prime_rescue_touches_the_same_intron(monk
             assert (60, 460) in [tuple(j) for j in row['junctions']] or not row['junctions']
     finally:
         MX.set_microexon_index(None)
+
+
+def test_the_tsv_loader_carries_the_station_b_columns_to_the_writer(tmp_path):
+    """The row reaches the writer ONLY through `_load_corrections_from_tsv`, which reads a fixed list
+    of columns off the header — a column it does not name is silently dropped.
+
+    Measured on the 2026-09-08 ON arm before this was fixed: the TSV claimed a 12-nt insertion split
+    into two introns and the BAM still carried `70M 12I 599N`, because the loader never passed
+    `station_b_applied` and the writer's first test therefore always failed. A round trip through a
+    real TSV is the only test that catches it; asserting on the row dict does not.
+    """
+    from rectify.core.bam.bam_writer import _load_corrections_from_tsv
+    from rectify.core.bam.output import CORRECTION_TSV_HEADER, correction_result_to_tsv_row
+
+    row = {
+        'read_id': 'r', 'chrom': CHROM, 'strand': '+',
+        'original_3prime': 559, 'corrected_3prime': 559,
+        'ambiguity_min': 0, 'ambiguity_max': 0, 'ambiguity_range': 0,
+        'correction_applied': [], 'confidence': 'high', 'qc_flags': [],
+        'station_b_microexons': f'{CHROM}:200-206',
+        'station_b_alternatives': f'{CHROM}:300-306',
+        'station_b_applied': 1,
+        'station_b_intron_start': 60, 'station_b_intron_end': 460,
+    }
+    p = tmp_path / 'corrected.tsv'
+    with open(p, 'w') as fh:
+        fh.write('\t'.join(CORRECTION_TSV_HEADER) + '\n')
+        fh.write('\t'.join(correction_result_to_tsv_row(row)) + '\n')
+
+    got = _load_corrections_from_tsv(str(p))['r']
+    assert got['station_b_microexons'] == f'{CHROM}:200-206'
+    assert got['station_b_alternatives'] == f'{CHROM}:300-306'
+    assert got['station_b_applied'] == 1
+    assert (got['station_b_intron_start'], got['station_b_intron_end']) == ('60', '460')
+
+    # ... and the writer, handed exactly that loaded row, draws the micro-exon.
+    from rectify.core.bam.bam_writer import apply_station_b_microexons
+    read = _orphan_read(MICRO, name='roundtrip')
+    assert apply_station_b_microexons(read, got) is True
+    assert read.cigartuples == [(0, 60), (3, 140), (0, 6), (3, 254), (0, 100)]
+
+
+def test_the_writer_stamps_XB_and_XV_only_when_it_drew(tmp_path):
+    """The tags are the record of what was drawn and what was equally good; an un-applied row must
+    not leave an XB behind claiming a draw that never happened."""
+    from rectify.core.bam.bam_writer import apply_corrected_edits_to_read
+
+    corr = {'corrected_3prime': 559, 'strand': '+', 'five_prime_rescued': False,
+            'five_prime_position': None, 'five_prime_soft_clip': 0, 'five_prime_exon_cigar': '',
+            'five_prime_upstream_trim': 0, 'five_prime_intron_clip_pos': -1, 'reanchor_clip_len': 0,
+            'station_b_microexons': f'{CHROM}:200-206',
+            'station_b_alternatives': f'{CHROM}:300-306',
+            'station_b_applied': 1, 'station_b_intron_start': 60, 'station_b_intron_end': 460}
+    read = _orphan_read(MICRO, name='tagged')
+    apply_corrected_edits_to_read(read, corr, {CHROM: GENOME_SEQ})
+    assert read.get_tag('XB') == f'{CHROM}:200-206'
+    assert read.get_tag('XV') == f'{CHROM}:300-306'
+
+    corr_off = dict(corr, station_b_applied=0)
+    read2 = _orphan_read(MICRO, name='untagged')
+    apply_corrected_edits_to_read(read2, corr_off, {CHROM: GENOME_SEQ})
+    assert not read2.has_tag('XB') and not read2.has_tag('XV')

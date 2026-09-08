@@ -144,6 +144,15 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_oc_ext   = hdr.index('oc_homopolymer_extension')   if 'oc_homopolymer_extension'   in hdr else -1
             i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
             i_oc_term  = hdr.index('oc_terminal_base')           if 'oc_terminal_base'           in hdr else -1
+            # ISSUE-040 station B: the micro-exon configuration to DRAW, the equally good ones to
+            # record (BAM tags XB / XV), and the intron the writer locates on the LIVE record.
+            # Measured 2026-09-08: omitting these here is how the ON arm's TSV claimed a split the
+            # BAM never got — the row reaches the writer only through this loader.
+            i_sb_seg   = hdr.index('station_b_microexons')        if 'station_b_microexons'       in hdr else -1
+            i_sb_alt   = hdr.index('station_b_alternatives')      if 'station_b_alternatives'     in hdr else -1
+            i_sb_app   = hdr.index('station_b_applied')           if 'station_b_applied'          in hdr else -1
+            i_sb_is    = hdr.index('station_b_intron_start')      if 'station_b_intron_start'     in hdr else -1
+            i_sb_ie    = hdr.index('station_b_intron_end')        if 'station_b_intron_end'       in hdr else -1
 
             for line in _f:
                 parts = line.rstrip('\n').split('\t')
@@ -175,6 +184,11 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 oc_ext  = int(parts[i_oc_ext])  if i_oc_ext  >= 0 and len(parts) > i_oc_ext  and parts[i_oc_ext]  else 0
                 oc_cnt  = int(parts[i_oc_cnt])  if i_oc_cnt  >= 0 and len(parts) > i_oc_cnt  and parts[i_oc_cnt]  else 0
                 oc_term = parts[i_oc_term]      if i_oc_term >= 0 and len(parts) > i_oc_term else ''
+                sb_seg  = parts[i_sb_seg] if i_sb_seg >= 0 and len(parts) > i_sb_seg else ''
+                sb_alt  = parts[i_sb_alt] if i_sb_alt >= 0 and len(parts) > i_sb_alt else ''
+                sb_app  = 1 if (i_sb_app >= 0 and len(parts) > i_sb_app and parts[i_sb_app] == '1') else 0
+                sb_is   = parts[i_sb_is] if i_sb_is >= 0 and len(parts) > i_sb_is else ''
+                sb_ie   = parts[i_sb_ie] if i_sb_ie >= 0 and len(parts) > i_sb_ie else ''
 
                 corrections[rid] = {
                     'corrected_3prime':           corr_pos,
@@ -194,6 +208,11 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'oc_homopolymer_extension':   oc_ext,
                     'oc_overcall_count':          oc_cnt,
                     'oc_terminal_base':           oc_term,
+                    'station_b_microexons':       sb_seg,
+                    'station_b_alternatives':     sb_alt,
+                    'station_b_applied':          sb_app,
+                    'station_b_intron_start':     sb_is,
+                    'station_b_intron_end':       sb_ie,
                 }
     except OSError as exc:
         raise OSError(
