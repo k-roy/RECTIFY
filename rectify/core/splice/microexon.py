@@ -33,6 +33,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import logging
+import os
 import random
 from bisect import bisect_left
 from collections import defaultdict
@@ -79,21 +80,64 @@ MAX_SPLITS = 16
 
 _M, _I, _D, _N, _S, _H, _P, _EQ, _X = range(9)
 
-# Intron end PAIRS, in genomic orientation. A junction is judged as a PAIR, never as two independent
-# ends: checking sets separately would admit a GT donor with an AC acceptor, which is not a splice
-# class at all — it is one U2 end and one U12 end. The three real classes are GT-AG, GC-AG and AT-AC
-# in TRANSCRIPT orientation (AT-AC is a real class for every organism rectify runs on — Kevin
-# 2026-09-05, Talkish 2019). On the minus strand the transcript's donor is the RIGHT end of the
-# genomic intron, so each pair is reverse-complemented AS A UNIT — the same convention as
-# junction_scoring._CANONICAL_5SS_{PLUS,MINUS}.
-_INTRON_PAIRS = {
-    '+': frozenset({('GT', 'AG'), ('GC', 'AG'), ('AT', 'AC')}),
-    '-': frozenset({('CT', 'AC'), ('CT', 'GC'), ('GT', 'AT')}),
+# Intron ends are judged as a PAIR and in TRANSCRIPT orientation, never as two independent genomic
+# dinucleotides: checking sets separately would admit a GT donor with an AC acceptor, which is one U2
+# end and one U12 end, not a splice class.
+#
+# 🔴 THE 3'SS SIDE IS SPECIES-DEPENDENT AND THIS MODULE USED TO PRETEND IT WAS NOT (Kevin,
+# 2026-09-08: "both human and yeast can utilize GT-AG/GC-AG/AT-AC, but yeast also have the
+# non-canonical 3' SS arms BG and AT"). The hierarchy he names is already in the codebase —
+# `junction_scoring._3ss_tier_from_rna_trinucleotide`, derived from yeast splicing observations:
+#
+#   tier 0  YAG  (C/T)AG   most common, highest efficiency
+#   tier 1  RAG  (A/G)AG
+#   tier 2  NBG  B = C/G/T — "non-canonical but observed in yeast"   <- Kevin's "BG"
+#   tier 3  NAT                  very rare non-canonical             <- Kevin's "AT"
+#   tier 4  other
+#
+# So the acceptor is judged by TIER against a per-organism ceiling rather than by a hard-coded
+# dinucleotide set, and there is one model in the tree instead of two that can drift apart.
+#
+# The DONOR side is species-neutral: GT and GC for U2, AT for U12. AT-AC is a real class in every
+# organism rectify runs on — yeast splices it through its major spliceosome (Talkish 2019, Kevin's
+# call 2026-09-05) — so it is admitted everywhere, but only PAIRED with an AC acceptor.
+_U2_DONORS = ('GT', 'GC')
+_U12_DONOR = 'AT'
+_U12_ACCEPTOR = 'AC'
+#: 3'SS tier ceiling per organism. Human keeps the U2 hierarchy at RAG; yeast reaches NBG/NAT.
+MICROEXON_MAX_3SS_TIER = {
+    'saccharomyces_cerevisiae': 3,
 }
-#: Any dinucleotide that can open a genomic intron on this strand — a cheap pre-filter only; the
-#: pair test below is the real gate.
-_OPENERS = {'+': frozenset({'GT', 'GC', 'AT'}), '-': frozenset({'CT', 'GT'})}
+MICROEXON_MAX_3SS_TIER_DEFAULT = 1
+_SPECIES_MAX_3SS_TIER = MICROEXON_MAX_3SS_TIER_DEFAULT
 
+
+def set_species(organism) -> None:
+    """Set the 3'SS tier ceiling from the run's organism; unknown organisms keep the default."""
+    global _SPECIES_MAX_3SS_TIER
+    key = (organism or '').strip().lower().replace(' ', '_')
+    _SPECIES_MAX_3SS_TIER = MICROEXON_MAX_3SS_TIER.get(key, MICROEXON_MAX_3SS_TIER_DEFAULT)
+
+
+def max_3ss_tier() -> int:
+    raw = os.environ.get('RECTIFY_MICROEXON_MAX_3SS_TIER', '').strip()
+    try:
+        return int(raw) if raw else _SPECIES_MAX_3SS_TIER
+    except ValueError:
+        return _SPECIES_MAX_3SS_TIER
+
+
+def _rc(x: str) -> str:
+    return x[::-1].translate(str.maketrans('ACGTacgtN', 'TGCAtgcaN'))
+
+
+def intron_ends_rna(genome_seq: str, start: int, end: int, strand: str):
+    """``(donor_dinucleotide, acceptor_trinucleotide)`` of ``[start, end)`` in TRANSCRIPT
+    orientation — the orientation every motif rule in this file and in junction_scoring is written
+    in. Reading a minus-strand intron as if it were plus is the bug ISSUE-038 was written for."""
+    if strand == '-':
+        return _rc(genome_seq[end - 2:end]).upper(), _rc(genome_seq[start:start + 3]).upper()
+    return genome_seq[start:start + 2].upper(), genome_seq[end - 3:end].upper()
 
 #: Installed once per run (and per spawned worker) from the annotation; empty = station B inert.
 _MICROEXON_INDEX: Dict[str, List[Tuple[int, int]]] = {}
@@ -112,8 +156,7 @@ def microexon_index() -> Dict[str, List[Tuple[int, int]]]:
 def station_b_mode() -> str:
     """``'report'`` (default — record what the search found, rewrite nothing) or ``'apply'``.
     Env RECTIFY_STATION_B."""
-    import os as _os
-    return 'apply' if _os.environ.get('RECTIFY_STATION_B', '').strip().lower() == 'apply' else 'report'
+    return 'apply' if os.environ.get('RECTIFY_STATION_B', '').strip().lower() == 'apply' else 'report'
 
 
 def _transcript_id(attrs: str) -> str:
@@ -192,14 +235,20 @@ def exons_inside(index: Dict[str, List[Tuple[int, int]]], chrom: str,
 
 
 def _intron_pair_ok(genome_seq: str, start: int, end: int, strand: str) -> bool:
-    """Whether ``[start, end)`` is a legal intron — judged as a PAIR of ends, per strand."""
+    """Whether ``[start, end)`` is a legal intron — judged as a PAIR, in transcript orientation, with
+    the 3'SS graded by the shared yeast-derived tier model at this organism's ceiling."""
+    from .junction_scoring import _3ss_tier_from_rna_trinucleotide
+
     if end - start < MIN_FLANKING_INTRON:
         return False
-    d5 = genome_seq[start:start + 2].upper()
-    d3 = genome_seq[end - 2:end].upper()
-    if len(d5) != 2 or len(d3) != 2:
+    donor, acc3 = intron_ends_rna(genome_seq, start, end, strand)
+    if len(donor) != 2 or len(acc3) != 3:
         return False
-    return (d5, d3) in _INTRON_PAIRS.get(strand, frozenset())
+    if donor == _U12_DONOR:                       # U12: AT pairs only with AC
+        return acc3[1:] == _U12_ACCEPTOR
+    if donor not in _U2_DONORS:
+        return False
+    return _3ss_tier_from_rna_trinucleotide(acc3) <= max_3ss_tier()
 
 
 def split_introns(split: List[Tuple[int, int]], intron_start: int,
@@ -274,9 +323,11 @@ def find_microexon_splits(inserted_seq: str,
                 continue
             if genome_seq[s_:e_].upper() != up[consumed:consumed + length]:
                 continue
-            # Cheap pre-filter only: the intron this segment opens must at least START with a
-            # dinucleotide that can open one. The full pair test runs on the complete split.
-            if genome_seq[e_:e_ + 2].upper() not in _OPENERS.get(strand, frozenset()):
+            # Cheap pre-filter only: the intron this segment opens must at least begin with a
+            # dinucleotide that can open one, read in transcript orientation. The full PAIR test
+            # runs on the complete split.
+            _open = (_rc(genome_seq[s_ - 2:s_]) if strand == '-' else genome_seq[e_:e_ + 2]).upper()
+            if _open not in (_U2_DONORS + (_U12_DONOR,)):
                 continue
             _search(consumed + length, e_ + MIN_FLANKING_INTRON, e_, chosen + [(s_, e_)])
             if len(found) >= limit:
