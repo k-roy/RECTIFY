@@ -629,21 +629,79 @@ def _junction_adjacent_indel_refusal(cigar_ops, strand: str, genome_seq: str,
     # a homopolymer over-call: n bases, all the run's base, and the run itself at least 3 long
     if run >= 3 and n <= run:
         return ''
-    # a dinucleotide repeat over-call: the flank starts with >= 2 copies of a 2-mer of DISTINCT bases
-    # (an equal-base 2-mer is the homopolymer case above, and must not get a second, looser chance),
-    # and the insertion is whole copies of it, no longer than the repeat itself.
-    if len(flank) >= 4 and flank[0] != flank[1] and flank[:2] == flank[2:4] and n % 2 == 0:
-        copies = 2
-        while (copies + 1) * 2 <= len(flank) and flank[copies * 2:copies * 2 + 2] == flank[:2]:
-            copies += 1
-        if n <= copies * 2:
-            return ''
+    # NO dinucleotide branch. Kevin ruled it out on R024 (da3cc6c7, 2026-09-07): "whatever is done to make
+    # this look right is subjective and could cause regressions … perhaps GAGA is often duplicated in a pore
+    # to GAGAGAGA, but who knows, and perhaps a T to A call in GAGAGTGA is just as likely." A dinucleotide
+    # over-call and an ordinary miscall are not distinguishable here, and the branch had already produced one
+    # bug (a homopolymer satisfies "two copies of the same 2-mer" trivially). Homopolymers only.
     return JUNCTION_INDEL_REFUSAL
 
 
-def _gap_refusal(cigar_ops) -> str:
-    """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer
-    than ``E_MAX_GAP`` (env ``RECTIFY_2F_EVIDENCE_MAX_GAP``), else ''."""
+def _run_explained_gaps(cigar_ops, align_seq: str, genome_seq: str,
+                        intron_start: int, intron_end: int, strand: str) -> set:
+    """Indices of I/D ops the reference EXPLAINS as an over- or under-called homopolymer.
+
+    Kevin, R006 (662ec1ca, 2026-09-07): that block's gap is an under-called G-run, "the mirror image of
+    the insertion case", and a gap a homopolymer explains must not trip the cap in EITHER direction. A
+    deletion qualifies when the missing reference bases are all one base continuing a run of >= 3; an
+    insertion when the inserted read bases are all one base and that base continues a reference run of
+    >= 3 at the insertion point. No dinucleotide case (R024).
+    """
+    ops = [(o, n) for o, n in (cigar_ops or []) if n]
+    if not ops:
+        return set()
+    span = sum(n for o, n in ops if o in (0, 2, 7, 8))
+    ri = (intron_start - span) if strand == '+' else intron_end
+    qi, out = 0, set()
+    for k, (o, n) in enumerate(ops):
+        if o in (0, 7, 8):
+            ri += n; qi += n
+        elif o == 4:
+            qi += n
+        elif o == 1:                                  # insertion: read bases not in the reference
+            ins = (align_seq[qi:qi + n] or '').upper()
+            here = (genome_seq[ri - 1:ri] or '').upper()
+            nxt = (genome_seq[ri:ri + 1] or '').upper()
+            for base in {here, nxt} - {''}:
+                if ins and len(set(ins)) == 1 and ins[0] == base and _run_len(genome_seq, ri, base) >= 3:
+                    out.add(k); break
+            qi += n
+        elif o == 2:                                  # deletion: reference bases missing from the read
+            dele = (genome_seq[ri:ri + n] or '').upper()
+            if dele and len(set(dele)) == 1 and _run_len(genome_seq, ri, dele[0]) >= 3:
+                out.add(k)
+            ri += n
+    return out
+
+
+def _run_len(genome_seq: str, pos: int, base: str) -> int:
+    """Length of the homopolymer of ``base`` spanning ``pos`` in the reference (looking both ways)."""
+    n = 0
+    i = pos
+    while 0 <= i < len(genome_seq) and genome_seq[i].upper() == base:
+        n += 1; i += 1
+    i = pos - 1
+    while 0 <= i < len(genome_seq) and genome_seq[i].upper() == base:
+        n += 1; i -= 1
+    return n
+
+
+def _gap_refusal(cigar_ops, align_seq: str = None, genome_seq: str = None,
+                 intron_start: int = None, intron_end: int = None, strand: str = None) -> str:
+    """``EXON_GAP_REFUSAL`` when any single I or D op in the placed block is longer than the cap
+    (``max(E_MAX_GAP, matched // E_GAP_PER_MATCHED)``), EXCEPT gaps a homopolymer explains.
+
+    Kevin APPROVED relaxing this on R005/R006 (2026-09-07) — the cap refuses blocks of 25-35 bits at
+    identity 1.00 and its own strongest example is an under-called G-run — but the relaxation is NOT
+    applied yet and the machinery here is deliberately dormant: `_run_explained_gaps` is written and
+    tested, and the call sites pass no sequence, so behaviour is identical to 5d70a92.
+    WHY IT IS PARKED: setting `E_GAP_PER_MATCHED` to 3 makes 04b17fc6 draw again — the control Kevin
+    approved REFUSING ("low quality seq") — and on R007 he asked for that read to be placed at an
+    UPSTREAM ALT EXON (54,808,433 -> 54,809,302, carried by 90 reads), not at the gap-capped site. So
+    relaxing the cap alone gives that read a junction at the wrong place. The operating point has to be
+    chosen with the station-C attachment rule, not before it. Eight pinned replays move when it is
+    relaxed; they are the measurement, not an obstacle.
+    """
     if not cigar_ops:
         return ''
     raw = os.environ.get('RECTIFY_2F_EVIDENCE_MAX_GAP', '').strip()
@@ -658,8 +716,15 @@ def _gap_refusal(cigar_ops) -> str:
         per = E_GAP_PER_MATCHED
     matched = sum(ln for op, ln in cigar_ops if op in (0, 7, 8))
     cap = max(cap, matched // per) if per > 0 else cap
-    if any(op in (1, 2) and ln > cap for op, ln in cigar_ops):
-        return EXON_GAP_REFUSAL
+    exempt = set()
+    if align_seq is not None and genome_seq is not None and intron_start is not None:
+        try:
+            exempt = _run_explained_gaps(cigar_ops, align_seq, genome_seq, intron_start, intron_end, strand)
+        except Exception:
+            exempt = set()
+    for k, (op, ln) in enumerate(cigar_ops):
+        if op in (1, 2) and ln > cap and k not in exempt:
+            return EXON_GAP_REFUSAL
     return ''
 
 
