@@ -233,3 +233,22 @@ def test_the_two_columns_are_last_and_blank_without_a_rescue():
     cells = correction_result_to_tsv_row(row)
     assert len(cells) == len(CORRECTION_TSV_HEADER)
     assert cells[-8] == '' and cells[-7] == ''
+
+
+def test_a_refused_read_reports_whether_its_JUDGED_site_is_annotated(monkeypatch):
+    """ISSUE-046. `landing_annotated` was `setdefault(False)` on a refusal — a placeholder that read
+    as a measurement, and asserted "novel" about annotated sites. Measured on the panel: 149 refused
+    reads at established sites said 0 and 4 said 1, while 98.8 % of drawn landings are annotated.
+    A review card built on it told Kevin the same untruth.
+
+    A refusal emits no junction, so the column is keyed on the site the read was LAST JUDGED at."""
+    # Both floors above the block's 24 bits, so the ANNOTATED case is refused too — otherwise it
+    # takes the attachment tier and draws, and the column under test is never exercised.
+    _floors(monkeypatch, 30, 26)
+    row_novel = _row(_clip_read(12, name='refused_novel'))
+    assert not row_novel['five_prime_rescued']
+    assert row_novel['five_prime_landing_annotated'] == 0        # judged at a NOVEL candidate
+
+    row_annot = _row(_clip_read(12, name='refused_annot'), annotated_junctions={JUNCTION})
+    assert not row_annot['five_prime_rescued']
+    assert row_annot['five_prime_landing_annotated'] == 1        # judged at an ANNOTATED one

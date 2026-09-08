@@ -2577,7 +2577,17 @@ def rescue_3ss_truncation(
     _refused_tok = (_result.get('clip_refused') or _result.get('novel_refused_first') or '')
     _result.pop('novel_refused_first', None)
     if _refused_tok in PLACEMENT_REFUSALS and not _result.get('rescued'):
-        _result.setdefault('landing_annotated', False)
+        # 🔴 ISSUE-046: this used to be `setdefault(..., False)` — a PLACEHOLDER standing where a
+        # measurement belonged, and it read as one. Measured on the panel: of the reads refused at a
+        # site the population has established, 149 said landing_annotated=0 and 4 said 1, while
+        # 98.8 % of DRAWN landings are annotated. The column was asserting "novel" about annotated
+        # sites, and a review card built on it told Kevin the same untruth (2026-09-08).
+        # A refusal emits no junction, so it is keyed on the site the read was LAST JUDGED at —
+        # `exon_site`, the same source `exon_bits` and (ISSUE-039) `site_support` already use. A
+        # DRAWN rescue is still keyed on the emitted junction, unchanged.
+        _rs = _result.get('exon_site')
+        _result['landing_annotated'] = bool(
+            _rs is not None and (_annotated_keys is None or tuple(_rs[:3]) in _annotated_keys))
     elif _refused_tok in PLACEMENT_REFUSALS and _result.get('rescued'):
         _result['novel_evidence'] = (
             f"{_refused_tok}>" + ('annotated' if _result.get('landing_annotated') else 'novel'))
