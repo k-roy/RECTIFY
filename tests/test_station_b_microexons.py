@@ -239,7 +239,7 @@ def test_report_mode_records_but_draws_nothing(monkeypatch):
         row = bp.correct_read_3prime(read, {CHROM: GENOME_SEQ}, annotated_junctions=set())[0]
         assert row['station_b_microexons'] == f'{CHROM}:200-206'
         assert row['station_b_applied'] == 0
-        assert row['station_b_intron_start'] == 60 and row['station_b_intron_end'] == 460
+        assert row['station_b_intron_start'] == '60' and row['station_b_intron_end'] == '460'
         # the junctions column still names the ONE intron the aligner drew
         assert (60, 460) in [tuple(j) for j in row['junctions']]
         fresh = _orphan_read(MICRO, name='report')
@@ -413,3 +413,74 @@ def test_the_writer_stamps_XB_and_XV_only_when_it_drew(tmp_path):
     read2 = _orphan_read(MICRO, name='untagged')
     apply_corrected_edits_to_read(read2, corr_off, {CHROM: GENOME_SEQ})
     assert not read2.has_tag('XB') and not read2.has_tag('XV')
+
+
+# --------------------------------------------------- ISSUE-043: every insertion, not only the first
+def _two_orphan_read(name="two"):
+    """A read with TWO junction-adjacent insertions, each explainable by its own annotated
+    micro-exon in its own intron: `60M 400N kI 60M 400N kI 100M` over an extended contig."""
+    g = list(GENOME_SEQ) + list(_second_locus())
+    return ''.join(g)
+
+
+def _second_locus():
+    """A second exon/intron/exon unit at [560, 1120) with a micro-exon at [700, 706)."""
+    g = list('G' * 60 + 'GT' + 'A' * 396 + 'AG' + 'C' * 100)
+    g[138:140] = list('AG')          # acceptor before the micro-exon (offset 560 + 138 = 698)
+    g[140:146] = list(MICRO)
+    g[146:148] = list('GT')
+    return ''.join(g)
+
+
+def test_a_read_with_two_junction_adjacent_insertions_yields_two_calls():
+    """Measured on the SMA panel: 20 reads carried a SECOND explainable insertion at a different
+    intron and every one was silently left, because the search returned after the first hit — 6.6 %
+    of the station-B reads. This is that case, hermetically."""
+    genome = _two_orphan_read()
+    index = {CHROM: [(200, 206), (700, 706)]}
+    seq = (genome[0:60] + MICRO + genome[460:560]           # exon1 | micro1 | exon2
+           + genome[560:620] + MICRO + genome[1020:1120])   # exon3 | micro2 | exon4
+    cig = [(0, 60), (3, 400), (1, 6), (0, 100),
+           (0, 60), (3, 400), (1, 6), (0, 100)]
+    read = _read(cig, seq, start=0, name="two")
+    calls = MX.recover_all_microexons(read, genome, '+', index)
+    assert [c.intron for c in calls] == [(60, 460), (620, 1020)]
+    assert [c.segments for c in calls] == [[(200, 206)], [(700, 706)]]
+    # the one-call entry point still finds only the first — that is the behaviour being fixed
+    assert MX.recover_read_microexons(read, genome, '+', index).intron == (60, 460)
+
+
+def test_the_row_encoding_round_trips_two_calls():
+    from rectify.core.splice.microexon import MicroexonCall, format_calls, parse_calls
+    calls = [MicroexonCall(CHROM, [(200, 206)], [], 1, 16.0, [], 6, (60, 460)),
+             MicroexonCall(CHROM, [(700, 706)], [], 1, 16.0, [], 6, (620, 1020))]
+    segs, alts, starts, ends, n_tied = format_calls(CHROM, calls)
+    assert segs == f'{CHROM}:200-206|{CHROM}:700-706'
+    assert (starts, ends) == ('60,620', '460,1020')
+    assert parse_calls(segs, starts, ends) == [((60, 460), [(200, 206)]),
+                                               ((620, 1020), [(700, 706)])]
+    # a SINGLE call round-trips to exactly the one-call strings, so old consumers keep working
+    one = format_calls(CHROM, calls[:1])
+    assert one[0] == f'{CHROM}:200-206' and (one[2], one[3]) == ('60', '460')
+
+
+def test_the_writer_draws_both_calls():
+    from rectify.core.bam.bam_writer import apply_station_b_microexons
+    genome = _two_orphan_read()
+    seq = (genome[0:60] + MICRO + genome[460:560]
+           + genome[560:620] + MICRO + genome[1020:1120])
+    cig = [(0, 60), (3, 400), (1, 6), (0, 100),
+           (0, 60), (3, 400), (1, 6), (0, 100)]
+    read = _read(cig, seq, start=0, name="two")
+    row = {'station_b_applied': 1,
+           'station_b_microexons': f'{CHROM}:200-206|{CHROM}:700-706',
+           'station_b_intron_start': '60,620', 'station_b_intron_end': '460,1020'}
+    assert apply_station_b_microexons(read, row) is True
+    assert (1, 6) not in read.cigartuples          # neither insertion survives
+    nops, ref = [], read.reference_start
+    for op, ln in read.cigartuples:
+        if op == 3:
+            nops.append((ref, ref + ln))
+        if op in (0, 2, 3, 7, 8):
+            ref += ln
+    assert nops == [(60, 200), (206, 460), (620, 700), (706, 1020)]

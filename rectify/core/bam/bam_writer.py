@@ -670,45 +670,50 @@ def _parse_segment_list(text: str):
 
 
 def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> bool:
-    """Draw the row's micro-exon configuration into *read*'s CIGAR (ISSUE-040). True when it changed.
+    """Draw the row's micro-exon configurations into *read*'s CIGAR (ISSUE-040/043). True when it
+    changed. Applies EVERY call the row carries, not only the first.
 
-    Record-driven, never index-driven: the row names the intron by COORDINATES, and this walks the
+    Record-driven, never index-driven: the row names each intron by COORDINATES, and this walks the
     LIVE CIGAR to find the N op with exactly that reference span together with an adjacent insertion
-    whose length equals the segments' total. If the geometry has moved (a 2F rescue rewrote the same
-    region), the rewrite is skipped rather than applied to the wrong op — a coordinate computed
-    instead of read from the record is the failure mode CLAUDE.md names.
+    whose length equals that call's segments. If the geometry has moved, that call is skipped rather
+    than applied to the wrong op — a coordinate computed instead of read from the record is the
+    failure mode CLAUDE.md names. The calls are independent (drawing one only subdivides its own
+    intron), so a skipped call cannot invalidate the others.
 
-    The result never leaves an I or a D beside an N: the whole insertion is consumed as M
+    The result never leaves an I or a D beside an N: each insertion is wholly consumed as M
     (ISSUE-031/038), and both the query span and the reference span are conserved.
     """
     if correction.get('station_b_applied') not in (1, '1', True):
         return False
-    segs = _parse_segment_list(correction.get('station_b_microexons') or '')
-    if not segs:
+    from ..splice.microexon import parse_calls, rewrite_with_microexons
+    calls = parse_calls(correction.get('station_b_microexons') or '',
+                        str(correction.get('station_b_intron_start') or ''),
+                        str(correction.get('station_b_intron_end') or ''))
+    if not calls:
         return False
-    try:
-        i_start, i_end = int(correction['station_b_intron_start']), int(correction['station_b_intron_end'])
-    except (KeyError, TypeError, ValueError):
-        return False
-    cigar = list(read.cigartuples or [])
-    if not cigar:
-        return False
-    total = sum(e - s for s, e in segs)
-    ref = read.reference_start
-    for idx, (op, ln) in enumerate(cigar):
-        if op == 3 and ref == i_start and ref + ln == i_end:
-            for j in (idx - 1, idx + 1):
-                if 0 <= j < len(cigar) and cigar[j][0] == 1 and cigar[j][1] == total:
-                    from ..splice.microexon import rewrite_with_microexons
-                    try:
-                        read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
-                    except AssertionError:
-                        return False
-                    return True
-            return False
-        if op in (0, 2, 3, 7, 8):
-            ref += ln
-    return False
+    changed = False
+    for (i_start, i_end), segs in calls:
+        if not segs:
+            continue
+        total = sum(e - s for s, e in segs)
+        cigar = list(read.cigartuples or [])
+        if not cigar:
+            break
+        ref = read.reference_start
+        for idx, (op, ln) in enumerate(cigar):
+            if op == 3 and ref == i_start and ref + ln == i_end:
+                for j in (idx - 1, idx + 1):
+                    if 0 <= j < len(cigar) and cigar[j][0] == 1 and cigar[j][1] == total:
+                        try:
+                            read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
+                            changed = True
+                        except AssertionError:
+                            pass
+                        break
+                break
+            if op in (0, 2, 3, 7, 8):
+                ref += ln
+    return changed
 
 
 def apply_corrected_edits_to_read(

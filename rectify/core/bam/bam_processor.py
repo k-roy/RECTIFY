@@ -467,7 +467,9 @@ def correct_read_3prime(
     _station_b_microexons = ''       # ISSUE-040: annotated micro-exons found inside a junction-adjacent insertion
     _station_b_alternatives = ''     # equally good configurations NOT drawn (Kevin 2026-09-07)
     _station_b_n_tied = 0            # how many were tied for best; > 1 = the draw picked arbitrarily
-    _station_b_intron = None         # the drawn intron the segments partition
+    _station_b_calls = []            # every explainable insertion, not only the first (ISSUE-043)
+    _sb_starts = ''                  # comma-joined intron starts, parallel to the calls
+    _sb_ends = ''
     _station_b_applied = 0           # 1 when apply mode drew it (the writer does the surgery)
 
     # STATION B (ISSUE-040), report pass: an insertion of >= 3 nt glued to an N is where a splice
@@ -477,22 +479,24 @@ def correct_read_3prime(
     # rewrite exists and is tested (microexon.rewrite_with_microexons) but is not applied here.
     if _microexon.microexon_index():
         try:
-            _mx = _microexon.recover_read_microexons(
+            _mx = _microexon.recover_all_microexons(
                 read, genome.get(chrom_std) or genome.get(chrom) or '', strand,
                 _microexon.microexon_index())
         except Exception as _mxe:                       # never let a report column fail a read
             logger.debug("station B microexon scan failed for %s: %s", read.query_name, _mxe)
-            _mx = None
-        if _mx is not None:
-            _station_b_microexons = _microexon.format_segments(chrom_std, _mx.segments)
-            _station_b_alternatives = _microexon.format_alternatives(chrom_std, _mx.alternatives)
-            _station_b_n_tied = _mx.n_tied
-            _station_b_intron = _mx.intron
+            _mx = []
+        if _mx:
+            (_station_b_microexons, _station_b_alternatives,
+             _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(chrom_std, _mx)
+            _station_b_calls = _mx
             _station_b_applied = 1 if _microexon.station_b_mode() == 'apply' else 0
             _OI_COUNTERS['station_b_microexon_reads'] = _OI_COUNTERS.get('station_b_microexon_reads', 0) + 1
             _OI_COUNTERS['station_b_microexon_segments'] = (
-                _OI_COUNTERS.get('station_b_microexon_segments', 0) + len(_mx.segments))
-            if _mx.ambiguous:
+                _OI_COUNTERS.get('station_b_microexon_segments', 0) + sum(len(c.segments) for c in _mx))
+            if len(_mx) > 1:
+                _OI_COUNTERS['station_b_microexon_multi_call_reads'] = (
+                    _OI_COUNTERS.get('station_b_microexon_multi_call_reads', 0) + 1)
+            if any(c.ambiguous for c in _mx):
                 _OI_COUNTERS['station_b_microexon_ambiguous'] = (
                     _OI_COUNTERS.get('station_b_microexon_ambiguous', 0) + 1)
             if _station_b_applied:
@@ -639,20 +643,27 @@ def correct_read_3prime(
     # claiming two introns where the BAM has one. Rather than let the writer's skip be silent, the
     # row stands down here: a read whose 5' rescue touches the station-B intron is not applied at all.
     # Same rule as `predict_5prime_rescue_refusal` — predict the writer's refusal, never out-run it.
-    if _station_b_applied and _station_b_intron and '_3ss_result' in locals():
+    if _station_b_applied and _station_b_calls and '_3ss_result' in locals():
         _rj_sb = _3ss_result.get('rescued_junction') if _3ss_result.get('rescued') else None
         if _rj_sb is not None and len(_rj_sb) >= 3:
             _lo, _hi = int(_rj_sb[1]), int(_rj_sb[2])
-            if not (_hi <= _station_b_intron[0] or _lo >= _station_b_intron[1]):
-                _station_b_applied = 0
+            _keep = [c for c in _station_b_calls
+                     if (_hi <= c.intron[0] or _lo >= c.intron[1])]
+            if len(_keep) != len(_station_b_calls):
                 _OI_COUNTERS['station_b_stood_down_for_5prime_rescue'] = (
                     _OI_COUNTERS.get('station_b_stood_down_for_5prime_rescue', 0) + 1)
-    if _station_b_applied and _station_b_microexons and _station_b_intron:
-        _segs = [(int(t.rsplit(':', 1)[1].split('-')[0]), int(t.rsplit(':', 1)[1].split('-')[1]))
-                 for t in _station_b_microexons.split(',') if ':' in t]
-        _new_j = _microexon.split_introns(_segs, _station_b_intron[0], _station_b_intron[1])
-        junctions = sorted(set(tuple(j) for j in junctions
-                               if tuple(j) != tuple(_station_b_intron)) | set(_new_j))
+                _station_b_calls = _keep
+                (_station_b_microexons, _station_b_alternatives,
+                 _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(
+                     chrom_std, _station_b_calls)
+                if not _keep:
+                    _station_b_applied = 0
+    if _station_b_applied and _station_b_calls:
+        _j = set(tuple(x) for x in junctions)
+        for _c in _station_b_calls:
+            _j.discard(tuple(_c.intron))
+            _j |= set(_microexon.split_introns(_c.segments, _c.intron[0], _c.intron[1]))
+        junctions = sorted(_j)
     junctions_str = format_junctions_string(junctions)
 
     # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
@@ -861,8 +872,8 @@ def correct_read_3prime(
         'station_b_alternatives': _station_b_alternatives,
         'station_b_n_tied': _station_b_n_tied or '',
         'station_b_applied': _station_b_applied,
-        'station_b_intron_start': (_station_b_intron[0] if _station_b_intron else ''),
-        'station_b_intron_end': (_station_b_intron[1] if _station_b_intron else ''),
+        'station_b_intron_start': _sb_starts,
+        'station_b_intron_end': _sb_ends,
         # Cat2 soft-clip rescue fields (v2.9.1) — populated if Module 2G fires
         'sc_homopolymer_extension': 0,   # under-called homopolymer bases → D op
         'sc_rescued_seq': '',            # non-poly-A bases matched to ref → M op

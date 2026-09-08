@@ -413,6 +413,47 @@ def rewrite_with_microexons(cigar: Sequence[Tuple[int, int]],
     return list(cigar[:lo]) + middle + list(cigar[hi + 1:])
 
 
+#: A read carrying more than this many separately-explainable junction-adjacent insertions is not a
+#: micro-exon story any more; stop and leave it alone.
+MAX_CALLS_PER_READ = 4
+
+
+def recover_all_microexons(read, genome_seq: str, strand: str,
+                           index: Dict[str, List[Tuple[int, int]]],
+                           max_calls: int = MAX_CALLS_PER_READ):
+    """Every junction-adjacent insertion on this read that annotated micro-exons explain, not just
+    the first.
+
+    ⚠️ THE FIRST-ONLY BEHAVIOUR WAS A REAL LOSS, and it is the reason this exists. Measured on the
+    SMA panel (25,999 reads, T1 at 936ee76): 20 reads carry a SECOND explainable insertion at a
+    different intron, all 20 of them on reads where the first call had already been drawn — 6.6 % of
+    the 304 station-B reads. `recover_read_microexons` returned after the first hit and the rest were
+    silently left as insertions.
+
+    Each call names its own intron by COORDINATES and the calls are independent: drawing one only
+    subdivides its own intron, so it cannot move another's. That is what lets the writer apply them
+    one at a time against the live record, and it is why the search may be run against the original
+    CIGAR and the results applied later.
+    """
+    import copy as _copy
+
+    out = []
+    work = read
+    for _ in range(max(1, max_calls)):
+        call = recover_read_microexons(work, genome_seq, strand, index)
+        if call is None:
+            break
+        if any(c.intron == call.intron for c in out):
+            break                                     # no progress; refuse to spin
+        out.append(call)
+        work = _copy.copy(work)
+        try:
+            work.cigartuples = call.new_cigar
+        except Exception:
+            break
+    return out
+
+
 def recover_read_microexons(read, genome_seq: str, strand: str,
                             index: Dict[str, List[Tuple[int, int]]],
                             ):
@@ -475,3 +516,45 @@ def recover_read_microexons(read, genome_seq: str, strand: str,
             intron=(n_start, n_start + cigar[n_idx][1]),
         )
     return None
+
+def format_calls(chrom: str, calls) -> Tuple[str, str, str, str, int]:
+    """The row encoding for a list of MicroexonCall: ``'|'`` separates CALLS, ``','`` separates the
+    segments within one call, ``';'`` separates a call's equally-good alternatives. Returns
+    ``(segments, alternatives, intron_starts, intron_ends, max_n_tied)``; a single call round-trips
+    to exactly the strings the one-call format used, so every existing consumer keeps working."""
+    if not calls:
+        return '', '', '', '', 0
+    segs = '|'.join(format_segments(chrom, c.segments) for c in calls)
+    alts = '|'.join(format_alternatives(chrom, c.alternatives) for c in calls)
+    starts = ','.join(str(c.intron[0]) for c in calls)
+    ends = ','.join(str(c.intron[1]) for c in calls)
+    return segs, alts, starts, ends, max(c.n_tied for c in calls)
+
+
+def parse_calls(segments: str, intron_starts: str, intron_ends: str):
+    """Inverse of :func:`format_calls` for the writer: ``[(intron, [(s, e), ...]), ...]``."""
+    if not segments:
+        return []
+    groups = segments.split('|')
+    starts = [t for t in (intron_starts or '').split(',') if t != '']
+    ends = [t for t in (intron_ends or '').split(',') if t != '']
+    if not (len(groups) == len(starts) == len(ends)):
+        return []
+    out = []
+    for g, a, b in zip(groups, starts, ends):
+        segs = []
+        for tok in g.split(','):
+            tok = tok.strip()
+            if ':' not in tok or '-' not in tok:
+                continue
+            try:
+                span = tok.rsplit(':', 1)[1]
+                lo, hi = span.split('-', 1)
+                segs.append((int(lo), int(hi)))
+            except ValueError:
+                return []
+        try:
+            out.append(((int(a), int(b)), segs))
+        except ValueError:
+            return []
+    return out
