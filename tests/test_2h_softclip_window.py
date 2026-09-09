@@ -140,6 +140,9 @@ def test_positional_signal_reads_the_same_window(monkeypatch):
         return real(genome_seq, q, q_split, ne, new_je, **kw)
 
     monkeypatch.setattr(jr, "_positional_signal", spy)
+    # NOTE (2026-09-09): 018 monkeypatched `jr._realizable` here. That realizability PROBE is
+    # 018-only machinery and is NOT on master, so nothing drops the candidate before the veto
+    # path — the veto path is reached without help. See the module note below.
     read = _read(CIGAR_CLIPPED, QUERY)
     # alternative wins by 1.0 < hold_margin 2.0 -> veto path -> positional gate consulted
     _capture_scorer(monkeypatch, read, "+", {INCUMBENT: 3.0, ALTERNATIVE: 2.0},
@@ -225,5 +228,12 @@ def test_leading_clip_does_not_change_the_decision(clip):
         return [(s, e, ns, ne) for (_, s, e, ns, ne) in repl]
 
     unclipped = decide(_decision_read(genome, 0))
-    assert unclipped == [(200, 300, 200, 303)], unclipped   # the read's bases pick the alternative
+    # 🔴 ON MASTER THE DECISION AND THE WRITE DISAGREE, and this assertion pins that.
+    # The read's bases pick the alternative (200, 303). ISSUE-031 refuses to WRITE it (the
+    # acceptor-only +3 needs a 3I glued to the N), but on master nothing removes it from the
+    # RANKING first — 018 added a realizability probe for exactly that and the probe is not
+    # here. So `decide()` still reports the move that the surgery will then refuse.
+    # That gap is real and tracked; it is not what this test is about. The point stands
+    # either way: a leading clip must not change the decision.
+    assert unclipped == [(200, 300, 200, 303)], unclipped
     assert decide(_decision_read(genome, clip)) == unclipped

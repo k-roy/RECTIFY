@@ -77,10 +77,21 @@ _SAM_REF_CONSUMING = {0, 2, 3, 7, 8}
 # `max_phantom` is the MEASURED residual, not a round number with headroom: both
 # datasets sit at the D-abutting-N count exactly (panel 4 of 13 observed-only
 # pool junctions, hold-out 5 of 46), so any new phantom coordinate fails here.
+# `min_beneficial` was 7 / 12 before ISSUE-031. Those pulls were NOT a capability: 18 of the 19
+# reached the annotated coordinate by GLUING an I/D to the N — the construct Kevin ruled against on
+# 2026-09-06 — and 15 of them also RAISED the read's indel burden. Measured per read with the CIGARs
+# kept (dev/todo_run_20260905/replay_scripts/issue031_arms.py) and reviewed card by card on the
+# queue; Kevin's verdicts on 2026-09-09 confirmed the refusals and corrected three of them, which
+# the homopolymer exemption now allows. So the floors drop to what the rule legitimately keeps.
+#
+# 🔴 THE COUNT IS THE WEAK PART OF THIS TEST. A count rots the moment the panel changes and it does
+# not say WHY. `test_no_move_glues_an_indel_to_the_n` below asserts the MECHANISM, and that is the
+# assertion to keep honest — if these floors ever need lowering again, check the mechanism test
+# first: a drop with the mechanism test still green is fine, a drop with it red is a regression.
 BASELINE = {
     #            harmful       beneficial          phantom pool junctions
-    'panel':   {'max_harmful': 0, 'min_beneficial': 7,  'max_phantom': 4},
-    'holdout': {'max_harmful': 0, 'min_beneficial': 12, 'max_phantom': 5},
+    'panel':   {'max_harmful': 0, 'min_beneficial': 1,  'max_phantom': 4},
+    'holdout': {'max_harmful': 0, 'min_beneficial': 3,  'max_phantom': 5},
 }
 
 
@@ -151,7 +162,7 @@ def refined(request, tmp_path_factory):
     return {
         'dataset': dataset, 'baseline': BASELINE[dataset],
         'before': before, 'after': after, 'observed': observed,
-        'annot3': annot3, 'pool': pool, 'seq': genome['chr5'],
+        'annot3': annot3, 'pool': pool, 'seq': genome['chr5'], 'out_bam': out_bam,
     }
 
 
@@ -234,3 +245,69 @@ def test_drifted_junctions_are_still_pulled_onto_annotation(refined):
     ]
     assert len(beneficial) >= refined['baseline']['min_beneficial'], \
         (refined['dataset'], len(beneficial), beneficial)
+
+
+def test_no_move_glues_an_indel_to_the_n(refined):
+    """ISSUE-031: no junction 2H MOVES may end up with an I/D beside the N — the rule, not a count.
+
+    Kevin, 2026-09-06: *"never put a D next to an N"*. A compensating indel adjacent to a junction
+    IS the drift; the N-op coordinate moves while the read's exon sequence does not. Measured on
+    this panel before the rule: 18 of 19 annotation pulls were exactly that construct.
+
+    Scope matters and cost a wrong first draft of this test: the rule governs MOVES only. A stock
+    alignment's own indel beside its own junction is the aligner's record and is left alone — 25
+    reads here carry one, and flagging those made the test fail on untouched data. So compare each
+    refined junction against the SAME junction in the input and assert only on the ones that moved.
+
+    The one licensed exception is a HOMOPOLYMER over-called insertion (Kevin 2026-09-07, refined on
+    review cards I002/I003 2026-09-09): an ONT over-call in a run of >= 2 on either side of the
+    junction, never a deletion, never mixed bases.
+    """
+    import pysam
+    try:
+        from rectify.core.splice.junction_refiner import _hp_explained_insertion
+    except ImportError:                      # a tree without the exemption: nothing is excused,
+        _hp_explained_insertion = None       # which is exactly the pre-2026-09-09 behaviour
+
+    def n_ops_with_neighbours(rec):
+        out, pos, ops = {}, rec.reference_start, rec.cigartuples or []
+        for i, (op, ln) in enumerate(ops):
+            if op == _N:
+                left = ops[i - 1] if i > 0 else None
+                right = ops[i + 1] if i + 1 < len(ops) else None
+                out[(pos, pos + ln)] = (i, left, right)
+            if op in _SAM_REF_CONSUMING:
+                pos += ln
+        return out
+
+    before = {}
+    with pysam.AlignmentFile(str(DATASETS[refined['dataset']])) as bam:
+        for r in bam:
+            if not (r.is_unmapped or r.is_secondary or r.is_supplementary):
+                before[r.query_name] = n_ops_with_neighbours(r)
+
+    offenders = []
+    with pysam.AlignmentFile(refined['out_bam']) as bam:
+        for r in bam:
+            if r.is_unmapped or r.is_secondary or r.is_supplementary:
+                continue
+            was = before.get(r.query_name, {})
+            ops = r.cigartuples or []
+            for (ns, ne), (i, left, right) in n_ops_with_neighbours(r).items():
+                if (ns, ne) in was:
+                    continue                      # this junction did not move — not our business
+                for nb in (left, right):
+                    if nb is None or nb[0] not in (1, 2):
+                        continue
+                    if nb[0] == 1 and _hp_explained_insertion is not None:
+                        q = r.query_sequence or ""
+                        j = i - 1 if nb is left else i + 1
+                        qe = sum(l for o, l in ops[:j + 1] if o in (0, 1, 4, 7, 8))
+                        ok, _side, _run = _hp_explained_insertion(
+                            nb[1], q[max(0, qe - nb[1]):qe], refined['seq'], ns, ne)
+                        if ok:
+                            continue
+                    offenders.append((r.query_name[:8], r.cigarstring[:60], (ns, ne)))
+    assert not offenders, (
+        f"{len(offenders)} MOVED junction(s) ended with an I/D glued to the N that no homopolymer "
+        f"explains: {offenders[:5]}")

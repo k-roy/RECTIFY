@@ -1109,6 +1109,68 @@ def refine_read_junctions(
 # CIGAR surgery: apply junction replacement
 # ---------------------------------------------------------------------------
 
+
+def _hp_explained_insertion(ins_len, ins_bases, genome_seq, intron_start, intron_end):
+    """Is an insertion abutting an N a homopolymer OVER-CALL rather than a fabricated gap?
+
+    Kevin's ruling, 2026-09-07: *"never an I/D next to an N is strict for D; for I there is one
+    acceptable case — a homopolymer / low-complexity run on one side of the junction that the base
+    caller over-called."*  Refined 2026-09-09 on review cards I002 (``3827fba8``) and I003
+    (``1b86eed6``), where he read the mechanism off the picture: *"The AA --> AAA overcall is more
+    likely than a GTT deletion. Also places it at the annotated donor."*
+
+    The run may sit on EITHER side of the intron, and on those two reads it is on the ACCEPTOR side —
+    checking only the donor-side exon end (the fixer's first attempt) calls both NOT explained and
+    would have kept refusing the moves Kevin approved.
+
+    Conditions, all required:
+      * every inserted base is the SAME base — homopolymer only.  The dinucleotide-repeat exception
+        was proposed and Kevin DISAPPROVED it on card R024: *"whatever is done to make this look
+        right is subjective and could cause regressions"* — a GAGA duplication and a T->A miscall are
+        equally plausible.
+      * a run of that base of length >= 2 abuts the junction on the donor-side exon END or the
+        acceptor-side exon START, and
+      * run + inserted length >= 3, i.e. the result is a real homopolymer, not a 2-mer.
+
+    Deletions are NOT eligible, ever (card R025): a missing length glued to an N is indistinguishable
+    from a junction shift, whereas an over-called base in a run is the commonest ONT error there is.
+
+    Returns ``(explained, side, run_len)``; ``side`` is 'donor', 'acceptor', or 'both' when each
+    side carries a qualifying run — the ambiguous case Kevin asked to be recorded rather than hidden.
+    """
+    if ins_len <= 0 or not ins_bases or len(set(ins_bases.upper())) != 1:
+        return False, None, 0
+    b = ins_bases.upper()[0]
+    if b not in "ACGT":
+        return False, None, 0
+    if not genome_seq:
+        return False, None, 0
+    donor_ctx = genome_seq[max(0, intron_start - 16):intron_start].upper()
+    acceptor_ctx = genome_seq[intron_end:intron_end + 16].upper()
+
+    donor_run = 0
+    for ch in reversed(donor_ctx):
+        if ch != b:
+            break
+        donor_run += 1
+    acceptor_run = 0
+    for ch in acceptor_ctx:
+        if ch != b:
+            break
+        acceptor_run += 1
+
+    best = max(donor_run, acceptor_run)
+    if best < 2 or best + ins_len < 3:
+        return False, None, best
+    if donor_run >= 2 and acceptor_run >= 2:
+        side = "both"
+    elif donor_run >= acceptor_run:
+        side = "donor"
+    else:
+        side = "acceptor"
+    return True, side, best
+
+
 def _apply_junction_replacement(
     read: pysam.AlignedSegment,
     cigar_idx: int,
@@ -1465,16 +1527,60 @@ def _apply_junction_replacement(
     # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
     # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
     # (raw) placement — the conservative, correct outcome.
-    if delta_start != 0 and delta_end != 0:
-        old_indel = sum(l for op, l in cigar     if op in (_I, _D))
-        new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
-        if new_indel > old_indel:
-            logger.debug(
-                "refine_junction: both-boundary move adds compensating indel "
-                "(%d → %d) for read %s — unsupported relocation, refusing",
-                old_indel, new_indel, read.query_name,
-            )
-            return False
+    #
+    # ISSUE-031 (Kevin, 2026-09-06, read-review cards 238d21ab/ede71fa4/3ceddb4b/8d1fe5ee/
+    # 8ef6e9c0/b3a48de3/dbcdfdd1 + control 0af7072a): "never put a D next to an N".  The
+    # single-boundary exemption above was the drift itself — on all seven "drift-fix" reads
+    # the annotated coordinate was reached only by gluing a 3–11-base D (or I) to the N while
+    # the stock junction had 11–12/12 clean bases on both flanks.  The arbiter's rule 4(a)
+    # ("no junction edit may raise the read's indel burden, single- or both-boundary") is
+    # now enforced for EVERY move, and in addition no move may leave an I/D adjacent to the
+    # N on either side unless that exact op was already adjacent before the move (a stock
+    # alignment's own indel is the aligner's record and is left alone, not "fixed").  The
+    # realizability probe (_move_realizable) dry-runs this function, so a refused move is
+    # skipped in the ranking and counted as unrealizable_winner_skipped.
+    old_indel = sum(l for op, l in cigar     if op in (_I, _D))
+    new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
+    if new_indel > old_indel:
+        logger.debug(
+            "refine_junction: move adds indel (%d → %d) for read %s — ISSUE-031, refusing",
+            old_indel, new_indel, read.query_name,
+        )
+        return False
+    for side in (-1, +1):
+        j_new, j_old = n_idx + side, cigar_idx + side
+        if not (0 <= j_new < len(new_cigar)):
+            continue
+        op_new = new_cigar[j_new]
+        if op_new[0] not in (_I, _D):
+            continue
+        op_old = cigar[j_old] if 0 <= j_old < len(cigar) else None
+        if op_old == op_new:
+            continue
+
+        # THE HOMOPOLYMER EXEMPTION (Kevin 2026-09-07, refined on cards I002/I003 2026-09-09).
+        # An INSERTION beside the N that a homopolymer run explains is an ONT over-call, not a
+        # fabricated gap — and refusing it costs the annotated donor. Deletions stay strict.
+        if op_new[0] == _I:
+            q = read.query_sequence or ""
+            q_ins_end = sum(l for op, l in new_cigar[:j_new + 1] if op in _QUERY_CONSUMING)
+            ins_bases = q[max(0, q_ins_end - op_new[1]):q_ins_end]
+            ok, hp_side, run = _hp_explained_insertion(
+                op_new[1], ins_bases, genome_seq, new_ns, new_ne)
+            if ok:
+                logger.debug(
+                    "refine_junction: %s beside the N is HP-explained for read %s "
+                    "(%s-side run of %d) — ISSUE-031 exemption, allowing",
+                    cigar_ops_to_str([op_new]), read.query_name, hp_side, run,
+                )
+                continue
+
+        logger.debug(
+            "refine_junction: move leaves %s adjacent to the N for read %s — "
+            "ISSUE-031 (no I/D next to an N), refusing",
+            cigar_ops_to_str([op_new]), read.query_name,
+        )
+        return False
 
     read.cigartuples = new_cigar
     if new_ref_start != read.reference_start:

@@ -487,54 +487,50 @@ class TestApplyJunctionReplacement:
         read.flag = 0
         return read
 
-    def test_extend_intron_right(self):
-        """N-op end moves right by 2: exon1 loses 2 ref bases → I(2)M(8) after N.
+    def test_extend_intron_right_is_refused(self):
+        """N-op end moves right by 2 with a non-mirroring flank: the general path could
+        only realize it as ``10M 102N 2I 8M`` — an insertion glued to the N.
 
-        Encoding: delta_end > 0 → I(d) inserted after N, M shrinks:
-            10M 100N 10M → 10M 102N 2I 8M
-        Ref span preserved (10+100+10 = 10+102+8 = 120).
-        Query span preserved (10+10 = 10+2+8 = 20).
+        ISSUE-031 (Kevin 2026-09-06, "never put a D next to an N"; the seven 2H T1
+        "drift fixes" were exactly this shape): a move that raises the indel burden or
+        leaves an I/D adjacent to the N is REFUSED and the read keeps its record.
+        (Before 2026-09-06 this test asserted the compensating ``2I``.)
         """
         seq = 'A' * 20
         read = self._make_read('10M100N10M', 900757, seq)
         from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         applied = _apply_junction_replacement(read, 1, 900767, 900867, 900767, 900869, g, '+', 0.25, 15)
-        assert applied, "Expected _apply_junction_replacement to return True"
-        new_cigar = read.cigarstring
-        # Intron grows by 2 on right: 102N; exon1 becomes 2I8M (I absorbs displaced query)
-        assert '102N' in new_cigar, f"Expected 102N in {new_cigar}"
-        assert '2I' in new_cigar, f"Expected 2I (displaced query) in {new_cigar}"
-        assert '8M' in new_cigar, f"Expected 8M in {new_cigar}"
-        # Ref and query spans preserved
-        old_ref = old_q = 120
-        new_ref = sum(l for op, l in read.cigartuples if op in (0, 2, 3, 7, 8))
-        new_q   = sum(l for op, l in read.cigartuples if op in (0, 1, 4, 7, 8))
-        assert new_ref == 120, f"Ref span changed: {new_ref}"
-        assert new_q   == 20,  f"Query span changed: {new_q}"
+        assert not applied, "ISSUE-031: a move realized by an I adjacent to the N must be refused"
+        assert read.cigarstring == '10M100N10M'
 
-    def test_shrink_intron_left(self):
-        """N-op start moves right by 3: exon2 gains 3 ref bases from intron → D(3) at boundary.
-
-        Encoding: delta_start > 0 → D(d) inserted before N, M unchanged:
-            10M 100N 10M → 10M 3D 97N 10M
-        Ref span preserved (10+100+10 = 10+3+97+10 = 120).
-        Query span preserved (10+10 = 10+0+10 = 20).
+    def test_shrink_intron_left_is_refused(self):
+        """N-op start moves right by 3: the general path would plant ``3D`` before the N
+        (``10M 3D 97N 10M``).  ISSUE-031 refuses it — the read never had those bases;
+        the coordinate would be manufactured.  (Before 2026-09-06 this test asserted
+        the ``3D``.)
         """
         seq = 'A' * 20
         read = self._make_read('10M100N10M', 900757, seq)
         from rectify.core.splice.junction_refiner import _apply_junction_replacement
         g = 'A' * 2000000
         applied = _apply_junction_replacement(read, 1, 900767, 900867, 900770, 900867, g, '+', 0.25, 15)
-        assert applied, "Expected _apply_junction_replacement to return True"
-        new_cigar = read.cigarstring
-        # intron_start moved right: 97N; exon2 boundary gets D(3)
-        assert '97N' in new_cigar, f"Expected 97N in {new_cigar}"
-        assert '3D' in new_cigar, f"Expected 3D (reference-only boundary) in {new_cigar}"
-        new_ref = sum(l for op, l in read.cigartuples if op in (0, 2, 3, 7, 8))
-        new_q   = sum(l for op, l in read.cigartuples if op in (0, 1, 4, 7, 8))
-        assert new_ref == 120, f"Ref span changed: {new_ref}"
-        assert new_q   == 20,  f"Query span changed: {new_q}"
+        assert not applied, "ISSUE-031: a move realized by a D adjacent to the N must be refused"
+        assert read.cigarstring == '10M100N10M'
+
+    def test_pre_existing_adjacent_indel_is_not_the_move_s(self):
+        """A stock ``10M2D100N10M`` (the aligner's own D at the boundary) whose move
+        leaves that SAME op in place is not refused for the adjacency alone — the rule
+        is about what the EDIT puts next to the N.  Here the pure slide takes the fast
+        path when the flipped bases mirror, so nothing is added."""
+        seq = 'A' * 20
+        read = self._make_read('10M100N10M', 900757, seq)
+        from rectify.core.splice.junction_refiner import _apply_junction_replacement
+        g = 'A' * 2000000
+        # pure 2-bp slide on an all-A genome: fast path, no indel — still allowed
+        applied = _apply_junction_replacement(read, 1, 900767, 900867, 900769, 900869, g, '+', 0.25, 15)
+        assert applied
+        assert read.cigarstring == '12M100N8M'
 
     def test_both_boundary_pure_slide_nonmicrohomology_refused(self):
         """A both-boundary PURE SLIDE onto NON-identical flanks must be REFUSED.
