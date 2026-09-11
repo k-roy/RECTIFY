@@ -130,7 +130,7 @@ The resolver consumes the (name-sorted) minimap2 arm BAM and emits a BAM in
 the same order, so it drops into the panel exactly where mapPacBio's arm
 did. Accepted CLIP placements carry
 ``XJ:Z:<intron_start>-<intron_end>:<ed>:<side>``, and each re-arbitration move
-carries ``XB:Z:`` naming its family: ``dmerge`` (a boundary D absorbed into the
+carries ``XE:Z:`` naming its family: ``dmerge`` (a boundary D absorbed into the
 abutting N, Case A0), ``shift:<d>-<e>><d'>-<e'>:<ed>><ed'>`` for a Case A
 boundary/diagonal shift — with a trailing ``:g`` when the canonical-grammar
 tiebreak, not the margin, admitted it — ``dop:<start>-<end>><d>-<e>`` for a
@@ -139,12 +139,15 @@ Case B1 intron-length-D -> N snap, and ``mm:<d>-<e>:<ed>><ed'>`` /
 linear rescues. **Both tags are written ONLY on records the resolver actually
 changed — there is no sentinel value on an untouched read**, so a census must
 treat "tag absent" as "not rewritten" and never as "rewritten with no move".
-Every ``XB`` write here is unconditional, so when one read takes several moves
-in a pass (a D-merge and then a shift, say) ``XB`` reports only the LAST one —
-it is the final move, not a move log. And ``XB`` is not ours alone: the ONT
-cDNA pipeline writes ``XB:Z:<n_top>/<n_bot>`` strand-split cluster counts
-(``core/cdna/io.py``), so a value like ``1/0`` in a cDNA BAM is that tag, not
-this one.
+Every ``XE`` write here is unconditional, so when one read takes several moves
+in a pass (a D-merge and then a shift, say) ``XE`` reports only the LAST one —
+it is the final move, not a move log. The move tag was ``XB`` until 2026-09-10
+(A10): the ONT cDNA pipeline writes ``XB:Z:<n_top>/<n_bot>`` strand-split
+cluster counts (``core/cdna/io.py``) and the consensus sidecar restore put that
+value back on every cDNA read, so the resolver's record was invisible in the
+final BAM. ``XE`` is free of every writer in the tree (checked by
+``tests/test_resolver_parallel.py``); a BAM written before the rename carries
+the move family in ``XB`` on DRS reads only.
 MD/NM are dropped on rewritten records (stale after CIGAR surgery), and a
 calmd '='-compressed SEQ is decoded to real letters on any rewrite (a '=' only
 means anything under the alignment it was written for — see
@@ -167,9 +170,11 @@ from __future__ import annotations
 
 import logging
 import math
+import multiprocessing as mp
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 import pysam
 
@@ -341,7 +346,7 @@ class ResolverConfig:
     # signal (-6.0 pp cryptic recovery on the smoke mixture). Leave ON for
     # annotated/SMD accuracy work; turn OFF for non-canonical discovery
     # missions (upf1d/prp18d-type). Grammar-driven moves are marked ':g' in
-    # the XB tag and counted as arb_grammar_tiebreak either way.
+    # the XE tag and counted as arb_grammar_tiebreak either way.
     arb_grammar: bool = True
     arb_window: int = 300        # max boundary shift searched (also clamped by W_max)
     arb_seg: int = 40            # query bases per junction side used for scoring
@@ -377,11 +382,40 @@ class ResolverStats:
     resolved_right: int = 0
     candidates_evaluated: int = 0
     extra: Dict[str, int] = field(default_factory=dict)
+    # Ceiling refusals split by contig, and the first refusal's
+    # (ceiling, n_cand, window) per contig — the operator-facing evidence for
+    # A13 (2026-09-10): abandonment is a CORRECTNESS metric (each refusal is a
+    # junction rescue that did not happen), so it is reported per contig in the
+    # stats JSON, not only as one total.
+    blowup_by_contig: Dict[str, int] = field(default_factory=dict)
+    blowup_first: Dict[str, Tuple[int, int, int]] = field(default_factory=dict)
 
-    def as_dict(self) -> Dict[str, int]:
-        d = {k: v for k, v in self.__dict__.items() if k != 'extra'}
+    _NESTED = ('extra', 'blowup_by_contig', 'blowup_first')
+
+    def as_dict(self) -> Dict[str, object]:
+        d = {k: v for k, v in self.__dict__.items() if k not in self._NESTED}
         d.update(self.extra)
+        # The rate is the number an acceptance gate should read: 5 % abandoned
+        # means 5 % of the junction rescues this stage exists for did not run.
+        d['abandoned_frac'] = (
+            round(self.refused_candidate_blowup / self.clips_assessed, 4)
+            if self.clips_assessed else 0.0)
+        d['blowup_by_contig'] = dict(self.blowup_by_contig)
+        d['blowup_first'] = {k: list(v) for k, v in self.blowup_first.items()}
         return d
+
+    def merge(self, part: 'ResolverStats') -> None:
+        """Fold a worker's partial tally into this one (parallel driver)."""
+        for k, v in part.__dict__.items():
+            if k in self._NESTED:
+                continue
+            setattr(self, k, getattr(self, k) + v)
+        for k, v in part.extra.items():
+            self.extra[k] = self.extra.get(k, 0) + v
+        for k, v in part.blowup_by_contig.items():
+            self.blowup_by_contig[k] = self.blowup_by_contig.get(k, 0) + v
+        for k, v in part.blowup_first.items():
+            self.blowup_first.setdefault(k, v)
 
 
 @dataclass
@@ -471,6 +505,7 @@ def _donor_rank(chrom_seq: str, side: str, strand: str,
 
 
 _BLOWUP_WARNED: set = set()
+_WORKER_QUIET = False   # True inside a resolver pool worker (see _run_parallel)
 
 # The window `ResolverConfig.max_candidates_per_clip` was calibrated against
 # (the yeast `max_intron` default). `_candidate_ceiling` treats the configured
@@ -561,7 +596,9 @@ def _warn_blowup(chrom: str, ceiling: int, n_cand: int = 0, window: int = 0) -> 
     `max_intron` is large and the genome is big, not because the contig is bad.
     Telling a human user to skip chr5 would discard a whole chromosome.
     """
-    if chrom in _BLOWUP_WARNED:
+    if _WORKER_QUIET or chrom in _BLOWUP_WARNED:
+        # A pool worker stays silent: N workers would each log the contig
+        # once, and the parent logs it from the merged per-contig tally.
         return
     _BLOWUP_WARNED.add(chrom)
     logger.warning(
@@ -772,6 +809,9 @@ def resolve_clip(
             # Passes that already completed keep what they found.
             del placements[mark:]
             stats.refused_candidate_blowup += 1
+            stats.blowup_by_contig[chrom_key] = (
+                stats.blowup_by_contig.get(chrom_key, 0) + 1)
+            stats.blowup_first.setdefault(chrom_key, (ceiling, n_cand, w))
             _warn_blowup(chrom_key, ceiling, n_cand, w)
             break
 
@@ -1211,7 +1251,7 @@ def _rearbitrate_read(
         for tag in ('MD', 'NM'):
             if read.has_tag(tag):
                 read.set_tag(tag, None)
-        read.set_tag('XB', 'dmerge')
+        read.set_tag('XE', 'dmerge')
 
     n_idx = [i for i, (op, _) in enumerate(ct) if op == 3]
 
@@ -1357,7 +1397,7 @@ def _rearbitrate_read(
             if read.has_tag(tag):
                 read.set_tag(tag, None)
         gmark = ':g' if via_grammar else ''
-        read.set_tag('XB', f'shift:{d}-{e}>{d_new}-{e_new}'
+        read.set_tag('XE', f'shift:{d}-{e}>{d_new}-{e_new}'
                            f':{ed_cur:.1f}>{win[0]:.1f}{gmark}')
         _bump(stats, 'arb_shifted')
         if via_grammar:
@@ -1445,7 +1485,7 @@ def _rearbitrate_read(
         for tag in ('MD', 'NM'):
             if read.has_tag(tag):
                 read.set_tag(tag, None)
-        read.set_tag('XB', f'dop:{p_start}-{p_end}>{d_new}-{e_new}')
+        read.set_tag('XE', f'dop:{p_start}-{p_end}>{d_new}-{e_new}')
         _bump(stats, 'arb_dop_spliced')
         changed = True
         ct = list(read.cigartuples)
@@ -1540,7 +1580,7 @@ def _rearbitrate_read(
                 for tag in ('MD', 'NM'):
                     if read.has_tag(tag):
                         read.set_tag(tag, None)
-                read.set_tag('XB', f'mm:{d_new}-{e_new}:{ed_cur_o:.1f}>{best_overall[0]:.1f}')
+                read.set_tag('XE', f'mm:{d_new}-{e_new}:{ed_cur_o:.1f}>{best_overall[0]:.1f}')
                 _bump(stats, 'arb_mm_spliced')
                 changed = True
                 ct = list(read.cigartuples)
@@ -1635,7 +1675,7 @@ def _rearbitrate_read(
                 for tag in ('MD', 'NM'):
                     if read.has_tag(tag):
                         read.set_tag(tag, None)
-                read.set_tag('XB', f'mmL:{d_new}-{e_new}:{ed_cur_o:.1f}>{best_overall[0]:.1f}')
+                read.set_tag('XE', f'mmL:{d_new}-{e_new}:{ed_cur_o:.1f}>{best_overall[0]:.1f}')
                 _bump(stats, 'arb_mm_spliced')
                 changed = True
 
@@ -1776,6 +1816,162 @@ def resolve_read(
     return changed
 
 
+# --- Parallel driver (A12, 2026-09-10) --------------------------------------
+# The resolver is per-read: `resolve_read` touches only the record it is
+# handed plus read-only genome/index state, so the stream can be cut into
+# batches and scored on a process pool while ONE writer keeps input order
+# (batches are collected FIFO). Records cross the pool boundary as SAM text
+# (`to_string` / `fromstring`): ~20 us each against 10-100 ms of resolver work
+# per clipped read, so the serialization is noise.
+#
+# Batches of records, not contigs: the input is the name-sorted minimap2 arm,
+# so a contig's reads are scattered through the stream and a per-contig shard
+# would need a coordinate sort in and a name sort out. Batches need neither,
+# and balance a skewed genome (chrXII carries the rDNA) for free.
+#
+# Start method follows bam/parallel.py (`RECTIFY_BAM_MP_START_METHOD`, default
+# spawn). Under spawn each worker loads the genome and the cached splice-site
+# index itself (yeast: ~1 s; a mammalian genome: ~3 GB PER WORKER — on Linux
+# set RECTIFY_BAM_MP_START_METHOD=fork to share it copy-on-write). The parent
+# builds the index BEFORE the pool starts, so workers only ever load the
+# cache; there is no build race. A worker that dies mid-batch is detected on
+# the next poll and the run fails loudly (the D8 lesson: a bare `.get()` on a
+# Pool whose worker was replaced waits forever).
+
+_W: Dict[str, object] = {}   # per-worker-process state
+
+
+def _resolver_mp_context():
+    """Pool start method. `fork` on Linux so the N workers SHARE the parent's
+    genome + splice-site index copy-on-write (a mammalian genome is ~3 GB as
+    Python strings plus the index — times N under spawn, which is how a
+    `-t 8` human job would grow by ~50 GB). The htslib caveat that makes
+    bam/parallel.py default to spawn does not apply here: resolver workers
+    never touch a BAM handle, they only parse and print SAM text. `spawn`
+    elsewhere (macOS forks are unsafe under Objective-C runtimes).
+    Override with RECTIFY_RESOLVER_MP_START_METHOD; RECTIFY_BAM_MP_START_METHOD
+    is honoured as a fallback so one HPC debugging knob covers both pools."""
+    import os
+    import sys
+    method = (os.environ.get('RECTIFY_RESOLVER_MP_START_METHOD')
+              or os.environ.get('RECTIFY_BAM_MP_START_METHOD')
+              or ('fork' if sys.platform.startswith('linux') else 'spawn'))
+    method = method.strip().lower()
+    if method not in mp.get_all_start_methods():
+        logger.warning('overhang_resolver: start method %r unavailable; using spawn',
+                       method)
+        method = 'spawn'
+    return mp.get_context(method)
+
+
+def _resolver_worker_init(genome_path: str, cfg: ResolverConfig,
+                          header_dict: dict) -> None:
+    global _WORKER_QUIET
+    _WORKER_QUIET = True
+    if _W.get('genome') is None:
+        # spawn: a fresh interpreter, load our own copy. Under fork the parent
+        # populated _W before starting the pool and we inherit it.
+        _W['genome'] = load_genome(Path(genome_path))
+        _W['index'] = SpliceSiteIndex.load_or_build(str(genome_path), _W['genome'])
+    _W['cfg'] = cfg
+    _W['header'] = pysam.AlignmentHeader.from_dict(header_dict)
+
+
+def _resolver_worker_batch(lines: List[str]) -> Tuple[List[str], ResolverStats]:
+    """Score one batch of SAM-text records; return them in the same order
+    together with this batch's tally (the parent merges tallies)."""
+    header = _W['header']
+    genome = _W['genome']
+    index = _W['index']
+    cfg = _W['cfg']
+    stats = ResolverStats()
+    out: List[str] = []
+    for line in lines:
+        read = pysam.AlignedSegment.fromstring(line, header)
+        stats.reads += 1
+        resolve_read(read, genome, index, cfg, stats)
+        out.append(read.to_string())
+    return out, stats
+
+
+def _check_pool_alive(pool, known: Dict[int, object]) -> Dict[int, object]:
+    """Raise if a worker seen at the previous poll has died. `Pool` replaces a
+    dead worker silently and never re-queues its task, so without this a
+    `.get()` on that task blocks forever (bam/parallel.py D8, 2026-08-22)."""
+    current = {p.pid: p for p in getattr(pool, '_pool', [])}
+    dead = []
+    for pid, proc in known.items():
+        code = proc.exitcode
+        if pid not in current or (code is not None and code != 0):
+            dead.append((pid, code))
+    if dead:
+        from ..bam.parallel import RegionWorkerDied
+        desc = ', '.join(
+            f"pid {pid} exit={code if code is not None else 'replaced'}"
+            + (f" (signal {-code})" if isinstance(code, int) and code < 0 else '')
+            for pid, code in dead)
+        raise RegionWorkerDied(
+            f"{len(dead)} overhang_resolver worker(s) died while a batch was "
+            f"in flight: {desc}. The run cannot complete. Re-run with "
+            "PYTHONFAULTHANDLER=1 to see the Python frame, or threads=1 for a "
+            "traceback.")
+    return current
+
+
+def _run_parallel(inp: pysam.AlignmentFile, out: pysam.AlignmentFile,
+                  genome_path: str, cfg: ResolverConfig, threads: int,
+                  stats: ResolverStats, batch_size: int,
+                  genome: Optional[Dict[str, str]] = None,
+                  index: Optional[SpliceSiteIndex] = None,
+                  poll_s: float = 30.0) -> None:
+    ctx = _resolver_mp_context()
+    # Stage the parent's loaded genome/index for fork-based workers to inherit
+    # copy-on-write; spawn-based workers see an empty _W and load their own.
+    _W.clear()
+    if ctx.get_start_method() == 'fork' and genome is not None:
+        _W['genome'] = genome
+        _W['index'] = index
+    header_dict = inp.header.to_dict()
+    out_header = out.header
+    # Back-pressure: at most this many batches queued or running, so a 100M-
+    # read stream is never read ahead into memory faster than it is scored.
+    max_inflight = max(2, threads * 3)
+    pending: Deque = deque()
+
+    def _drain_one(pool, known):
+        res = pending.popleft()
+        while True:
+            try:
+                lines, part = res.get(timeout=poll_s)
+                break
+            except mp.TimeoutError:
+                known = _check_pool_alive(pool, known)
+        for line in lines:
+            out.write(pysam.AlignedSegment.fromstring(line, out_header))
+        stats.merge(part)
+        # Once-per-contig blow-up warning, issued by the parent from the
+        # worker's first example (workers are silent — `_WORKER_QUIET`).
+        for chrom, (ceiling, n_cand, w) in part.blowup_first.items():
+            _warn_blowup(chrom, ceiling, n_cand, w)
+        return known
+
+    with ctx.Pool(threads, initializer=_resolver_worker_init,
+                  initargs=(str(genome_path), cfg, header_dict)) as pool:
+        known = {p.pid: p for p in getattr(pool, '_pool', [])}
+        batch: List[str] = []
+        for read in inp.fetch(until_eof=True):
+            batch.append(read.to_string())
+            if len(batch) >= batch_size:
+                pending.append(pool.apply_async(_resolver_worker_batch, (batch,)))
+                batch = []
+                if len(pending) >= max_inflight:
+                    known = _drain_one(pool, known)
+        if batch:
+            pending.append(pool.apply_async(_resolver_worker_batch, (batch,)))
+        while pending:
+            known = _drain_one(pool, known)
+
+
 def run_overhang_resolver(
     base_bam: str,
     genome_path: str,
@@ -1786,6 +1982,8 @@ def run_overhang_resolver(
     acceptor_classes: str = 'canonical',
     atac: bool = True,
     config: Optional[ResolverConfig] = None,
+    max_candidates_per_clip: Optional[int] = None,
+    batch_size: int = 256,
 ) -> str:
     """Stream the (name-sorted) minimap2 arm BAM through the resolver.
 
@@ -1794,44 +1992,50 @@ def run_overhang_resolver(
     step. Returns ``output_bam``. Stats are logged and attached to the
     function as ``run_overhang_resolver.last_stats`` for tests/drivers.
 
-    .. warning::
-       ``threads`` is **accepted but NOT implemented** — the body below is a
-       single-threaded stream. The parameter is kept because callers already
-       pass it (``align_command`` forwards ``args.threads``), but it buys
-       nothing, and jobs have been sized against it: a DRS array requesting 8
-       slots got one core's worth of resolver. It is logged rather than
-       silently ignored so capacity planning stops inheriting the wrong
-       number. Per-contig sharding would be the natural implementation and
-       would also bound pathological contigs (the rDNA / reporter-construct
-       class that needs ``RECTIFY_SKIP_REGIONS`` today).
+    ``threads > 1`` scores the stream on a process pool of that size
+    (``batch_size`` records per task; see the parallel-driver note above).
+    Output is byte-identical to the single-process path — the only
+    difference is that ``overhang_informativeness.COUNTERS`` (a per-process
+    instrument) counts the parent's work only; use ``last_stats`` instead.
+
+    ``max_candidates_per_clip`` overrides the per-clip candidate ceiling
+    (``ResolverConfig.max_candidates_per_clip``; the CLI knob is
+    ``--resolver-candidate-ceiling``). Every refusal on that ceiling is a
+    junction rescue that did not run, so the tally is reported per contig
+    and as a fraction (A13).
     """
-    if threads and threads > 1:
-        logger.warning(
-            "overhang_resolver: threads=%d requested but the resolver is "
-            "SINGLE-THREADED (parameter accepted for API compatibility, not "
-            "implemented). Size jobs for 1 core on this stage.",
-            threads,
-        )
     cfg = config or ResolverConfig(alpha=alpha, max_intron=max_intron,
                                    acceptor_classes=acceptor_classes, atac=atac)
+    if max_candidates_per_clip is not None:
+        cfg.max_candidates_per_clip = int(max_candidates_per_clip)
     if not cfg.skip_regions:
         cfg.skip_regions = skip_regions_from_env()
     genome = load_genome(Path(genome_path))
     index = SpliceSiteIndex.load_or_build(str(genome_path), genome)
     stats = ResolverStats()
+    threads = max(1, int(threads or 1))
 
     with pysam.AlignmentFile(base_bam, 'rb', check_sq=False) as inp:
         header = inp.header.to_dict()
         header.setdefault('PG', []).append({
             'ID': 'rectify-overhang-resolver',
             'PN': 'rectify-overhang-resolver',
-            'CL': f'alpha={cfg.alpha} max_intron={cfg.max_intron} base={base_bam}',
+            'CL': (f'alpha={cfg.alpha} max_intron={cfg.max_intron} '
+                   f'ceiling={cfg.max_candidates_per_clip} atac={cfg.atac} '
+                   f'acceptor_classes={cfg.acceptor_classes} threads={threads} '
+                   f'base={base_bam}'),
         })
         with pysam.AlignmentFile(output_bam, 'wb', header=header) as out:
-            for read in inp.fetch(until_eof=True):
-                stats.reads += 1
-                resolve_read(read, genome, index, cfg, stats)
-                out.write(read)
+            if threads > 1:
+                logger.info('overhang_resolver: %d worker processes, %d records '
+                            'per batch', threads, batch_size)
+                _run_parallel(inp, out, str(genome_path), cfg, threads, stats,
+                              batch_size, genome=genome, index=index)
+            else:
+                for read in inp.fetch(until_eof=True):
+                    stats.reads += 1
+                    resolve_read(read, genome, index, cfg, stats)
+                    out.write(read)
 
     logger.info(
         'overhang_resolver: %d reads, %d clips seen, %d resolved '
@@ -1861,18 +2065,36 @@ def run_overhang_resolver(
     # Escalate the blow-up count out of the info line: an acceptance gate that
     # skims the summary must not have to notice a non-zero field buried mid-row.
     if stats.refused_candidate_blowup:
+        # A13 (2026-09-10): this is a CORRECTNESS number, not a performance
+        # footnote. Every refusal is a 5'/3' junction rescue that did not run,
+        # and the read keeps the soft clip that rescue exists to remove — so
+        # where refusals cluster, read ends pile up at a splice site instead
+        # of splicing across it (Chanfreau invariant #4). Name the consequence
+        # and the split; the same numbers go to the stats JSON via as_dict().
+        n_ab = stats.refused_candidate_blowup
+        frac = n_ab / stats.clips_assessed if stats.clips_assessed else 0.0
+        top = sorted(stats.blowup_by_contig.items(), key=lambda kv: -kv[1])
+        per_contig = ', '.join(f'{c}={n:,}' for c, n in top[:8])
+        if len(top) > 8:
+            per_contig += f', +{len(top) - 8} more'
         logger.warning(
-            'overhang_resolver: %d of %d clip(s) ABANDONED on the candidate '
-            'ceiling (%d per %d bp of search window, floor %d; max_intron=%d). '
-            'Those reads passed through unresolved — real junctions may be '
-            'unplaced. Measured on human chr5 (ISSUE-010), the clips this '
-            'refuses ARE resolvable: lower --max-intron toward the largest '
-            'intron you expect, or make the numba kernel available (ON by '
-            'default; RECTIFY_HP_ED_NUMBA=0 disables it), before trusting '
-            'junction counts here.',
-            stats.refused_candidate_blowup, stats.clips_assessed,
+            'overhang_resolver: %s of %s assessed clip(s) (%.1f%%) ABANDONED on '
+            'the candidate ceiling (%d per %d bp of search window, floor %d; '
+            'max_intron=%d). CONSEQUENCE: %s junction rescues DID NOT OCCUR — '
+            'each of those reads passed through with its soft clip intact, so '
+            'wherever they cluster a browser shows read ends piling up at a '
+            'splice site instead of reads spliced across it. Per contig: %s. '
+            'The clips this refuses ARE resolvable (human chr5, ISSUE-010; '
+            'yeast cDNA, A13): raise --resolver-candidate-ceiling (cheap with '
+            'the numba kernel, ON by default; RECTIFY_HP_ED_NUMBA=0 disables '
+            'it) or lower --max-intron toward the largest intron you expect, '
+            'before trusting junction counts or 5\' ends here. Recorded in the '
+            'stats JSON as refused_candidate_blowup / abandoned_frac / '
+            'blowup_by_contig.',
+            f'{n_ab:,}', f'{stats.clips_assessed:,}', 100.0 * frac,
             cfg.max_candidates_per_clip, _CEILING_REF_WINDOW,
-            cfg.max_candidates_per_clip, cfg.max_intron,
+            cfg.max_candidates_per_clip, cfg.max_intron, f'{n_ab:,}',
+            per_contig or '(none recorded)',
         )
     run_overhang_resolver.last_stats = stats
     return output_bam

@@ -476,7 +476,7 @@ class TestFallback:
 # ---------------------------------------------------------------------------
 
 class TestTagContract:
-    """The module docstring promises XJ/XB are written ONLY on records the
+    """The module docstring promises XJ/XE are written ONLY on records the
     resolver changed, with no sentinel on an untouched read — a census that
     read "tag absent" as "rewritten with no move" would be counting wrong."""
 
@@ -484,14 +484,14 @@ class TestTagContract:
         r = _read('linear', GENOME_SEQ[100:220], [(0, 120)], 100)
         changed, _ = _resolve(r, index)
         assert not changed
-        assert not r.has_tag('XJ') and not r.has_tag('XB')
+        assert not r.has_tag('XJ') and not r.has_tag('XE')
 
     def test_refused_clip_carries_neither_tag(self, index):
         query = 'A' * 30 + GENOME_SEQ[P_ACC:P_ACC + 60]
         r = _read('polya', query, [(4, 30), (0, 60)], P_ACC)
         changed, _ = _resolve(r, index)
         assert not changed
-        assert not r.has_tag('XJ') and not r.has_tag('XB')
+        assert not r.has_tag('XJ') and not r.has_tag('XE')
 
     def test_resolved_clip_carries_xj(self, index):
         query = GENOME_SEQ[P_DON - 30:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 60]

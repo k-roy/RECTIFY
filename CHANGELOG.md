@@ -10,6 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Overhang resolver on `-t N` worker processes** (A12; `align/overhang_resolver.py`).
+  `threads` was accepted and ignored — one core of resolver per job however many
+  slots were requested, and on a 2.8 M-read yeast cDNA library the stage was ~99 %
+  of `rectify align` wall time. The stream is now scored in batches of 256 records
+  on a process pool while one writer keeps input order: output byte-identical to
+  `threads=1`, stats merged field-for-field, back-pressure at 3N batches, a dead
+  worker fails the run loudly (the D8 lesson). Start method follows
+  `RECTIFY_BAM_MP_START_METHOD` (default `spawn`; use `fork` on Linux for a
+  mammalian genome so workers share it). The SINGLE-THREADED warning is gone.
+- **Ceiling abandonment is a reported correctness metric** (A13). Every clip the
+  resolver refuses on the per-clip candidate ceiling is a junction rescue that did
+  not run — the Chanfreau 907 session measured 5.2–5.4 % of all clips abandoned
+  in every one of nine yeast cDNA libraries, on every chromosome, and the reads
+  keep the soft clip that makes read ends pile up mid-intron. `ResolverStats`
+  now records the split per contig (`blowup_by_contig`, `blowup_first`),
+  `as_dict()` adds `abandoned_frac`, all of it reaches
+  `<prefix>.overhang_resolver.stats.json`, and the end-of-run WARNING names the
+  consequence and the per-contig split. New knob `--resolver-candidate-ceiling N`
+  on `align` and `run-all` (`ResolverConfig.max_candidates_per_clip`; default
+  unchanged at 2000 pending the A/B with abandonment counted).
+- **The resolver's move-family tag is `XE`, no longer `XB`** (A10). The ONT
+  cDNA pipeline writes `XB:Z:<n_top>/<n_bot>` and the consensus sidecar restore
+  put that value back on every cDNA read, so the resolver's `dmerge` / `shift`
+  / `dop` / `mm` / `mmL` record was invisible in the final BAM. `XE` is used
+  by no other writer (pinned by test against the cDNA comment tags and the CMA
+  whitelist). BAMs written before this carry the family in `XB` on DRS reads.
+- **Resolver pool start method** — `fork` by default on Linux so N workers
+  share one genome + splice-site index copy-on-write (a mammalian genome would
+  otherwise be loaded N times); `spawn` elsewhere.
+  `RECTIFY_RESOLVER_MP_START_METHOD` overrides, `RECTIFY_BAM_MP_START_METHOD`
+  is honoured as a fallback.
+- **`run_multi_aligner` forwards every resolver knob** (A14): the resolver branch
+  passed `threads` only, so a caller wired through it silently dropped
+  `--max-intron`, `--resolver-acceptor-classes` and `--no-resolver-atac`.
+  Tests: `tests/test_resolver_parallel.py` (12).
 - **STATION B — micro-exons the aligner orphaned as an insertion beside a
   junction** (ISSUE-040; Kevin 2026-09-07; new `splice/microexon.py`, plus
   `bam/{bam_processor,bam_writer,output,parallel}.py`,

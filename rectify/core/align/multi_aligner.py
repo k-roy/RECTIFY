@@ -3494,6 +3494,9 @@ def run_multi_aligner(
     reads2_path: Optional[str] = None,
     read_length: int = 150,
     max_intron: int = DEFAULT_MAX_INTRON,
+    resolver_acceptor_classes: str = 'canonical',
+    resolver_atac: bool = True,
+    resolver_candidate_ceiling: Optional[int] = None,
 ) -> Dict[str, str]:
     """Run multiple aligners on the same reads.
 
@@ -3600,11 +3603,18 @@ def run_multi_aligner(
                     )
                     continue
                 from .overhang_resolver import run_overhang_resolver
+                # A14: every resolver knob reaches the post-pass here too
+                # (this branch used to pass threads only, so a caller wired
+                # through it silently lost --max-intron / --no-resolver-atac).
                 results['overhang_resolver'] = run_overhang_resolver(
                     base_bam=results['minimap2'],
                     genome_path=genome_path,
                     output_bam=str(output_bam),
                     threads=threads,
+                    max_intron=max_intron,
+                    acceptor_classes=resolver_acceptor_classes,
+                    atac=resolver_atac,
+                    max_candidates_per_clip=resolver_candidate_ceiling,
                 )
             elif aligner == 'bbmap':
                 results['bbmap'] = run_bbmap(

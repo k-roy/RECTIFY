@@ -58,6 +58,7 @@ def _run_alignment(
     bbmap_path: Optional[str] = None,
     bwa_path: Optional[str] = None,
     resolver_atac: bool = True,
+    resolver_candidate_ceiling: Optional[int] = None,
     junction_pool_max_intron_len: int = 0,
     junction_pool_min_anchor_bp: int = 0,
 ) -> Tuple[Dict[str, Path], Path]:
@@ -210,6 +211,7 @@ def _run_alignment(
         max_intron=max_intron,
         resolver_acceptor_classes=resolver_acceptor_classes,
         resolver_atac=resolver_atac,
+        resolver_candidate_ceiling=resolver_candidate_ceiling,
         junction_pool_max_intron_len=junction_pool_max_intron_len,
         junction_pool_min_anchor_bp=junction_pool_min_anchor_bp,
         no_consensus=False,

@@ -105,7 +105,7 @@ Dorado-aligned BAM (with pt:i: tags)
     │                        finished minimap2 arm. By volume mainly JUNCTION
     │                        RE-ARBITRATION (re-scores the aligner's own junction calls
     │                        anywhere in the CIGAR: merge/shift/D-op-snap/mismatch-rescue
-    │                        moves, tagged XB) plus terminal soft-clip placement across
+    │                        moves, tagged XE) plus terminal soft-clip placement across
     │                        splice junctions (tagged XJ), then SUBSTITUTES the resolved
     │                        BAM for the raw minimap2 arm in the panel.
     │                      (junction-aligner default = [uLTRA, deSALT, overhang_resolver];
@@ -369,7 +369,7 @@ and by volume the first is the larger one.
 re-scores the aligner's *own* junction assignment anywhere in the CIGAR,
 including interior junctions, against the same splice-site index used for
 clip placement. A rewritten read carries one of four move families as its
-`XB` tag value:
+`XE` tag value (`XB` before 2026-09-10 — see the Tags note below):
 
 - `dmerge` — a boundary deletion abutting an intron is merged into it when
   the merged junction is canonical-in-class (the SRC1 case: minimap2
@@ -409,28 +409,28 @@ overhangs — was inspired by [gapmm2](https://github.com/nextgenusfs/gapmm2).
 Accepted placements carry
 `XJ:Z:<intron_start>-<intron_end>:<ed>:<side>`.
 
-**Tags.** Both `XJ` and `XB` are written only on a read the resolver actually
+**Tags.** Both `XJ` and `XE` are written only on a read the resolver actually
 rewrites — presence means the record was changed, absence means passthrough;
 neither tag carries a `0`/`1` "touched but unchanged" sentinel. All five
-`XB`-setting call sites overwrite unconditionally (no `has_tag` guard) and
+`XE`-setting call sites overwrite unconditionally (no `has_tag` guard) and
 run in a fixed order (`dmerge` → `shift` → `dop` → `mm` → `mmL`) with no
 early return between them, so when more than one family fires on the same
-read in one pass, `XB` holds only the
+read in one pass, `XE` holds only the
 **last** family applied — the `arb_*` counters in
 `<sample>.overhang_resolver.stats.json` (`arb_dmerge`, `arb_shifted`,
 `arb_dop_spliced`, `arb_mm_spliced`, …) are the complete per-run record, not
 the per-read tag.
 
-**Warning: `XB` collides with an unrelated tag from the ONT cDNA
-pipeline.** Stage 1 writes `XB:Z:<n_top>/<n_bot>` strand-split cluster
-counts (`core/cdna/io.py:250`; documented above) — a 1-vs-0 split can
-literally read `XB:Z:1/0`, easy to mistake for a boolean. Because `'XB'`
-is listed in `_CDNA_COMMENT_TAGS` (`core/consensus/consensus.py:408`),
-`_restore_sidecar_tags` (`consensus.py:457-483`, called at
-`consensus.py:923` and `980`) unconditionally overwrites it back to the
-Stage-1 `n_top/n_bot` value at the consensus step: on cDNA reads, the
-resolver's `XB` is **not visible in the final consensus BAM**. Read the
-resolver's own arm BAM or the `arb_*` stats for the move record instead.
+**History: the move tag was `XB` until 2026-09-10 (A10).** `XB` is also
+the ONT cDNA pipeline's `XB:Z:<n_top>/<n_bot>` strand-split cluster count
+(`core/cdna/io.py`; documented above), listed in `_CDNA_COMMENT_TAGS`
+(`core/consensus/consensus.py`), so `_restore_sidecar_tags` put the Stage-1
+value back on every cDNA read at the consensus step and the resolver's move
+record was invisible in the final consensus BAM (a `1/0` there was the
+strand split, not a resolver sentinel). The resolver now writes `XE`, which
+no other writer in the tree uses (`tests/test_resolver_parallel.py` pins
+that against the cDNA comment tags and the CMA whitelist). BAMs written
+before the rename carry the move family in `XB` on DRS reads only.
 
 Clip placement rebuilds gapmm2's idea around the deliberate improvements
 below. The Case A (shift) and Case B2/B3 (mismatch-rescue) re-arbitration
@@ -508,6 +508,23 @@ non-canonical junction has no entry in the GT/AG-class `SpliceSiteIndex` and
 therefore cannot be enumerated as a candidate at all. For non-canonical
 discovery missions, add mapPacBio back to the panel as a motif-free scout and
 let Station C adjudicate its candidates.
+
+**Parallel driver and the abandonment metric (A12/A13, 2026-09-10).** `resolve_read` is per-read
+over read-only genome/index state, so `run_overhang_resolver(threads=N)` cuts the name-sorted
+stream into batches of 256 records, scores them on a pool of N processes and writes them from ONE
+writer in input order — byte-identical to `threads=1`, tally merged field-for-field, at most 3N
+batches in flight (back-pressure), dead workers detected on a 30 s poll so a crashed worker fails
+the run instead of hanging it. Start method follows `RECTIFY_BAM_MP_START_METHOD` (default
+`spawn`; each worker loads the genome and the cached splice-site index, so on a mammalian genome
+prefer `fork` on Linux). Every clip refused on the candidate ceiling is a junction rescue that did
+not run, so the tally is a correctness number, not a performance footnote: `ResolverStats` records
+`blowup_by_contig` and the first refusal's (ceiling, candidates, window) per contig, `as_dict()`
+adds `abandoned_frac`, all of it lands in `<prefix>.overhang_resolver.stats.json`, and the
+end-of-run warning names the consequence (read ends pile up at a splice site instead of reads
+splicing across it) and the lever (`--resolver-candidate-ceiling N`; the default 2000 was
+calibrated for short, low-information clips and a 150-nt clip at a 5,000 bp window enumerates
+~1,000–2,000 candidates on its own, which is why yeast cDNA abandons ~5 % — measured by the
+Chanfreau 907 session, `dev/BUGS_TO_FIX.md` A13).
 
 ### Station B — consensus triage (`rectify triage`)
 

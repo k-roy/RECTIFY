@@ -1055,6 +1055,14 @@ def create_run_parser(subparsers):
     # the resulting value does not depend on argparse's registration order for
     # a shared dest.
     run_parser.add_argument(
+        '--resolver-candidate-ceiling',
+        dest='resolver_candidate_ceiling',
+        type=int,
+        default=None,
+        metavar='N',
+        help=('Per-clip candidate ceiling for the overhang_resolver (default %d at a 5,000 bp search window; scales with the window above that). Every clip that enumerates more (near sites x far sites) than this is ABANDONED unresolved — a junction rescue that does not run — and the run reports the count, the fraction and the per-contig split (A13). Raise it when the resolver stats JSON shows abandoned_frac > 0 and the numba kernel is available; the cost is bounded (~12 ms per 1,000 candidates).' % 2000),
+    )
+    run_parser.add_argument(
         '--resolver-atac',
         dest='resolver_atac',
         action='store_true',

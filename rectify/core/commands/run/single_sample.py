@@ -451,6 +451,8 @@ def _process_one_sample(
                         bbmap_path=getattr(args, 'bbmap_path', None),
                         bwa_path=getattr(args, 'bwa_path', None),
                         resolver_atac=getattr(args, 'resolver_atac', True),
+                        resolver_candidate_ceiling=getattr(
+                            args, 'resolver_candidate_ceiling', None),
                         junction_pool_max_intron_len=getattr(
                             args, 'junction_pool_max_intron_len', 0),
                         junction_pool_min_anchor_bp=getattr(
@@ -904,6 +906,8 @@ def _run_single_sample(args) -> int:
             bbmap_path=getattr(args, 'bbmap_path', None),
             bwa_path=getattr(args, 'bwa_path', None),
             resolver_atac=getattr(args, 'resolver_atac', True),
+            resolver_candidate_ceiling=getattr(
+                args, 'resolver_candidate_ceiling', None),
             junction_pool_max_intron_len=getattr(
                 args, 'junction_pool_max_intron_len', 0),
             junction_pool_min_anchor_bp=getattr(

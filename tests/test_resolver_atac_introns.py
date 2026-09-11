@@ -260,7 +260,7 @@ class TestArbiterDiscoveryPaths:
         assert changed and stats.extra.get('arb_dop_spliced') == 1, stats.extra
         assert r.cigartuples == [(0, 60), (3, self.INTRON), (0, 60)]
         assert self._junction(r) == (P_DON, P_ACC)
-        assert r.get_tag('XB').startswith(f'dop:{P_DON}-{P_ACC}>')
+        assert r.get_tag('XE').startswith(f'dop:{P_DON}-{P_ACC}>')
 
     def test_dop_minus_strand(self):
         span = M_DON - M_ACC
@@ -311,7 +311,7 @@ class TestArbiterDiscoveryPaths:
         assert changed and stats.extra.get('arb_mm_spliced') == 1, stats.extra
         assert r.cigartuples == [(0, 200), (3, self.INTRON), (0, 160)]
         assert self._junction(r) == (P_DON, P_ACC)
-        assert r.get_tag('XB').startswith(f'mm:{P_DON}-{P_ACC}:')
+        assert r.get_tag('XE').startswith(f'mm:{P_DON}-{P_ACC}:')
 
     def test_head_storm_left_mirror_only_under_atac(self):
         query = GENOME_SEQ[P_DON - 160:P_DON] + GENOME_SEQ[P_ACC:P_ACC + 200]
@@ -326,7 +326,7 @@ class TestArbiterDiscoveryPaths:
         assert r.cigartuples == [(0, 160), (3, self.INTRON), (0, 200)]
         assert self._junction(r) == (P_DON, P_ACC)
         assert r.reference_start == P_DON - 160
-        assert r.get_tag('XB').startswith(f'mmL:{P_DON}-{P_ACC}:')
+        assert r.get_tag('XE').startswith(f'mmL:{P_DON}-{P_ACC}:')
 
 
 class TestGrammar:

@@ -416,7 +416,7 @@ class TestRearbitration:
         changed, stats = self._run(g, r)
         assert changed and stats.extra.get('arb_shifted') == 1
         assert self._junction(r) == (self.D, self.E_TRUE)
-        assert r.get_tag('XB').startswith('shift:')
+        assert r.get_tag('XE').startswith('shift:')
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
 
@@ -469,7 +469,7 @@ class TestRearbitration:
         assert self._junction(r) == (D, E)
         # a grammar-admitted move is marked ':g' and counted, so the triage
         # layer can treat it as TRIAGED rather than high-confidence
-        assert r.get_tag('XB').endswith(':g')
+        assert r.get_tag('XE').endswith(':g')
         assert stats.extra.get('arb_grammar_tiebreak') == 1
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
@@ -675,7 +675,7 @@ class TestRearbitration:
         assert changed and stats.extra.get('arb_mm_spliced') == 1, stats.extra
         assert self._junction(r) == (D, E)
         assert r.reference_start == D - 160
-        assert r.get_tag('XB').startswith('mmL:')
+        assert r.get_tag('XE').startswith('mmL:')
         qlen = sum(ln for op, ln in r.cigartuples if op in (0, 1, 4, 7, 8))
         assert qlen == len(query)
 

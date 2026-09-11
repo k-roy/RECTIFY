@@ -67,6 +67,11 @@ def _commit_indexed_bam(temp_bam: Path, final_bam: Path, index_runner) -> None:
     temp_bai.replace(final_bai)
 
 
+# Help-string default for --resolver-candidate-ceiling (kept in sync with
+# ResolverConfig.max_candidates_per_clip by tests/test_resolver_parallel.py).
+_RESOLVER_CEILING_DEFAULT = 2000
+
+
 def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Create align subcommand parser."""
     parser = subparsers.add_parser(
@@ -240,6 +245,14 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     # AT-AC is ON by default since 2026-09-05. Both flags carry default=True so
     # the resulting value does not depend on argparse's registration order for
     # a shared dest.
+    aligner_group.add_argument(
+        '--resolver-candidate-ceiling',
+        dest='resolver_candidate_ceiling',
+        type=int,
+        default=None,
+        metavar='N',
+        help=('Per-clip candidate ceiling for the overhang_resolver (default %d at a 5,000 bp search window; scales with the window above that). Every clip that enumerates more (near sites x far sites) than this is ABANDONED unresolved — a junction rescue that does not run — and the run reports the count, the fraction and the per-contig split (A13). Raise it when the resolver stats JSON shows abandoned_frac > 0 and the numba kernel is available; the cost is bounded (~12 ms per 1,000 candidates).' % _RESOLVER_CEILING_DEFAULT),
+    )
     aligner_group.add_argument(
         '--resolver-atac',
         dest='resolver_atac',
@@ -1186,6 +1199,8 @@ def run_align(args: argparse.Namespace) -> int:
                 acceptor_classes=getattr(
                     args, 'resolver_acceptor_classes', 'canonical'),
                 atac=getattr(args, 'resolver_atac', True),
+                max_candidates_per_clip=getattr(
+                    args, 'resolver_candidate_ceiling', None),
             )
             logger.info(
                 f"[TIMING] overhang_resolver: {_time.perf_counter() - _t_res:.1f}s"
