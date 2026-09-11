@@ -16,6 +16,8 @@ Off-the-shelf aligners often misplace the ends of poly(A)-RNA reads: 5' splice-j
 
 One pipeline, two sequencing families — **ONT long reads** (DRS, PCR-cDNA) and **NGS short reads** (TruSeq/CORALL v2, QuantSeq REV 3'-end).
 
+**Species-agnostic.** Nothing in the method is yeast-specific: it needs a genome, an annotation, and a per-chemistry error profile. *S. cerevisiae* and *H. sapiens* genomes, annotations and empirical penalty tables are bundled (`--organism yeast` / `--organism human`), and the human tables reproduce the yeast error rates closely (see (d) below) — the error profile is a property of the chemistry, not the organism, so any other species runs from its own FASTA + GFF with the bundled tables.
+
 <p align="center">
   <img src="docs/figures/pipeline_overview.png#gh-light-mode-only" alt="RECTIFY pipeline overview" width="820">
   <img src="docs/figures/pipeline_overview_dark.png#gh-dark-mode-only" alt="RECTIFY pipeline overview" width="820">
@@ -168,7 +170,7 @@ A valley-based adaptive clustering algorithm groups nearby corrected 5' ends (TS
 Per-read splice classifications from step (c) are aggregated into per-junction tables: annotated / one-side-novel / both-side-novel counts (output labels `annotated`/`alternative`/`novel`) and junction-shift frequencies. The novel (one-side + both-side) fraction is the readout for the NMD-AS isoform audit (surveillance-mutant studies where unproductive transcripts accumulate).
 
 ### Isoform characterization (ONT cDNA only)
-`rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. 5' and 3' end variation within each cluster is bounded by a configurable window (default ±5 bp). Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.
+`rectify cdna-analyze` uses the matched 5' + 3' coordinates available from full-length cDNA reads to assemble per-read isoforms. Type-1 reads (full-length, UMI captured) cluster by both TSS and CPA; Type-2 reads (truncated, no UMI) cluster by CPA only. 5' and 3' end variation within each cluster is bounded by a configurable window (default ±5 bp; `--isoform-tol-5` / `--isoform-tol-3`, and `--t1t2-tol-5` / `--t1t2-tol-3` for the Type-1 ↔ Type-2 link — libraries with sharp ends may benefit from 3 or even 2 bp). Same-molecule Type-1 ↔ Type-2 cluster pairs are linked by gene + 3' end proximity, recovering deep coverage that would otherwise be discarded as random truncation noise.
 
 <p align="center">
   <img src="docs/figures/cdna_isoform_clustering.png#gh-light-mode-only" alt="cDNA isoform clustering" width="720">
@@ -242,8 +244,16 @@ rectify analyze corrected.tsv  --annotation genes.gff -o results/
 # Manifest mode — run all samples in one invocation
 rectify run-all --manifest samples.tsv --genome genome.fa --annotation genes.gtf -o results/
 
-# Large datasets: split BAM into chunks and run as a SLURM/SGE job array, then merge.
-# See docs/quickstart.md for an HPC job-array template.
+# Large datasets (any FASTQ on an HPC): chunked alignment is MANDATORY — a whole-FASTQ
+# alignment writing to a network filesystem melts the cluster. Either flag on run-all ...
+rectify run-all reads.fastq.gz --drs --organism yeast -o results/ --chunked-alignment
+bash results/submit_pipeline.sh          # the generated dependency chain (N chunks x M aligners)
+
+# ... or split explicitly, which also generates every stage script:
+rectify split reads.fastq.gz -n 16 -o /scratch/chunks/ --generate-slurm \
+    --genome genome.fa --annotation genes.gff --slurm-partition <p> --slurm-account <a>
+bash /scratch/chunks/submit_pipeline.sh
+# Details, scratch staging and the SGE variant: docs/user_guide/hpc_slurm.md
 ```
 
 **Bundled for *S. cerevisiae*:** genome, SGD annotations, GO terms, WT NET-seq, 64K pre-computed A-tract CPA sites. No external files needed for yeast.
@@ -258,7 +268,7 @@ pip install rectify-rna[visualize]                                 # +plots (mat
 conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna # +MEME for motif discovery
 ```
 
-The `[visualize]` extra adds `matplotlib` and `seaborn` for metagene plots, genome-browser figures, and heatmaps. The cDNA UMI-consensus extras (`pip install rectify-rna[cdna-correct]`) add `edlib` + `pyabpoa`.
+The `[visualize]` extra adds `matplotlib` and `seaborn` for metagene plots, genome-browser figures, and heatmaps. They are an extra rather than a hard dependency so that the core install stays light on HPC nodes and containers, where the pipeline runs headless and the figures are made elsewhere; a workstation install should take the extra. The cDNA UMI-consensus extras (`pip install rectify-rna[cdna-correct]`) add `edlib` + `pyabpoa`.
 
 ---
 
