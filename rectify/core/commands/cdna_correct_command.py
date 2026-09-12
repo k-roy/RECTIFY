@@ -86,6 +86,9 @@ def _print_pretrim_health(fastq_stats: Dict) -> None:
                        ("3' trim NO-OP", "trim_noop_3p")):
         v = fastq_stats.get(key, 0)
         print(f"  {label:<32s} {v:>8d}  ({100 * v / n:.1f}%)")
+    n_pt_c = fastq_stats.get("pt_clusters", 0)
+    print(f"  {'dorado pt carried -> XP/XD':<32s} {n_pt_c:>8d}  ({100 * n_pt_c / n:.1f}% of consensuses;"
+          f" {fastq_stats.get('pt_reads', 0)} input reads carried pt)")
 
 
 def _region_cluster_prefix(region: Optional[str]) -> str:
@@ -326,7 +329,9 @@ def _run_cdna_correct_parallel(
                                   "adaptive_deep_buckets": 0, "adaptive_deep_reads": 0,
                                   # planning/681 adapter-pretrim health counters
                                   "trim_frame_flipped": 0, "trim_frame_mismatch": 0,
-                                  "trim_noop_5p": 0, "trim_noop_3p": 0}
+                                  "trim_noop_5p": 0, "trim_noop_3p": 0,
+                                  # dorado pt carried into XP/XD (D10)
+                                  "pt_reads": 0, "pt_clusters": 0}
             total_stats.update({"input_reads": 0, "type1_reads": 0, "type2_reads": 0,
                                 "type1_clusters": 0, "type2_clusters": 0,
                                 "buckets_dropped_polyA_pileup": 0,

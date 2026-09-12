@@ -180,12 +180,16 @@ the post-alignment BAM via `minimap2 -y`):
   WW1 (PSP2 reporter, PCB114) singletons `pt` median 41.5 nt vs `XA` median
   25.5 nt, `XA − pt` median −8.5 nt with a long tail of underestimates (rbrowse,
   2026-09-12). Path A's `corrected_reads.tsv` `polya_length` / `polya_source`
-  derive from `XA`. To carry dorado's number, keep the tag from the uBAM
-  onward — `samtools fastq -T pt in.ubam > reads.fastq` for `run-all --ONT-cDNA`
-  (Path A's `minimap2 -y` pre-alignment propagates the FASTQ comment), or
-  `samtools fastq -T pt in.ubam | minimap2 -y -ax splice ...` for an external
-  pre-alignment — and read `XP` / `XD` on the consensus. `XD:i:0` on every
-  record means the tag never reached Stage 1.
+  derive from `XA`. `pt` is read as a BAM tag on the pre-aligned record
+  `correct-cdna` consumes, so it must be a real aux field there: a uBAM aligned
+  through a tag-preserving path (`samtools fastq -T pt in.ubam | minimap2 -y
+  -ax splice ...`, or dorado's own aligner) already qualifies; for `run-all
+  --ONT-cDNA`, whose Path A starts from FASTQ, make that FASTQ with
+  `samtools fastq -T pt` and the Step-0 pre-trim plus `minimap2 -y` carry the
+  comment into the pre-alignment. Read `XP` / `XD` on the consensus. If no
+  input read carries `pt`, Stage 1 logs a WARNING and reports
+  `dorado pt carried -> XP/XD 0` in the pretrim-health block — never a silent
+  `XD:i:0`.
 - The first run on a fresh BAM with many polyA-pileup hot-spots can be slow
   if rDNA masking is disabled — keep `--no-mask-rdna` off unless you have
   manually filtered chrXII.

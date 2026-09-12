@@ -9,7 +9,10 @@
 """
 from __future__ import annotations
 
+import logging
 import gzip
+
+logger = logging.getLogger(__name__)
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -141,6 +144,19 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     # the trimmer use; XP/XD carry the signal estimate the way DRS keeps `pt`.
     cluster_pt: Dict[int, Tuple[Optional[int], int]] = {
         cid: cluster_pt_summary(c) for cid, c in enumerate(clusters)}
+    n_pt_reads = sum(1 for c in clusters for r in c if r.pt is not None)
+    n_pt_clusters = sum(1 for v in cluster_pt.values() if v[1] > 0)
+    if clusters and n_pt_reads == 0:
+        # Loud, not a silent zero (Chanfreau 907, 2026-09-12): XD:i:0 on every
+        # consensus looks exactly like "no tails". The tag is read from the input
+        # BAM record, so this means the pre-aligned BAM carried no `pt` at all.
+        logger.warning(
+            "correct-cdna: NONE of the %d clustered reads carries dorado's pt:i tag — "
+            "every consensus will be written with XD:i:0 and no XP. If the basecaller "
+            "estimated poly(A) tails, the tag was dropped before this BAM: keep it with "
+            "`samtools fastq -T pt` (then `minimap2 -y`) when converting the uBAM, or "
+            "align the uBAM with a tag-preserving path. XA (sequence-level A-count) is "
+            "unaffected.", sum(len(c) for c in clusters))
 
     # Bucket reads per cluster from input BAM
     cluster_segments: Dict[int, List[pysam.AlignedSegment]] = defaultdict(list)
@@ -303,4 +319,5 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 trim_frame_flipped=n_frame_flipped,
                 trim_frame_mismatch=n_frame_mismatch,
                 trim_noop_5p=n_noop_5, trim_noop_3p=n_noop_3,
-                reoriented_to_sense=n_reoriented)
+                reoriented_to_sense=n_reoriented,
+                pt_reads=n_pt_reads, pt_clusters=n_pt_clusters)

@@ -185,3 +185,38 @@ class TestPretrimKeepsIncomingTags:
     def test_bare_header_is_unchanged(self, tmp_path):
         h = self._trim(tmp_path, "uuid-3")
         assert len(h[1:].split("\t")) == 3
+
+
+class TestSilentZeroIsLoud:
+    def test_stats_and_warning_when_no_input_read_carries_pt(self, tmp_path, caplog):
+        import logging
+        bam, fa = _bam(tmp_path, [None, None])
+        reads, _ = stream_reads(bam, None, reference=fa)
+        with caplog.at_level(logging.WARNING, logger="rectify.core.cdna.io"):
+            stats = write_stage1_fastq(bam, tmp_path / "s.fastq.gz", [reads],
+                                       umi_canonical={0: reads[0].umi},
+                                       cluster_xf_tier={0: reads[0].xf_tier},
+                                       cluster_tail_len={0: reads[0].tail_len}, reference=fa)
+        assert stats["pt_reads"] == 0 and stats["pt_clusters"] == 0
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("NONE of the 2 clustered reads carries dorado's pt:i tag" in m for m in msgs)
+        assert any("samtools fastq -T pt" in m for m in msgs)
+
+    def test_no_warning_when_pt_is_present(self, tmp_path, caplog):
+        import logging
+        bam, fa = _bam(tmp_path, [40, None])
+        reads, _ = stream_reads(bam, None, reference=fa)
+        with caplog.at_level(logging.WARNING, logger="rectify.core.cdna.io"):
+            stats = write_stage1_fastq(bam, tmp_path / "s.fastq.gz", [reads],
+                                       umi_canonical={0: reads[0].umi},
+                                       cluster_xf_tier={0: reads[0].xf_tier},
+                                       cluster_tail_len={0: reads[0].tail_len}, reference=fa)
+        assert stats["pt_reads"] == 1 and stats["pt_clusters"] == 1
+        assert not [r for r in caplog.records if "pt:i tag" in r.getMessage()]
+
+    def test_bam_input_with_real_pt_tags_is_the_covered_path(self, tmp_path):
+        """The reader is `read.get_tag('pt')` on the input BAM record — a Stage-A BAM
+        aligned from `samtools fastq -T pt | minimap2 -y` (Chanfreau 907) qualifies
+        directly; no FASTQ comment is involved at correct-cdna time."""
+        _, tags = _stage1_tags(tmp_path, [41, 42])
+        assert tags["XD"] == "2" and tags["XP"] == "42"
