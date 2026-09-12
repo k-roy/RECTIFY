@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **cDNA stage 1 carries dorado's poly(A) estimate: `XP:i` / `XD:i`** (rbrowse
+  request, Kevin 2026-09-12). The raw uBAM carries `pt:i` on every read (91 %
+  positive, mean 40 nt on WW1) and Path A dropped it; the consensus carried only
+  `XA`, the SEQUENCE-level A-count, which is ~8 nt shorter at the median with a
+  long tail of underestimates. `ReadInfo.pt` reads the tag from the pre-aligned
+  record; the consensus gets `XP` = median `pt` over member reads with `pt > 0`
+  and `XD` = their count (`XP` absent when none). Both are in the FASTQ comment,
+  the sibling-restore list and the CMA whitelist. Path A takes FASTQ: make it
+  with `samtools fastq -T pt in.ubam` and the tag rides the FASTQ comment through
+  the Step-0 pre-trim and `minimap2 -y` into the pre-alignment `correct-cdna`
+  reads; an external pre-alignment must keep it the same way or `XD` is 0.
+  `XA`'s meaning (sequence-level A-count) is now stated in the user guide.
 - **cDNA stage 1: Type-1 detection tolerates basecall errors in the SSP**
   (`cdna/read_info.py` `find_ssp_span`, shared with the trimmer). The
   strand-switching primer was matched EXACTLY (23-mer `find`) while the tier

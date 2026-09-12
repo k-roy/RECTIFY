@@ -197,6 +197,20 @@ class ReadInfo:
     read_type: int       # v1.15: 1 = SSP+UMI captured, 2 = SSP-less (5'-truncated, e.g. decay intermediate)
     pos5_corrected: int  # v1.19: TSS-side position corrected for SSP-bridge G-tract ambiguity (analog of 3' polyA walk-back)
     read_subtype: str    # "umi_captured_fwd" (Type-1, SSP+UMI at 5') / "umi_captured_rev" (Type-1, SSP+UMI at 3' via pA-first traversal) / "umi_not_captured" (Type-2, pA-first truncated before UMI)
+    # dorado's signal-level poly(A) estimate (``pt:i``) when the pre-aligned record
+    # carries it (uBAM -> ``samtools fastq -T pt`` -> ``minimap2 -y``); None when absent or
+    # negative (dorado writes -1 for "not estimated"). Independent of ``tail_len``, which is
+    # the SEQUENCE-level A-count and is shorter by ~8 nt median (rbrowse, WW1, 2026-09-12).
+    pt: Optional[int] = None
+
+
+def dorado_pt(read: pysam.AlignedSegment) -> Optional[int]:
+    """``pt:i`` as an int >= 0, or None (absent, malformed, or dorado's -1)."""
+    try:
+        n = int(read.get_tag('pt'))
+    except (KeyError, ValueError, TypeError):
+        return None
+    return n if n >= 0 else None
 
 
 def extract_read_info(read: pysam.AlignedSegment,
@@ -309,4 +323,5 @@ def extract_read_info(read: pysam.AlignedSegment,
         read_type=read_type,
         pos5_corrected=pos5_corrected,
         read_subtype=read_subtype,
+        pt=dorado_pt(read),
     )

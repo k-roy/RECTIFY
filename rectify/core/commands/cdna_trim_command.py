@@ -384,6 +384,28 @@ def _iter_fastq(path: Path):
 # Main trim function
 # ---------------------------------------------------------------------------
 
+_SAM_TAG_RE = None
+
+
+def _carried_comment_tags(header: str) -> list:
+    """SAM-style ``XX:T:value`` tokens in a FASTQ header's comment, minus the two this
+    stage owns (``ro``, ``pl``). Tab- or space-separated (``samtools fastq -T`` writes
+    tabs; some tools write spaces). Anything that is not a well-formed tag is dropped —
+    a free-text comment must not become a bogus aux field under ``minimap2 -y``."""
+    global _SAM_TAG_RE
+    if _SAM_TAG_RE is None:
+        import re
+        _SAM_TAG_RE = re.compile(r'^[A-Za-z][A-Za-z0-9]:[AifZHB]:')
+    parts = header.split(None, 1)
+    if len(parts) < 2:
+        return []
+    out = []
+    for tok in parts[1].replace('\t', ' ').split(' '):
+        if _SAM_TAG_RE.match(tok) and tok[:2] not in ('ro', _TAIL_LEN_TAG):
+            out.append(tok)
+    return out
+
+
 def trim_cdna_fastq_polya(
     input_fastq_path: str,
     output_fastq_path: str,
@@ -468,6 +490,11 @@ def trim_cdna_fastq_polya(
 
             # Bare UUID: everything before the first whitespace in the header
             bare_id = header.split()[0]
+            # Keep any SAM-style comment tags the FASTQ already carries (e.g. dorado's
+            # `pt:i:N` from `samtools fastq -T pt`): `minimap2 -y` propagates the whole
+            # comment, and Path A's `correct-cdna` folds `pt` into XP/XD on the consensus.
+            # `ro`/`pl` are ours and are (re)written below, never duplicated.
+            carried = _carried_comment_tags(header)
 
             orig_len = len(seq)
             trim_3p_polya  = 0
@@ -595,7 +622,8 @@ def trim_cdna_fastq_polya(
             # which is the ONLY way the tail survives -- it has just been trimmed
             # off the sequence itself.
             out_fh.write(
-                f'@{bare_id}\tro:A:{orientation}\t{_TAIL_LEN_TAG}:i:{tail_len}\n'
+                f'@{bare_id}\tro:A:{orientation}\t{_TAIL_LEN_TAG}:i:{tail_len}'
+                + ''.join(f'\t{t}' for t in carried) + '\n'
                 f'{seq}\n+\n{quals}\n'
             )
 

@@ -66,6 +66,22 @@ def stream_reads(bam_path: Path, region: Optional[str],
     return reads, n_masked
 
 
+def cluster_pt_summary(cluster: List[ReadInfo]) -> Tuple[Optional[int], int]:
+    """``(median, n)`` of the member reads' POSITIVE dorado ``pt`` values.
+
+    Reads with no ``pt`` or ``pt <= 0`` are excluded from the median and not
+    counted (dorado's 0 / -1 mean "no tail found" / "not estimated", not a
+    measured short tail). The median is rounded half-up to an int so it can
+    ride in an ``i`` tag; ``(None, 0)`` when no member carries one."""
+    vals = sorted(r.pt for r in cluster if r.pt is not None and r.pt > 0)
+    if not vals:
+        return None, 0
+    n = len(vals)
+    mid = n // 2
+    med = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
+    return int(med + 0.5), n
+
+
 def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                        clusters: List[List[ReadInfo]],
                        umi_canonical: Dict[int, str],
@@ -118,6 +134,13 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
         n_top = sum(1 for r in c if r.is_reverse)
         n_bot = sum(1 for r in c if not r.is_reverse)
         cluster_strand_split[cid] = (n_top, n_bot)
+
+    # dorado's signal-level poly(A) estimate, per cluster (rbrowse request,
+    # Kevin 2026-09-12: "I thought Dorado puts out pt tags for cDNA" — it does,
+    # and Path A dropped them). XA stays the SEQUENCE-level A-count the tier and
+    # the trimmer use; XP/XD carry the signal estimate the way DRS keeps `pt`.
+    cluster_pt: Dict[int, Tuple[Optional[int], int]] = {
+        cid: cluster_pt_summary(c) for cid, c in enumerate(clusters)}
 
     # Bucket reads per cluster from input BAM
     cluster_segments: Dict[int, List[pysam.AlignedSegment]] = defaultdict(list)
@@ -258,6 +281,10 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 f"XB:Z:{n_top}/{n_bot}",
                 f"XN:i:1",   # oriented: this molecule is emitted RNA-sense (see above)
             ]
+            pt_median, pt_n = cluster_pt[cid]
+            tag_parts.append(f"XD:i:{pt_n}")          # member reads with a positive pt
+            if pt_median is not None:
+                tag_parts.append(f"XP:i:{pt_median}")  # median dorado pt over those reads
 
             # Tab-separate the read name and tags so `minimap2 -y` (and the
             # equivalent flags in mapPacBio / gapmm2) parse each `XX:T:value`

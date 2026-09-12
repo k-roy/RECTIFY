@@ -145,6 +145,8 @@ the post-alignment BAM via `minimap2 -y`):
 | `XQ:i` | int | 5' pre-trim bases stripped (SSP+UMI+GGG for Type-1, polyT for orient=rev) |
 | `XK:i` | int | 3' pre-trim bases stripped (polyA for orient=fwd, SSP_RC suffix for orient=rev) |
 | `XB:Z` | string | Strand-split count `n_top/n_bottom` (only meaningful with `--strand-aware-consensus`) |
+| `XP:i` | int | **dorado's signal-level poly(A) estimate** — the median `pt:i` over the cluster's member reads with `pt > 0`. Absent when no member carries one. This is a DIFFERENT quantity from `XA` (see the note below) |
+| `XD:i` | int | Number of member reads whose `pt > 0` went into `XP` (`0` = no `pt` reached Stage 1) |
 
 > **Tag namespace.** `X[upper]` tags are persistent user-visible metadata
 > owned by the cDNA pipeline. `rectify align`'s internal aligner-selection
@@ -170,6 +172,20 @@ the post-alignment BAM via `minimap2 -y`):
   only for the Stage 1 full-length tier (`XF`); `rectify cdna-analyze`
   recomputes `XA` on the post-align CIGAR, which is the value that should be
   consumed downstream.
+- **`XA` is a SEQUENCE-level A-count, not dorado's tail estimate.** It counts the
+  A's between the cleavage anchor and the adapter in the basecalled read, and
+  `pretrim_consensus` strips that tail off the emitted molecule — so the aligned
+  consensus carries no tail in SEQ at all, and any tail measured on the aligned
+  sequence is 0 by construction. dorado's signal-level `pt:i` is longer: on 68
+  WW1 (PSP2 reporter, PCB114) singletons `pt` median 41.5 nt vs `XA` median
+  25.5 nt, `XA − pt` median −8.5 nt with a long tail of underestimates (rbrowse,
+  2026-09-12). Path A's `corrected_reads.tsv` `polya_length` / `polya_source`
+  derive from `XA`. To carry dorado's number, keep the tag from the uBAM
+  onward — `samtools fastq -T pt in.ubam > reads.fastq` for `run-all --ONT-cDNA`
+  (Path A's `minimap2 -y` pre-alignment propagates the FASTQ comment), or
+  `samtools fastq -T pt in.ubam | minimap2 -y -ax splice ...` for an external
+  pre-alignment — and read `XP` / `XD` on the consensus. `XD:i:0` on every
+  record means the tag never reached Stage 1.
 - The first run on a fresh BAM with many polyA-pileup hot-spots can be slow
   if rDNA masking is disabled — keep `--no-mask-rdna` off unless you have
   manually filtered chrXII.

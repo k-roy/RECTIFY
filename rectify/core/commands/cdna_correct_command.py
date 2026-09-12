@@ -31,6 +31,9 @@ Tag glossary:
        (SSP+UMI+GGG for T1 / polyT for rev)       (polyA for fwd / SSP_RC suffix for rev)
   XN  oriented (always 1): the consensus is emitted RNA-sense, so after alignment
        is_reverse IS the gene strand and minimap2 -uf is valid (planning/730, 2026-08-21)
+  XP  median dorado pt:i (signal-level poly(A) estimate) over the cluster's reads with
+       pt > 0; absent when none carry it   XD  number of those reads (0 = no pt reached
+       this stage: pre-align with `samtools fastq -T pt | minimap2 -y`)
 
 Usage (via rectify CLI):
     rectify correct-cdna INPUT.bam --out OUTDIR [options]
@@ -633,7 +636,7 @@ def create_correct_cdna_parser(subparsers):
             'FASTQ before alignment. Emits a representative-read or pileup-based '
             'consensus per cluster (POA if pyabpoa is available).\n\n'
             'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
-            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN) '
+            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN/XP/XD) '
             'that `rectify align` propagates into the post-align BAM automatically -- it '
             'applies minimap2 -y internally, and has NO -y flag of its own. Gene assignment, '
             'isoform clustering, and Type-1↔Type-2 pairing run downstream in '

@@ -405,7 +405,7 @@ def _parse_fastq_comment_tags(comment: str) -> List[Tuple[str, str, object]]:
     return tags
 
 
-_CDNA_COMMENT_TAGS = ('XU', 'XO', 'XT', 'XY', 'XC', 'XF', 'XM', 'XB', 'XR', 'XA')
+_CDNA_COMMENT_TAGS = ('XU', 'XO', 'XT', 'XY', 'XC', 'XF', 'XM', 'XB', 'XR', 'XA', 'XP', 'XD')
 
 
 def _restore_comment_tags_from_siblings(best_read, aligner_reads):

@@ -109,10 +109,10 @@ def _run_ont_cdna_path_a(
 
     # ---- 1. pre-alignment (correct-cdna needs alignment anchors) ------------
     # 🔴 NO PRE-TRIM HERE. `correct-cdna` reads the read SEQUENCE, not tags --
-    # `cdna/read_info.py::extract_read_info` contains ZERO `get_tag` calls -- and it
-    # derives the UMI, the orientation, the XF full-length tier and the tail length
-    # from the adapter/UMI/poly-A structure still attached to the read. Trimming
-    # first removes exactly what it needs. Measured (planning/567):
+    # `cdna/read_info.py::extract_read_info` derives the UMI, the orientation, the XF
+    # full-length tier and the tail length from the adapter/UMI/poly-A structure still
+    # attached to the read (its ONE tag read, dorado's `pt:i`, is carried into XP/XD and
+    # decides nothing). Trimming first removes exactly what it needs. Measured (planning/567):
     #   detect_full_length_tier 2 -> 0 on every molecule (XF destroyed, and XF is
     #     the full-length gate every 3'-end analysis depends on)
     #   ~9% of reads (Type-2, SSP-less) hit read_info.py `return None` and are
