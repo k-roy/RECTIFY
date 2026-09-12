@@ -520,11 +520,14 @@ prefer `fork` on Linux). Every clip refused on the candidate ceiling is a juncti
 not run, so the tally is a correctness number, not a performance footnote: `ResolverStats` records
 `blowup_by_contig` and the first refusal's (ceiling, candidates, window) per contig, `as_dict()`
 adds `abandoned_frac`, all of it lands in `<prefix>.overhang_resolver.stats.json`, and the
-end-of-run warning names the consequence (read ends pile up at a splice site instead of reads
-splicing across it) and the lever (`--resolver-candidate-ceiling N`; the default 2000 was
-calibrated for short, low-information clips and a 150-nt clip at a 5,000 bp window enumerates
-~1,000–2,000 candidates on its own, which is why yeast cDNA abandons ~5 % — measured by the
-Chanfreau 907 session, `dev/BUGS_TO_FIX.md` A13).
+end-of-run warning says those clips were not assessed and names the lever
+(`--resolver-candidate-ceiling N`). The default 2000 was calibrated for short, low-information clips;
+a 150-nt clip at a 5,000 bp window enumerates ~1,000–2,000 candidates on its own, which is why yeast
+cDNA abandons ~5 %. Whether that costs junctions is data-dependent and has been measured both ways:
+on human chr5 the refused clips were real junctions (ISSUE-010); on a 37,219-read yeast cDNA chunk a
+20000 ceiling assessed all 3,268 refused clips and produced a byte-identical BAM at +49 % wall
+(Chanfreau 907 A/B, 2026-09-11, `dev/BUGS_TO_FIX.md` A13) — so the default stays 2000 and the knob
+is per-dataset.
 
 ### Station B — consensus triage (`rectify triage`)
 

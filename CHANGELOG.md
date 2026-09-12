@@ -26,10 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep the soft clip that makes read ends pile up mid-intron. `ResolverStats`
   now records the split per contig (`blowup_by_contig`, `blowup_first`),
   `as_dict()` adds `abandoned_frac`, all of it reaches
-  `<prefix>.overhang_resolver.stats.json`, and the end-of-run WARNING names the
-  consequence and the per-contig split. New knob `--resolver-candidate-ceiling N`
-  on `align` and `run-all` (`ResolverConfig.max_candidates_per_clip`; default
-  unchanged at 2000 pending the A/B with abandonment counted).
+  `<prefix>.overhang_resolver.stats.json`, and the end-of-run WARNING says the
+  clips were not assessed and points at the knob. New knob
+  `--resolver-candidate-ceiling N` on `align` and `run-all`
+  (`ResolverConfig.max_candidates_per_clip`). **Default stays 2000, measured:**
+  on a 37,219-read yeast cDNA chunk a 20000 ceiling assessed all 3,268 refused
+  clips and produced a byte-identical BAM at +49 % wall (Chanfreau 907 A/B,
+  2026-09-11) — on yeast cDNA the abandoned clips are not where the rescues
+  are; on human chr5 they were (ISSUE-010), so the knob is per-dataset.
 - **The resolver's move-family tag is `XE`, no longer `XB`** (A10). The ONT
   cDNA pipeline writes `XB:Z:<n_top>/<n_bot>` and the consensus sidecar restore
   put that value back on every cDNA read, so the resolver's `dmerge` / `shift`

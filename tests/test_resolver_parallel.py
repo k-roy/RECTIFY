@@ -8,10 +8,12 @@ under test is BYTE-IDENTICAL output and an identical tally across
 `threads=1` and `threads>1`, batches deliberately smaller than the read set
 so several tasks are in flight and one is a short tail.
 
-A13: every clip abandoned on the candidate ceiling is a junction rescue
-that did not run. The count, the fraction and the per-contig split must
+A13: every clip abandoned on the candidate ceiling is a clip the rescue
+never assessed. The count, the fraction and the per-contig split must
 reach `ResolverStats.as_dict()` (the provenance JSON `align` writes), and
-the end-of-run WARNING must name the consequence.
+the end-of-run WARNING must say so and point at the knob (whether the
+clips would have placed is data-dependent — real on human chr5, nothing on
+yeast cDNA — so the warning never claims a lost-junction count).
 """
 
 import argparse
@@ -191,7 +193,7 @@ class TestAbandonmentIsAMetric:
         msgs = [r.getMessage() for r in caplog.records]
         summary = [m for m in msgs if 'ABANDONED on the candidate ceiling' in m]
         assert len(summary) == 1
-        assert 'DID NOT OCCUR' in summary[0]
+        assert 'NOT ASSESSED' in summary[0]
         assert '(100.0%)' in summary[0]
         assert 'chrI=1' in summary[0]
         assert '--resolver-candidate-ceiling' in summary[0]

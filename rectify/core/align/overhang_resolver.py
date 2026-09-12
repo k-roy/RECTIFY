@@ -2065,12 +2065,16 @@ def run_overhang_resolver(
     # Escalate the blow-up count out of the info line: an acceptance gate that
     # skims the summary must not have to notice a non-zero field buried mid-row.
     if stats.refused_candidate_blowup:
-        # A13 (2026-09-10): this is a CORRECTNESS number, not a performance
-        # footnote. Every refusal is a 5'/3' junction rescue that did not run,
-        # and the read keeps the soft clip that rescue exists to remove — so
-        # where refusals cluster, read ends pile up at a splice site instead
-        # of splicing across it (Chanfreau invariant #4). Name the consequence
-        # and the split; the same numbers go to the stats JSON via as_dict().
+        # A13 (2026-09-10): report it as a CORRECTNESS number, not a
+        # performance footnote — every refusal is a clip the rescue never
+        # assessed, and the read keeps its soft clip. Whether those clips would
+        # have PLACED is data-dependent and was measured both ways: on human
+        # chr5 the refused clips were real junctions (ISSUE-010), while on yeast
+        # cDNA a 10x ceiling assessed all 3,268 refused clips of a 37k-read
+        # chunk and changed NOTHING (byte-identical BAM, +49 % wall; A13 A/B,
+        # Chanfreau 907, 2026-09-11). So the warning states what is known — not
+        # assessed — and points at the knob and the stats JSON, never at a
+        # lost-junction count it cannot know.
         n_ab = stats.refused_candidate_blowup
         frac = n_ab / stats.clips_assessed if stats.clips_assessed else 0.0
         top = sorted(stats.blowup_by_contig.items(), key=lambda kv: -kv[1])
@@ -2080,17 +2084,17 @@ def run_overhang_resolver(
         logger.warning(
             'overhang_resolver: %s of %s assessed clip(s) (%.1f%%) ABANDONED on '
             'the candidate ceiling (%d per %d bp of search window, floor %d; '
-            'max_intron=%d). CONSEQUENCE: %s junction rescues DID NOT OCCUR — '
-            'each of those reads passed through with its soft clip intact, so '
-            'wherever they cluster a browser shows read ends piling up at a '
-            'splice site instead of reads spliced across it. Per contig: %s. '
-            'The clips this refuses ARE resolvable (human chr5, ISSUE-010; '
-            'yeast cDNA, A13): raise --resolver-candidate-ceiling (cheap with '
-            'the numba kernel, ON by default; RECTIFY_HP_ED_NUMBA=0 disables '
-            'it) or lower --max-intron toward the largest intron you expect, '
-            'before trusting junction counts or 5\' ends here. Recorded in the '
-            'stats JSON as refused_candidate_blowup / abandoned_frac / '
-            'blowup_by_contig.',
+            'max_intron=%d). CONSEQUENCE: %s clip(s) were NOT ASSESSED for a '
+            'junction placement — each read passed through with its soft clip '
+            'intact. Whether any of them would have placed is not known here: '
+            'on human chr5 the refused clips were real junctions (ISSUE-010); '
+            'on yeast cDNA a 10x ceiling assessed every refused clip and changed '
+            'nothing (A13 A/B). Per contig: %s. To find out for THIS data, rerun '
+            'one chunk with --resolver-candidate-ceiling 20000 (bounded cost '
+            'with the numba kernel, ON by default; RECTIFY_HP_ED_NUMBA=0 '
+            'disables it) and compare junction reads, or lower --max-intron '
+            'toward the largest intron you expect. Recorded in the stats JSON '
+            'as refused_candidate_blowup / abandoned_frac / blowup_by_contig.',
             f'{n_ab:,}', f'{stats.clips_assessed:,}', 100.0 * frac,
             cfg.max_candidates_per_clip, _CEILING_REF_WINDOW,
             cfg.max_candidates_per_clip, cfg.max_intron, f'{n_ab:,}',
