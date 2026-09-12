@@ -277,36 +277,12 @@ class PretrimResult(NamedTuple):
 
 
 def _find_ssp(seq: str, frame: str) -> int:
-    """Return the start index of the SSP in `seq` for `frame`, or -1.
-
-    ``fwd`` → ``SSP_FWD``, expected near the LEFT; ``rev`` → ``SSP_RC``, near the RIGHT
-    (hence ``rfind``: the rightmost hit is the real adapter).
-
-    Exact search runs first and is unwindowed, preserving the historical behaviour — an
-    exact 23-mer arises by chance at ~4⁻²³. The **fuzzy** fallback is deliberately
-    WINDOW-GATED to the end where the SSP belongs (planning/681): edlib ``HW`` over a full
-    ~2 kb consensus finds a ≤3-edit 23-mer in ordinary genomic sequence and would trim real
-    mRNA — worst on the pileup molecules, which carry no adapter at all and so have nothing
-    but mRNA to hit. Mirrors ``_find_adapter_anchor_pos``, which is already fuzzy and
-    already windowed on the 3' anchor.
-    """
-    pattern = SSP_FWD if frame == "fwd" else SSP_RC
-    p = seq.find(pattern) if frame == "fwd" else seq.rfind(pattern)
-    if p >= 0 or not HAS_EDLIB:
-        return p
-    if frame == "fwd":
-        off, window = 0, seq[:SSP_SEARCH_WIN]
-    else:
-        off = max(0, len(seq) - SSP_SEARCH_WIN)
-        window = seq[off:]
-    r = edlib.align(pattern, window, mode="HW", task="locations", k=SSP_MAX_EDIT)
-    if r["editDistance"] == -1 or not r["locations"]:
-        return -1
-    # edlib HW can return a location whose START is None (end found, start not
-    # localizable). It carries no usable position — report the documented sentinel, the
-    # same defect and fix as read_info._find_anchor_fuzzy and walkback._find_adapter_anchor_pos.
-    start = r["locations"][-1][0] if frame == "rev" else r["locations"][0][0]
-    return -1 if start is None else off + start
+    """Start index of the SSP in `seq` for `frame`, or -1 — exact first, then a
+    WINDOW-GATED fuzzy fallback (planning/681). The finder itself lives in
+    :func:`read_info.find_ssp_span` since 2026-09-11 so Type-1 detection and the
+    trimmer can never disagree about what an SSP is."""
+    from .read_info import find_ssp_span
+    return find_ssp_span(seq, frame)[0]
 
 
 def _detect_frame(consensus_seq: str, orient: str, read_type: int) -> Tuple[str, bool]:
@@ -323,8 +299,9 @@ def _detect_frame(consensus_seq: str, orient: str, read_type: int) -> Tuple[str,
     """
     if read_type != 1:
         return orient, False
-    has_fwd = SSP_FWD in consensus_seq
-    has_rev = SSP_RC in consensus_seq
+    from .read_info import find_ssp_span
+    has_fwd = find_ssp_span(consensus_seq, "fwd")[0] >= 0
+    has_rev = find_ssp_span(consensus_seq, "rev")[0] >= 0
     if has_fwd == has_rev:            # both, or neither → no evidence; trust the label
         return orient, False
     detected = "fwd" if has_fwd else "rev"

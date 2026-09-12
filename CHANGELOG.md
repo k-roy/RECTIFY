@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **cDNA stage 1: Type-1 detection tolerates basecall errors in the SSP**
+  (`cdna/read_info.py` `find_ssp_span`, shared with the trimmer). The
+  strand-switching primer was matched EXACTLY (23-mer `find`) while the tier
+  detector and the trimmer were already edlib-tolerant, so a full-length
+  molecule whose SSP carried one miscalled base was classified Type 2 — no
+  UMI, never deduplicated — and kept its whole 78–150-nt adapter as a 5' soft
+  clip (rbrowse r120_4585 / WT-AA_WT_rep2, Kevin 2026-09-11: 79 of 502
+  construct reads, 16 %, in that library). The fuzzy fallback is window-gated
+  to the adapter end (planning/681) and picks one span rule for every read
+  (adapter-end occurrence, then the pattern-length span, then the longer);
+  exact hits keep the historical unwindowed path byte-for-byte. Tests:
+  `tests/test_cdna_ssp_fuzzy.py` (13).
 - **Overhang resolver on `-t N` worker processes** (A12; `align/overhang_resolver.py`).
   `threads` was accepted and ignored — one core of resolver per job however many
   slots were requested, and on a 2.8 M-read yeast cDNA library the stage was ~99 %

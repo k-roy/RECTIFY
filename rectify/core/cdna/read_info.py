@@ -26,7 +26,9 @@ from ._constants import (
     POLY_T_ANCH_RE,
     POLY_T_UNANCH_RE,
     SSP_FWD,
+    SSP_MAX_EDIT,
     SSP_RC,
+    SSP_SEARCH_WIN,
     UMI_LEN,
 )
 from ..bam.bam_writer import _decode_eq_seq_inplace
@@ -73,6 +75,57 @@ def _find_anchor_fuzzy(window: str, anchor: str, rightmost: bool) -> int:
         return start
     # Fallback: exact match
     return window.rfind(anchor) if rightmost else window.find(anchor)
+
+
+def find_ssp_span(seq: str, frame: str) -> Tuple[int, int]:
+    """``(start, end_exclusive)`` of the strand-switching primer in ``seq`` for
+    ``frame`` (``fwd`` → ``SSP_FWD`` near the LEFT, ``rev`` → ``SSP_RC`` near the
+    RIGHT), or ``(-1, -1)``.
+
+    Exact search first, unwindowed — the historical behaviour, byte-identical
+    for every read it already classified. The fuzzy fallback (edlib HW,
+    ≤ ``SSP_MAX_EDIT`` edits) is WINDOW-GATED to the end where the SSP belongs
+    (``SSP_SEARCH_WIN``), the same discipline as the stage-1 trimmer's finder
+    (planning/681: an unwindowed ≤3-edit 23-mer is found in ordinary mRNA).
+
+    Why fuzzy at all (rbrowse r120_4585 / WT-AA_WT_rep2, 2026-09-11): ONT
+    R10.4.1 miscalls a base of the 23-nt SSP on a real fraction of full-length
+    molecules — 79 of 502 construct reads in that library carried an intact
+    SSP+UMI with one or two errors, were classified Type 2 (no UMI, never
+    deduplicated) and kept the whole 78–150-nt adapter as a 5' soft clip. The
+    tier detector and the trimmer were already tolerant; Type-1 detection was
+    the only exact match left.
+    """
+    pattern = SSP_FWD if frame == "fwd" else SSP_RC
+    p = seq.find(pattern) if frame == "fwd" else seq.rfind(pattern)
+    if p >= 0:
+        return p, p + len(pattern)
+    if not HAS_EDLIB:
+        return -1, -1
+    if frame == "fwd":
+        off, window = 0, seq[:SSP_SEARCH_WIN]
+    else:
+        off = max(0, len(seq) - SSP_SEARCH_WIN)
+        window = seq[off:]
+    r = edlib.align(pattern, window, mode="HW", task="locations", k=SSP_MAX_EDIT)
+    if r["editDistance"] == -1 or not r["locations"]:
+        return -1, -1
+    locs = [l for l in r["locations"] if l[0] is not None and l[1] is not None]
+    if not locs:                          # edlib: end found, start not localizable
+        return -1, -1
+    # Co-optimal locations differ by a few bases when the SSP's END bases are
+    # the miscalled ones: a trailing mismatch ties with trailing deletions of
+    # the pattern (shorter span) and with an insertion before the last base
+    # (longer span). The UMI is sliced at the span boundary, so the choice must
+    # be one rule applied to every read: take the occurrence at the adapter
+    # end (fwd = leftmost start, rev = rightmost end), then the span whose
+    # length equals the pattern's (the substitution reading), then the longer.
+    L = len(pattern)
+    if frame == "fwd":
+        start, end = sorted(locs, key=lambda l: (l[0], abs(l[1] - l[0] + 1 - L), -l[1]))[0]
+    else:
+        start, end = sorted(locs, key=lambda l: (-l[1], abs(l[1] - l[0] + 1 - L), l[0]))[0]
+    return off + start, off + end + 1
 
 
 def detect_full_length_tier(seq: str, orient: str) -> int:
@@ -177,15 +230,15 @@ def extract_read_info(read: pysam.AlignedSegment,
     read_type = 1
     umi_basecalled: Optional[str] = None
     orient: Optional[str] = None
-    p = seq.find(SSP_FWD)
+    p, e = find_ssp_span(seq, "fwd")
     if p >= 0:
-        umi_basecalled = seq[p + len(SSP_FWD): p + len(SSP_FWD) + UMI_LEN]
+        umi_basecalled = seq[e: e + UMI_LEN]
         if len(umi_basecalled) == UMI_LEN:
             orient = "fwd"
         else:
             umi_basecalled = None
     if orient is None:
-        p = seq.find(SSP_RC)
+        p, _e = find_ssp_span(seq, "rev")
         if p >= UMI_LEN:
             umi_rc = seq[p - UMI_LEN: p]
             umi_basecalled = revcomp(umi_rc)
