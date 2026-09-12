@@ -145,8 +145,10 @@ the post-alignment BAM via `minimap2 -y`):
 | `XQ:i` | int | 5' pre-trim bases stripped (SSP+UMI+GGG for Type-1, polyT for orient=rev) |
 | `XK:i` | int | 3' pre-trim bases stripped (polyA for orient=fwd, SSP_RC suffix for orient=rev) |
 | `XB:Z` | string | Strand-split count `n_top/n_bottom` (only meaningful with `--strand-aware-consensus`) |
-| `XP:i` | int | **dorado's signal-level poly(A) estimate** — the median `pt:i` over the cluster's member reads with `pt > 0`. Absent when no member carries one. This is a DIFFERENT quantity from `XA` (see the note below) |
-| `XD:i` | int | Number of member reads whose `pt > 0` went into `XP` (`0` = no `pt` reached Stage 1) |
+| `XA:i` | int | (see above) — **"A" for poly(A), sequence-level**: per read, the number of basecalled A's (T's for `orient=rev`) between the canonical cleavage anchor and the adapter anchor, from `walk_back_anchor_and_tail`; per cluster, the **median** over member reads |
+| `XP:f` | float | **"P" for pt — dorado's signal-level poly(A) estimate**: the **mean** `pt:i` over the cluster's member reads with `pt > 0`. Absent when no member carries one. A DIFFERENT quantity from `XA` (note below) |
+| `XD:i` | int | **"D" for dorado** — number of member reads whose `pt > 0` went into `XP` (`0` = no `pt` reached Stage 1) |
+| `XW:f` | float | **"W" for width** — sample standard deviation (n − 1) of those `pt` values; present when `XD ≥ 2`. A 95 % interval for the molecule's tail is `XP ± t(XD−1) · XW / √XD` |
 
 > **Tag namespace.** `X[upper]` tags are persistent user-visible metadata
 > owned by the cDNA pipeline. `rectify align`'s internal aligner-selection

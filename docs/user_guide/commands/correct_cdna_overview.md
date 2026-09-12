@@ -77,7 +77,7 @@ stage of the pipeline and are stable for downstream consumers.
 
 | Owner | Tags |
 |-------|------|
-| `rectify correct-cdna` (Stage 1) | `XU`, `XO`, `XC`, `XR`, `XM`, `XF`, `XA` (pre-align, sequence-level), `XT`, `XY`, `XQ`, `XK`, `XB`, `XN`, `XP` / `XD` (dorado `pt` median / n, when the pre-aligned input carries `pt`) |
+| `rectify correct-cdna` (Stage 1) | `XU`, `XO`, `XC`, `XR`, `XM`, `XF`, `XA` (pre-align, sequence-level), `XT`, `XY`, `XQ`, `XK`, `XB`, `XN`, `XP` / `XD` / `XW` (dorado `pt` mean / n / SD, when the pre-aligned input carries `pt`) |
 | `rectify cdna-analyze` (Stage 3) | `XA` (overwritten with post-align value), `XG`, `XS`, `XI`, `XL` |
 
 See [`rectify correct-cdna`](correct_cdna.md#per-cluster-tag-glossary) for

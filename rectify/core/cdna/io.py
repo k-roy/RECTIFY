@@ -69,20 +69,41 @@ def stream_reads(bam_path: Path, region: Optional[str],
     return reads, n_masked
 
 
-def cluster_pt_summary(cluster: List[ReadInfo]) -> Tuple[Optional[int], int]:
-    """``(median, n)`` of the member reads' POSITIVE dorado ``pt`` values.
+def cluster_pt_summary(cluster: List[ReadInfo]) -> Tuple[Optional[float], Optional[float], int]:
+    """``(mean, sd, n)`` of the member reads' POSITIVE dorado ``pt`` values.
 
-    Reads with no ``pt`` or ``pt <= 0`` are excluded from the median and not
-    counted (dorado's 0 / -1 mean "no tail found" / "not estimated", not a
-    measured short tail). The median is rounded half-up to an int so it can
-    ride in an ``i`` tag; ``(None, 0)`` when no member carries one."""
-    vals = sorted(r.pt for r in cluster if r.pt is not None and r.pt > 0)
-    if not vals:
-        return None, 0
+    Reads with no ``pt`` or ``pt <= 0`` are excluded and not counted (dorado's 0 / -1
+    mean "no tail found" / "not estimated", not a measured short tail). ``mean`` is the
+    arithmetic mean (Kevin, 2026-09-12: "take the mean but also calculate a spread");
+    ``sd`` is the sample standard deviation (n - 1) and is None below n = 2. A 95 %
+    interval for the molecule's tail is mean ± t(n-1) · sd / sqrt(n); the consumer has
+    all three numbers. ``(None, None, 0)`` when no member carries a positive ``pt``."""
+    vals = [float(r.pt) for r in cluster if r.pt is not None and r.pt > 0]
     n = len(vals)
-    mid = n // 2
-    med = vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2
-    return int(med + 0.5), n
+    if n == 0:
+        return None, None, 0
+    mean = sum(vals) / n
+    if n < 2:
+        return mean, None, n
+    sd = (sum((v - mean) ** 2 for v in vals) / (n - 1)) ** 0.5
+    return mean, sd, n
+
+
+def pt_correspondence_summary(cluster_pt) -> dict:
+    """Run-level agreement of dorado ``pt`` across the duplicate reads of one molecule:
+    over clusters with n >= 2, the median and 90th percentile of the within-cluster SD and
+    the median coefficient of variation (sd / mean). Reported in the stage-1 stats and the
+    pretrim-health block so every run measures it."""
+    sds = sorted(sd for mean, sd, n in cluster_pt.values() if n >= 2 and sd is not None)
+    cvs = sorted(sd / mean for mean, sd, n in cluster_pt.values()
+                 if n >= 2 and sd is not None and mean and mean > 0)
+    def _q(xs, q):
+        if not xs:
+            return None
+        k = min(len(xs) - 1, int(round(q * (len(xs) - 1))))
+        return round(xs[k], 2)
+    return dict(pt_multi_clusters=len(sds), pt_sd_median=_q(sds, 0.5),
+                pt_sd_p90=_q(sds, 0.9), pt_cv_median=_q(cvs, 0.5))
 
 
 def write_stage1_fastq(input_bam: Path, output_fastq: Path,
@@ -142,10 +163,11 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     # Kevin 2026-09-12: "I thought Dorado puts out pt tags for cDNA" — it does,
     # and Path A dropped them). XA stays the SEQUENCE-level A-count the tier and
     # the trimmer use; XP/XD carry the signal estimate the way DRS keeps `pt`.
-    cluster_pt: Dict[int, Tuple[Optional[int], int]] = {
+    cluster_pt: Dict[int, Tuple[Optional[float], Optional[float], int]] = {
         cid: cluster_pt_summary(c) for cid, c in enumerate(clusters)}
     n_pt_reads = sum(1 for c in clusters for r in c if r.pt is not None)
-    n_pt_clusters = sum(1 for v in cluster_pt.values() if v[1] > 0)
+    n_pt_clusters = sum(1 for v in cluster_pt.values() if v[2] > 0)
+    pt_corr = pt_correspondence_summary(cluster_pt)
     if clusters and n_pt_reads == 0:
         # Loud, not a silent zero (Chanfreau 907, 2026-09-12): XD:i:0 on every
         # consensus looks exactly like "no tails". The tag is read from the input
@@ -297,10 +319,12 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 f"XB:Z:{n_top}/{n_bot}",
                 f"XN:i:1",   # oriented: this molecule is emitted RNA-sense (see above)
             ]
-            pt_median, pt_n = cluster_pt[cid]
-            tag_parts.append(f"XD:i:{pt_n}")          # member reads with a positive pt
-            if pt_median is not None:
-                tag_parts.append(f"XP:i:{pt_median}")  # median dorado pt over those reads
+            pt_mean, pt_sd, pt_n = cluster_pt[cid]
+            tag_parts.append(f"XD:i:{pt_n}")               # member reads with a positive pt
+            if pt_mean is not None:
+                tag_parts.append(f"XP:f:{pt_mean:.1f}")     # mean dorado pt over those reads
+            if pt_sd is not None:
+                tag_parts.append(f"XW:f:{pt_sd:.1f}")       # their sample SD (n >= 2)
 
             # Tab-separate the read name and tags so `minimap2 -y` (and the
             # equivalent flags in mapPacBio / gapmm2) parse each `XX:T:value`
@@ -320,4 +344,4 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
                 trim_frame_mismatch=n_frame_mismatch,
                 trim_noop_5p=n_noop_5, trim_noop_3p=n_noop_3,
                 reoriented_to_sense=n_reoriented,
-                pt_reads=n_pt_reads, pt_clusters=n_pt_clusters)
+                pt_reads=n_pt_reads, pt_clusters=n_pt_clusters, **pt_corr)

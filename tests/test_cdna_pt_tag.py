@@ -4,8 +4,8 @@ rbrowse request (Kevin, 2026-09-12: "I thought Dorado puts out pt tags for cDNA"
 and the pipeline dropped them). The raw uBAM carries `pt:i` on every read; `correct-cdna`
 never read it, and the consensus carried only `XA`, the SEQUENCE-level A-count, which is
 ~8 nt shorter at the median than dorado's signal estimate and is stripped off the emitted
-molecule anyway. Now `ReadInfo.pt` carries the tag, the consensus gets `XP` (median over
-member reads with pt > 0) and `XD` (their count), and both survive the sibling-restore and
+molecule anyway. Now `ReadInfo.pt` carries the tag, the consensus gets `XP` (mean over
+member reads with pt > 0), `XD` (their count) and `XW` (their SD), and both survive the sibling-restore and
 CMA whitelists.
 """
 import gzip
@@ -101,21 +101,38 @@ class TestClusterSummary:
     def _r(self, pt):
         return ReadInfo("r", CHROM, 1, "fwd", "", False, 0, 0, 0, 1, 1, 0, "x", pt=pt)
 
-    def test_median_over_positive_values_only(self):
-        assert cluster_pt_summary([self._r(40), self._r(50), self._r(-1),
-                                   self._r(None), self._r(0)]) == (45, 2)
-        assert cluster_pt_summary([self._r(41), self._r(44)]) == (43, 2)   # 42.5 -> 43
-        assert cluster_pt_summary([self._r(118), self._r(20), self._r(35)]) == (35, 3)
+    def test_mean_and_sd_over_positive_values_only(self):
+        mean, sd, n = cluster_pt_summary([self._r(40), self._r(50), self._r(-1),
+                                          self._r(None), self._r(0)])
+        assert (mean, n) == (45.0, 2) and abs(sd - 7.0711) < 1e-3
+        mean, sd, n = cluster_pt_summary([self._r(41), self._r(44)])
+        assert (mean, n) == (42.5, 2) and abs(sd - 2.1213) < 1e-3
+        mean, sd, n = cluster_pt_summary([self._r(118), self._r(20), self._r(35)])
+        assert abs(mean - 57.6667) < 1e-3 and n == 3 and abs(sd - 52.7857) < 1e-3
+
+    def test_singleton_has_no_sd(self):
+        assert cluster_pt_summary([self._r(118)]) == (118.0, None, 1)
 
     def test_no_pt_anywhere(self):
-        assert cluster_pt_summary([self._r(None), self._r(0)]) == (None, 0)
+        assert cluster_pt_summary([self._r(None), self._r(0)]) == (None, None, 0)
+
+    def test_run_level_correspondence(self):
+        from rectify.core.cdna.io import pt_correspondence_summary
+        cp = {0: (45.0, 7.07, 2), 1: (50.0, 1.0, 3), 2: (30.0, None, 1), 3: (None, None, 0)}
+        c = pt_correspondence_summary(cp)
+        assert c['pt_multi_clusters'] == 2
+        assert c['pt_sd_median'] in (1.0, 7.07) and c['pt_sd_p90'] == 7.07
+        assert 0 < c['pt_cv_median'] < 0.2
+        assert pt_correspondence_summary({}) == dict(pt_multi_clusters=0, pt_sd_median=None,
+                                                     pt_sd_p90=None, pt_cv_median=None)
 
 
 class TestConsensusTags:
     def test_xp_and_xd_on_a_cluster_with_pt(self, tmp_path):
         reads, tags = _stage1_tags(tmp_path, [40, 50, None])
         assert tags["XD"] == "2"
-        assert tags["XP"] == "45"
+        assert tags["XP"] == "45.0"
+        assert tags["XW"] == "7.1"
         assert tags["XC"] == "3"
         # XA is the sequence-level count and is untouched by pt
         assert tags["XA"] == str(reads[0].tail_len)
@@ -123,18 +140,19 @@ class TestConsensusTags:
     def test_xd_zero_and_no_xp_when_pt_never_reached_stage1(self, tmp_path):
         _, tags = _stage1_tags(tmp_path, [None, None])
         assert tags["XD"] == "0"
-        assert "XP" not in tags
+        assert "XP" not in tags and "XW" not in tags
 
     def test_singleton_with_pt(self, tmp_path):
         _, tags = _stage1_tags(tmp_path, [118])
-        assert tags["XD"] == "1" and tags["XP"] == "118"
+        assert tags["XD"] == "1" and tags["XP"] == "118.0"
+        assert "XW" not in tags                       # no spread from one read
 
 
 class TestTagsSurviveDownstream:
     def test_in_the_sibling_restore_list_and_the_cma_whitelist(self):
         from rectify.core.consensus.consensus import _CDNA_COMMENT_TAGS
         from rectify.core.multialign.cma_schema import READ_INTRINSIC_TAGS
-        for t in ("XP", "XD"):
+        for t in ("XP", "XD", "XW"):
             assert t in _CDNA_COMMENT_TAGS
             assert t in READ_INTRINSIC_TAGS
 
@@ -142,7 +160,7 @@ class TestTagsSurviveDownstream:
         import re
         import rectify
         root = Path(rectify.__file__).parent
-        pat = re.compile(r"set_tag\(\s*['\"](XP|XD)['\"]")
+        pat = re.compile(r"set_tag\(\s*['\"](XP|XD|XW)['\"]")
         hits = [str(py.relative_to(root)) for py in root.rglob("*.py")
                 if pat.search(py.read_text())]
         assert hits == [], hits
@@ -198,6 +216,7 @@ class TestSilentZeroIsLoud:
                                        cluster_xf_tier={0: reads[0].xf_tier},
                                        cluster_tail_len={0: reads[0].tail_len}, reference=fa)
         assert stats["pt_reads"] == 0 and stats["pt_clusters"] == 0
+        assert stats["pt_multi_clusters"] == 0 and stats["pt_sd_median"] is None
         msgs = [r.getMessage() for r in caplog.records]
         assert any("NONE of the 2 clustered reads carries dorado's pt:i tag" in m for m in msgs)
         assert any("samtools fastq -T pt" in m for m in msgs)
@@ -219,4 +238,4 @@ class TestSilentZeroIsLoud:
         aligned from `samtools fastq -T pt | minimap2 -y` (Chanfreau 907) qualifies
         directly; no FASTQ comment is involved at correct-cdna time."""
         _, tags = _stage1_tags(tmp_path, [41, 42])
-        assert tags["XD"] == "2" and tags["XP"] == "42"
+        assert tags["XD"] == "2" and tags["XP"] == "41.5" and tags["XW"] == "0.7"

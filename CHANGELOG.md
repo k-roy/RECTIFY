@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positive, mean 40 nt on WW1) and Path A dropped it; the consensus carried only
   `XA`, the SEQUENCE-level A-count, which is ~8 nt shorter at the median with a
   long tail of underestimates. `ReadInfo.pt` reads the tag from the pre-aligned
-  record; the consensus gets `XP` = median `pt` over member reads with `pt > 0`
-  and `XD` = their count (`XP` absent when none). Both are in the FASTQ comment,
+  record; the consensus gets `XP:f` = MEAN `pt` over member reads with `pt > 0`,
+  `XD:i` = their count (`XP` absent when none) and `XW:f` = their sample SD
+  (`XD ≥ 2`), so the agreement of dorado's estimate across duplicate reads of one
+  molecule is on every record; the run reports the within-molecule SD median /
+  p90 and CV median in the pretrim-health block. All three are in the FASTQ comment,
   the sibling-restore list and the CMA whitelist. Path A takes FASTQ: make it
   with `samtools fastq -T pt in.ubam` and the tag rides the FASTQ comment through
   the Step-0 pre-trim and `minimap2 -y` into the pre-alignment `correct-cdna`

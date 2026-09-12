@@ -140,7 +140,8 @@ Each FASTQ record carries TAB-separated SAM-style comment tags so
 | `XA` | pre-align poly(A) length | `XT` | read type (1/2) |
 | `XY` | read subtype | `XQ` | 5' pre-trim length |
 | `XK` | 3' pre-trim length | `XB` | strand split (n_top/n_bot) |
-| `XP` | median dorado `pt` (signal-level tail), reads with pt > 0 | `XD` | n reads behind `XP` |
+| `XP` | mean dorado `pt` (signal-level tail), reads with pt > 0 | `XD` | n reads behind `XP` |
+| `XW` | sample SD of those `pt` (XD ≥ 2) | | |
 
 Gene assignment, isoform clustering, and Type-1↔Type-2 pairing run downstream
 in `rectify cdna-analyze` (which emits `clusters.tsv`, a per-molecule

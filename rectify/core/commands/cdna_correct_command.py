@@ -31,9 +31,9 @@ Tag glossary:
        (SSP+UMI+GGG for T1 / polyT for rev)       (polyA for fwd / SSP_RC suffix for rev)
   XN  oriented (always 1): the consensus is emitted RNA-sense, so after alignment
        is_reverse IS the gene strand and minimap2 -uf is valid (planning/730, 2026-08-21)
-  XP  median dorado pt:i (signal-level poly(A) estimate) over the cluster's reads with
-       pt > 0; absent when none carry it   XD  number of those reads (0 = no pt reached
-       this stage: pre-align with `samtools fastq -T pt | minimap2 -y`)
+  XP  MEAN dorado pt:i (signal-level poly(A) estimate) over the cluster's reads with
+       pt > 0 (float; absent when none carry it)   XD  number of those reads (0 = no pt
+       reached this stage)   XW  their sample SD (float; present at XD >= 2)
 
 Usage (via rectify CLI):
     rectify correct-cdna INPUT.bam --out OUTDIR [options]
@@ -89,6 +89,11 @@ def _print_pretrim_health(fastq_stats: Dict) -> None:
     n_pt_c = fastq_stats.get("pt_clusters", 0)
     print(f"  {'dorado pt carried -> XP/XD':<32s} {n_pt_c:>8d}  ({100 * n_pt_c / n:.1f}% of consensuses;"
           f" {fastq_stats.get('pt_reads', 0)} input reads carried pt)")
+    if fastq_stats.get("pt_multi_clusters"):
+        # correspondence of dorado pt across the duplicate reads of one molecule
+        print(f"  {'pt agreement within molecule':<32s} {fastq_stats['pt_multi_clusters']:>8d}  clusters with n>=2:"
+              f" SD median {fastq_stats.get('pt_sd_median')} nt, p90 {fastq_stats.get('pt_sd_p90')} nt,"
+              f" CV median {fastq_stats.get('pt_cv_median')}")
 
 
 def _region_cluster_prefix(region: Optional[str]) -> str:
@@ -331,7 +336,7 @@ def _run_cdna_correct_parallel(
                                   "trim_frame_flipped": 0, "trim_frame_mismatch": 0,
                                   "trim_noop_5p": 0, "trim_noop_3p": 0,
                                   # dorado pt carried into XP/XD (D10)
-                                  "pt_reads": 0, "pt_clusters": 0}
+                                  "pt_reads": 0, "pt_clusters": 0, "pt_multi_clusters": 0}
             total_stats.update({"input_reads": 0, "type1_reads": 0, "type2_reads": 0,
                                 "type1_clusters": 0, "type2_clusters": 0,
                                 "buckets_dropped_polyA_pileup": 0,
@@ -641,7 +646,7 @@ def create_correct_cdna_parser(subparsers):
             'FASTQ before alignment. Emits a representative-read or pileup-based '
             'consensus per cluster (POA if pyabpoa is available).\n\n'
             'Output: stage1_consensus.fastq.gz — one consensus sequence per UMI cluster, '
-            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN/XP/XD) '
+            'with alignment-independent SAM-tag comments (XU/XO/XC/XR/XM/XF/XA/XT/XY/XQ/XK/XB/XN/XP/XD/XW) '
             'that `rectify align` propagates into the post-align BAM automatically -- it '
             'applies minimap2 -y internally, and has NO -y flag of its own. Gene assignment, '
             'isoform clustering, and Type-1↔Type-2 pairing run downstream in '
