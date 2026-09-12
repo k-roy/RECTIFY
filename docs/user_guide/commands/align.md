@@ -58,8 +58,21 @@ rectify align reads.fastq.gz --Scer --aligners minimap2 -o aligned/
 | `--desalt-path` | `deSALT` | Path to deSALT executable |
 | `--parallel-aligners` | off | Run base aligners in parallel (phase 2) |
 | `-t, --threads` | 8 | Threads per aligner |
+| `--max-intron` | annotation-derived | Intron cap for every splice-aware arm and the resolver's search window (2× the longest annotated intron; yeast → 5000) |
+| `--resolver-acceptor-classes` | `canonical` | `prp18` adds the alternative-3'SS classes (BG + non-G HAU) for splicing missions |
+| `--no-resolver-atac` | (AT-AC on) | Drop the paired AT-AC pass in the overhang resolver |
+| `--resolver-candidate-ceiling N` | 2000 | Per-clip candidate ceiling at a 5,000 bp window (scales with the window). A clip enumerating more is passed through unassessed; the run reports the count, `abandoned_frac` and the per-contig split in `<prefix>.overhang_resolver.stats.json`. Per-dataset: raising it recovered real junctions on human chr5 and nothing on yeast cDNA |
 
 ---
+
+## The overhang resolver and `-t`
+
+The overhang resolver (Station A) is a post-pass on the finished minimap2 arm and runs on `-t N`
+worker processes: the name-sorted stream is scored in batches of 256 records on a pool while one
+writer keeps input order, so the output is byte-identical to `-t 1`. On Linux the workers fork and
+share the parent's genome and splice-site index; elsewhere they spawn and load their own
+(`RECTIFY_RESOLVER_MP_START_METHOD` overrides). Read `abandoned_frac` in the resolver stats JSON
+before trusting junction counts on a new dataset.
 
 ## Aligners
 

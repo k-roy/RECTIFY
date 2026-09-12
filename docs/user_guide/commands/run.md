@@ -178,6 +178,9 @@ split by remainder, the decoy chance floor, tail classes, shift histogram),
 | `--base-aligners` | minimap2 mapPacBio gapmm2 (long-read) / bbmap bwa (`--short-read`) | Aligners to include in the consensus pool |
 | `--junction-aligners` | uLTRA deSALT (long-read) / [] (short-read) | Junction-aware aligners (requires `--annotation`) |
 | `--no-junction-aligners` | — | Explicitly disable uLTRA + deSALT |
+| `--resolver-acceptor-classes` | `canonical` | `prp18` adds the alternative-3'SS classes for splicing missions |
+| `--no-resolver-atac` | (AT-AC on) | Drop the paired AT-AC pass in the overhang resolver |
+| `--resolver-candidate-ceiling N` | 2000 | Per-clip candidate ceiling for the resolver; refused clips are counted as `abandoned_frac` in `<sample>.overhang_resolver.stats.json` (see `align`) |
 | `--parallel-aligners` | off | Run base aligners in parallel (divides `--threads` evenly) |
 | `--chimeric-consensus` | on | Per-segment aligner selection (use `--no-chimeric-consensus` to disable) |
 | `--ultra-path` | `uLTRA` | Path to uLTRA executable |
