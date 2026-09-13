@@ -214,3 +214,6 @@ dev/handoffs/
 /run_tier2.sbatch
 /*.sbatch
 /pA_tail_DRS_adapter_executive_summary.html
+
+# git worktrees live INSIDE the repo (one Finder entry, never a ~/work sibling)
+/.worktrees/
