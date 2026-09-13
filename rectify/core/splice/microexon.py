@@ -231,10 +231,12 @@ def exons_inside(index: Dict[str, List[Tuple[int, int]]], chrom: str,
     if not ex or chrom == '__transcripts__':
         return []
     lo = bisect_left(ex, (intron_start, -1))
+    hi = bisect_left(ex, (intron_end, -1))
     out = []
-    for s, e in ex[lo:]:
-        if s >= intron_end:
-            break
+    # Do not copy the chromosome's entire remaining exon list for a local
+    # intron lookup. Both ends are indexed, and only in-window entries are read.
+    for i in range(lo, hi):
+        s, e = ex[i]
         if e <= intron_end:
             out.append((s, e))
     return out
@@ -296,11 +298,12 @@ def find_microexon_splits(inserted_seq: str,
     Every returned split satisfies: exact sequence identity per segment, exact and complete
     consumption of the insertion, strictly increasing genomic order, all segments inside the intron,
     each resulting intron at least ``MIN_FLANKING_INTRON``, and canonical flanks on both sides of
-    every segment. The search stops at *limit* splits — beyond a handful the configuration is not
-    evidence for anything and the read is better left alone.
+    every segment. Search one past *limit* to distinguish a complete set at the limit from an
+    incomplete prefix. An overflowing search returns no splits: an unseen candidate could change
+    the winning configuration or its reported ambiguity.
     """
     n = len(inserted_seq)
-    if n < MIN_INSERTION_LEN:
+    if n < MIN_INSERTION_LEN or limit < 1:
         return []
     cands = [(s_, e_) for (s_, e_) in exons_inside(index, chrom, intron_start, intron_end)
              if e_ - s_ <= n]
@@ -310,7 +313,7 @@ def find_microexon_splits(inserted_seq: str,
     found: List[List[Tuple[int, int]]] = []
 
     def _search(consumed: int, min_start: int, prev_end: int, chosen: List[Tuple[int, int]]) -> None:
-        if len(found) >= limit:
+        if len(found) > limit:
             return
         if consumed == n:
             if chosen and split_is_canonical(chosen, intron_start, intron_end, strand, genome_seq):
@@ -336,11 +339,11 @@ def find_microexon_splits(inserted_seq: str,
             if _open not in (_U2_DONORS + (_U12_DONOR,)):
                 continue
             _search(consumed + length, e_ + MIN_FLANKING_INTRON, e_, chosen + [(s_, e_)])
-            if len(found) >= limit:
+            if len(found) > limit:
                 return
 
     _search(0, intron_start, intron_start, [])
-    return found
+    return found if len(found) <= limit else []
 
 
 def split_score(split: List[Tuple[int, int]], chrom: str, index) -> float:

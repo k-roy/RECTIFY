@@ -67,6 +67,23 @@ def test_finds_the_annotated_microexon():
     assert segs == [(200, 206)]
 
 
+@pytest.mark.parametrize('n_candidates', [2, 3])
+def test_candidate_limit_never_draws_from_an_incomplete_set(n_candidates):
+    """At the limit enumeration is complete; one more candidate must refuse."""
+    genome = list(GENOME_SEQ)
+    exons = [(200 + 50 * i, 206 + 50 * i) for i in range(n_candidates)]
+    for s, e in exons:
+        genome[s - 2:s] = 'AG'
+        genome[s:e] = MICRO
+        genome[e:e + 2] = 'GT'
+    got = MX.find_microexon_splits(
+        MICRO, CHROM, *INTRON, '+', ''.join(genome), {CHROM: exons}, limit=2)
+    if n_candidates == 2:
+        assert got == [[exon] for exon in exons]
+    else:
+        assert got == [], 'a truncated candidate prefix is not evidence for a winner'
+
+
 def test_refuses_when_the_insertion_is_not_consumed_exactly():
     """Partial consumption would leave bases to glue to an N as an indel — the banned shape."""
     assert MX.find_microexon_split(MICRO + 'TTT', CHROM, 60, 460, '+', GENOME_SEQ, INDEX) is None
