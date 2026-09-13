@@ -48,6 +48,11 @@ def test_a_cache_from_an_older_format_is_refused():
     assert problem and '1' in problem
 
 
+def test_a_cache_with_the_old_junction_evidence_is_refused():
+    problem = js.junction_pool_cache_problem({'cache_format': 2})
+    assert problem is not None
+
+
 def test_a_cache_from_a_newer_format_is_refused_too():
     problem = js.junction_pool_cache_problem(
         {'cache_format': js.JUNCTION_POOL_CACHE_FORMAT + 1})

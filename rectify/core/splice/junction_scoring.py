@@ -169,7 +169,9 @@ _MISSING_CHROM_WARNED: Set[str] = set()
 #       coordinate that exists in no read (85 % of the observed arm on the
 #       Sumner human panel; ~99 % on the full slice).
 #   2 — cursor fixed.
-JUNCTION_POOL_CACHE_FORMAT: int = 2
+#   3 — junction-local mismatch evidence, reference-compressed SEQ handling,
+#       and single-arm/fallback signal counts fixed.
+JUNCTION_POOL_CACHE_FORMAT: int = 3
 
 
 def junction_pool_cache_stamp() -> Dict[str, Any]:
@@ -740,18 +742,27 @@ def junction_mismatch_enrichment(stats, junction) -> Optional[float]:
     return (near_mm / near_bp) / (far_mm / far_bp)
 
 
-def _mismatch_bins(read, fa, edges, window, reach):
+def _mismatch_bins(read, fa, edges, window, reach, *, per_junction=None):
     """``(near_mm, near_bp, far_mm, far_bp, [(refpos, is_mismatch)])`` for one read.
 
     Only the read's ALIGNED blocks are fetched, so the reference read per record is the read's own
-    length, not its genomic span — an intron costs nothing here. A base near two junctions (a short
-    exon) is binned once, against the nearer.
+    length, not its genomic span — an intron costs nothing here. Global near/body counts bin each
+    base once, by its nearest edge. When supplied, ``per_junction`` maps ``(start, end)`` to mutable
+    ``[mismatches, bases]`` counters for that junction's own windows. Overlapping windows of distinct
+    junctions may share a base; one junction never counts that base twice.
     """
     near_mm = near_bp = far_mm = far_bp = 0
     prox = []
     seq = read.query_sequence or ''
     if not seq or not edges:
         return near_mm, near_bp, far_mm, far_bp, prox
+    edges = sorted(set(edges))
+    edge_i = 0
+    edge_owners = defaultdict(set)
+    if per_junction is not None:
+        for junction in per_junction:
+            for edge in junction:
+                edge_owners[edge].add(junction)
     chrom = read.reference_name
     ref_pos = read.reference_start
     q_pos = 0
@@ -765,11 +776,29 @@ def _mismatch_bins(read, fa, edges, window, reach):
             if len(ref) == len(qry) == ln:
                 for i in range(ln):
                     rp = ref_pos + i
-                    d = min(abs(rp - x) for x in edges)
-                    mm = ref[i] != qry[i] and ref[i] != 'N' and qry[i] != 'N'
+                    # CIGAR reference positions are monotone: advancing this
+                    # cursor avoids scanning every junction for every base.
+                    while edge_i + 1 < len(edges) and edges[edge_i + 1] <= rp:
+                        edge_i += 1
+                    d = abs(rp - edges[edge_i])
+                    if edge_i + 1 < len(edges):
+                        d = min(d, abs(rp - edges[edge_i + 1]))
+                    # SAM SEQ '=' means a reference match, not a nucleotide
+                    # mismatch. It is distinct from the CIGAR '=' operation.
+                    mm = qry[i] not in ('N', '=') and ref[i] != 'N' and ref[i] != qry[i]
                     if d <= window:
                         near_bp += 1
                         near_mm += mm
+                        if per_junction is not None:
+                            lo = bisect_left(edges, rp - window)
+                            hi = bisect_right(edges, rp + window)
+                            owners = set()
+                            for k in range(lo, hi):
+                                owners.update(edge_owners[edges[k]])
+                            for junction in owners:
+                                counts = per_junction[junction]
+                                counts[0] += mm
+                                counts[1] += 1
                     else:
                         far_bp += 1
                         far_mm += mm
@@ -877,15 +906,17 @@ def _collect_junction_counts_core(
                             rp += length
                     if r_junc:
                         edges = [x for j in r_junc for x in (j[0], j[1])]
-                        n_mm, n_bp, f_mm, f_bp, prox = _mismatch_bins(
-                            read, fa, edges, JUNCTION_MM_WINDOW, JUNCTION_MM_VARIANT_REACH)
+                        local_mm = {j: [0, 0] for j in r_junc}
+                        _, _, f_mm, f_bp, prox = _mismatch_bins(
+                            read, fa, edges, JUNCTION_MM_WINDOW, JUNCTION_MM_VARIANT_REACH,
+                            per_junction=local_mm)
                         for (js, je) in r_junc:
                             key = (chrom, js, je)
                             e = mm_stats.get(key)
                             if e is None:
                                 e = mm_stats[key] = [0, 0, 0, 0, 0]
-                            e[0] += n_mm
-                            e[1] += n_bp
+                            e[0] += local_mm[(js, je)][0]
+                            e[1] += local_mm[(js, je)][1]
                             e[2] += f_mm
                             e[3] += f_bp
                             e[4] += 1
@@ -1011,7 +1042,8 @@ def build_junction_pool(
     elif len(aligner_bams) == 1:
         per_bam.append(_collect_junction_counts_core(
             aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang,
-            annotated_index=_sig_index, unspliced_out=_unspliced,
+            annotated_index=_sig_index,
+            unspliced_out=Counter() if return_signal else None,
             strict_anchor=_strict_anchor, fasta_path=_fa))
     else:
         try:
@@ -1034,7 +1066,10 @@ def build_junction_pool(
             )
             per_bam = [
                 _collect_junction_counts_core(
-                    bp, chrom_filter, max_junction_size, min_anchor_overhang)
+                    bp, chrom_filter, max_junction_size, min_anchor_overhang,
+                    annotated_index=_sig_index,
+                    unspliced_out=Counter() if return_signal else None,
+                    strict_anchor=_strict_anchor, fasta_path=_fa)
                 for bp in aligner_bams
             ]
 
