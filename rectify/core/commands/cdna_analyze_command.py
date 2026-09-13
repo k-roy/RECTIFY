@@ -73,15 +73,15 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
                                 ) -> Optional[Tuple[ReadInfo, int]]:
     """Build a synthetic ReadInfo from one post-align consensus BAM record.
 
-    Returns (read_info, cluster_size) or None if the record is unmapped or
-    missing required tags.  cluster_size comes from the XC tag (count of
+    Returns (read_info, cluster_size) or None if the record is non-primary,
+    unmapped or missing required tags. cluster_size comes from the XC tag (count of
     original input reads that contributed to this consensus).
 
     ``tail_stats`` (optional) is incremented in place with the provenance of the
     tail length: ``walkback`` (tail found in SEQ), ``carried`` (pretrimmed record,
     ``XA`` honoured) or ``zero`` (neither source had a tail).
     """
-    if rec.is_unmapped or not rec.cigartuples:
+    if rec.is_unmapped or rec.is_secondary or rec.is_supplementary or not rec.cigartuples:
         return None
     try:
         umi = rec.get_tag("XU")
@@ -192,7 +192,7 @@ def run(args) -> int:
     # cid keyed by query_name so we can re-emit the tagged BAM on a second pass.
     qname_to_cid: Dict[str, int] = {}
 
-    n_in = n_unmapped = n_missing_tags = 0
+    n_in = n_unmapped = n_nonprimary = n_missing_tags = 0
     tail_stats: Dict[str, int] = {"walkback": 0, "carried": 0, "zero": 0}
 
     with pysam.AlignmentFile(str(args.bam), "rb") as bam:
@@ -200,6 +200,9 @@ def run(args) -> int:
             n_in += 1
             if rec.is_unmapped:
                 n_unmapped += 1
+                continue
+            if rec.is_secondary or rec.is_supplementary:
+                n_nonprimary += 1
                 continue
             chrom_seq = chrom_cache.get(rec.reference_name, "")
             result = _read_info_from_bam_record(rec, chrom_seq, tail_stats)
@@ -220,8 +223,8 @@ def run(args) -> int:
                 except KeyError:
                     store[cid] = ""
 
-    log.info("  %d records read (%d unmapped, %d missing required tags)",
-             n_in, n_unmapped, n_missing_tags)
+    log.info("  %d records read (%d unmapped, %d non-primary, %d missing required tags)",
+             n_in, n_unmapped, n_nonprimary, n_missing_tags)
     log.info("  %d usable consensus clusters", len(clusters))
     log.info("  tail_len provenance: %d walkback (tail in SEQ), %d carried XA "
              "(pretrimmed), %d zero",
@@ -342,7 +345,9 @@ def run(args) -> int:
          pysam.AlignmentFile(str(tagged_bam), "wb", template=src) as dst:
         for rec in src.fetch(until_eof=True):
             cid = qname_to_cid.get(rec.query_name)
-            if cid is not None:
+            # Coordinate-derived annotations belong to the accepted primary
+            # placement, not to other alignments sharing its QNAME.
+            if cid is not None and not (rec.is_unmapped or rec.is_secondary or rec.is_supplementary):
                 rec.set_tag("XA", int(cluster_tail_len[cid]), value_type="i")
                 xs = cluster_xs.get(cid, "unannotated")
                 rec.set_tag("XS", xs, value_type="Z")

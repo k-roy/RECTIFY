@@ -187,6 +187,73 @@ def _make_args(bam: Path, out: Path, gff: Path, ref: Path) -> argparse.Namespace
     )
 
 
+@pytest.mark.parametrize("nonprimary_flag", [0x100, 0x800, 0x900])
+def test_read_info_rejects_nonprimary_without_counting_tail(tmp_path, nonprimary_flag):
+    from rectify.core.commands.cdna_analyze_command import _read_info_from_bam_record
+
+    bam_path = _build_synthetic_consensus_bam(tmp_path)
+    with pysam.AlignmentFile(str(bam_path)) as bam:
+        rec = next(bam)
+    rec.flag |= nonprimary_flag
+    stats = {}
+    assert _read_info_from_bam_record(rec, "A" * _TINY_CHROM_LEN, stats) is None
+    assert stats == {}
+
+
+def test_cdna_analyze_counts_primary_molecules_and_tags_only_their_placements(tmp_path, caplog):
+    import copy
+    import csv
+    import logging
+    from rectify.core.commands import cdna_analyze_command
+
+    ref = _build_tiny_reference(tmp_path)
+    gff = _build_tiny_gff(tmp_path)
+    bam_path = _build_synthetic_consensus_bam(tmp_path)
+    with pysam.AlignmentFile(str(bam_path)) as bam:
+        records = list(bam)
+        header = bam.header
+    for flag, start in [(0x100, 150), (0x800, 350)]:
+        extra = copy.copy(records[0])
+        extra.flag |= flag
+        extra.reference_start = start
+        # Existing tags must be preserved, not replaced by the primary's
+        # interpretation of a different genomic placement.
+        extra.set_tag("XS", "original_nonprimary", "Z")
+        extra.set_tag("XA", 77, "i")
+        records.append(extra)
+    orphan = copy.copy(records[0])
+    orphan.query_name = "only_secondary"
+    orphan.flag = 0x100
+    orphan.reference_start = 400
+    records.append(orphan)
+    records.sort(key=lambda rec: rec.reference_start)
+    mixed = tmp_path / "mixed.bam"
+    with pysam.AlignmentFile(str(mixed), "wb", header=header) as bam:
+        for rec in records:
+            bam.write(rec)
+    out = tmp_path / "out_primary"
+    with caplog.at_level(logging.INFO):
+        assert cdna_analyze_command.run(_make_args(mixed, out, gff, ref)) == 0
+    with (out / "corrected_reads.tsv").open() as stream:
+        molecules = list(csv.DictReader(stream, delimiter="\t"))
+    assert len(molecules) == 3
+    assert sorted(int(row["n_reads"]) for row in molecules) == [2, 3, 5]
+    assert sorted(int(row["alignment_start"]) for row in molecules) == [200, 200, 300]
+    assert "3 non-primary" in caplog.text
+    with pysam.AlignmentFile(str(out / "consensus_tagged.bam")) as bam:
+        emitted = list(bam)
+    assert len(emitted) == 6  # alignment records remain available for inspection
+    for rec in emitted:
+        if rec.query_name == "cluster_0" and (rec.is_secondary or rec.is_supplementary):
+            assert rec.get_tag("XS") == "original_nonprimary"
+            assert rec.get_tag("XA") == 77
+            assert not rec.has_tag("XI")
+        elif rec.query_name == "only_secondary":
+            assert not rec.has_tag("XS")
+        else:
+            assert rec.has_tag("XS")
+
+
 # ---------------------------------------------------------------------------
 # 2) Synthetic minimal smoke
 # ---------------------------------------------------------------------------
