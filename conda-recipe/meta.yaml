@@ -39,6 +39,7 @@ requirements:
     - mappy >=2.24                # Python bindings for minimap2 (required by gapmm2 + correct-cdna)
     - intervaltree >=3.1          # gene-interval lookups (correct-cdna XS classification)
     - rapidfuzz >=3.0             # Levenshtein for UMI clustering (correct-cdna)
+    - pyyaml >=6.0                # bundled ncRNA atlas registry and batch configuration
     - edlib >=1.3                 # fuzzy adapter / TSO-bridge / UMI-tail detection (correct-cdna)
     - pyabpoa >=1.5               # POA consensus across multi-read UMI clusters (correct-cdna)
 

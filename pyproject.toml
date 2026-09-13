@@ -48,6 +48,7 @@ dependencies = [
     "mappy>=2.24",           # Python bindings for minimap2 (required by gapmm2 + cdna_correct re-align)
     "intervaltree>=3.1",     # gene-interval lookups (correct-cdna sense/antisense classification)
     "rapidfuzz>=3.0",        # Levenshtein distance for UMI clustering (correct-cdna)
+    "PyYAML>=6.0",          # bundled ncRNA atlas registry and batch configuration
 ]
 
 [project.optional-dependencies]
