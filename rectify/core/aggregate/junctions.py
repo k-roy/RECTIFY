@@ -33,9 +33,9 @@ from ..splice.terminal_exon_refiner import (
 logger = logging.getLogger(__name__)
 
 
-# Canonical splice site dinucleotides
-CANONICAL_5SS = {'GT', 'GC'}  # 5' splice site (donor)
-CANONICAL_3SS = {'AG'}  # 3' splice site (acceptor)
+# Canonical donor/acceptor pairs in transcript orientation. Independent sets
+# would incorrectly admit AT-AG and GT-AC when adding the minor AT-AC class.
+CANONICAL_PAIRS = {('GT', 'AG'), ('GC', 'AG'), ('AT', 'AC')}
 
 
 def _reverse_complement(seq: str) -> str:
@@ -133,7 +133,6 @@ def aggregate_junctions(
     """
     # Count junctions
     junction_counts: Dict[Tuple[str, int, int, str], int] = defaultdict(int)
-    junction_reads: Dict[Tuple[str, int, int, str], List[str]] = defaultdict(list)
     junction_umis: Dict[Tuple[str, int, int, str], set] = defaultdict(set)
     # ISSUE-040 station B: which junctions exist because a micro-exon was drawn, and what the
     # equally good configurations were. Read off the BAM tags the writer stamps (XB = drawn,
@@ -173,7 +172,6 @@ def aggregate_junctions(
         for intron_start, intron_end in junctions:
             key = (chrom, intron_start, intron_end, strand)
             junction_counts[key] += 1
-            junction_reads[key].append(read.query_name)
             if read_umi:
                 junction_umis[key].add(read_umi)
             if _xb:
@@ -216,8 +214,7 @@ def aggregate_junctions(
                 # 3'SS: last 2 bases of intron
                 three_ss_dinuc = genome_seq[intron_end - 2:intron_end].upper()
 
-            is_canonical = (five_ss_dinuc in CANONICAL_5SS and
-                           three_ss_dinuc in CANONICAL_3SS)
+            is_canonical = (five_ss_dinuc, three_ss_dinuc) in CANONICAL_PAIRS
 
         row = {
             'chrom': chrom,
