@@ -270,3 +270,33 @@ def test_cli_exposes_the_ratio():
     assert create_parser().parse_args(
         ['triage', 'in.bam', '-o', 'out', '--Scer']
     ).max_correction_regression_ratio == 1.0
+
+
+@pytest.mark.parametrize('best_first', [False, True])
+def test_regression_guard_considers_all_original_arms(tmp_path, best_first):
+    """A worse first arm must not hide a later original that can restore a read."""
+    query = _mutate(CLEAN, 10)
+    corrected = _read(query, cigar=CIGAR_CORR)
+    good = _read(query)
+    poor = _read(query, cigar=CIGAR_CORR)
+    assert classify_read(corrected, GENOME, {J[:3]}).label == LABEL_HIGH_CONFIDENCE
+    assert _hp(corrected) > 2 * _hp(good)
+    assert _hp(corrected) == _hp(poor)
+    inp = _bam(tmp_path / 'corrected.bam', [corrected])
+    paths = [_bam(tmp_path / 'poor.bam', [poor]), _bam(tmp_path / 'good.bam', [good])]
+    if best_first:
+        paths.reverse()
+
+    out = tmp_path / 'triaged.bam'
+    rows, stats = triage_realign_bam(
+        inp, str(out), genome=GENOME, annotated_junctions=ANNOTATED,
+        original_bams=paths, sort_and_index=False)
+    assert stats['correction_regression'] == 1
+    assert stats['high_confidence'] == 0
+    assert rows[0]['reverted_to_original'] is True
+    assert rows[0]['correction_regression'] == 3.375
+    with pysam.AlignmentFile(str(out), 'rb') as bam:
+        emitted = list(bam)
+    assert len(emitted) == 1
+    assert emitted[0].cigarstring == good.cigarstring
+    assert emitted[0].query_sequence == query

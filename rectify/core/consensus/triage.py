@@ -569,6 +569,7 @@ def triage_realign_bam(
     # ISSUE-009 candidate can win it back.
     n_regression = 0
     if original_bams:
+        input_names = set(input_header.references or ())
         bypassed = {rid for rid, r in results.items()
                     if r.label == LABEL_HIGH_CONFIDENCE
                     and r.hp_ed_corrected is not None}
@@ -576,18 +577,31 @@ def triage_realign_bam(
         for orig_path in original_bams:
             if not bypassed:
                 break
+            seen_orig: Set[str] = set()
             with pysam.AlignmentFile(orig_path, 'rb', check_sq=False) as ob:
                 for rec in ob.fetch(until_eof=True):
                     rid = rec.query_name
-                    if rid not in bypassed or not _classifiable(rec):
+                    if (rid not in bypassed or rid in seen_orig
+                            or not _classifiable(rec)):
                         continue
-                    bypassed.discard(rid)
+                    seen_orig.add(rid)
+                    if rec.reference_name not in input_names:
+                        continue  # the candidate leg cannot emit this placement
                     res = results[rid]
-                    if _apply_correction_regression(
-                            res, res.hp_ed_corrected,
-                            _cigar_hp_edit_distance(rec, genome, penalty_table),
-                            policy):
-                        n_regression += 1
+                    if res.hp_ed_original == 0:
+                        continue  # edit distance cannot improve on zero
+                    ed = _cigar_hp_edit_distance(rec, genome, penalty_table)
+                    if res.hp_ed_original is None or ed < res.hp_ed_original:
+                        res.hp_ed_original = ed
+        # Compare with the best eligible original across ALL arms, just as the
+        # candidate leg below does. Consuming the first arm here hid a better
+        # later placement behind the high-confidence bypass, so merely changing
+        # BAM order changed whether a damaged read could ever be restored.
+        for rid in bypassed:
+            res = results[rid]
+            if res.hp_ed_original is not None and _apply_correction_regression(
+                    res, res.hp_ed_corrected, res.hp_ed_original, policy):
+                n_regression += 1
         if n_regression:
             logger.info(
                 'triage: %d read(s) pulled out of the high-confidence bypass — '
