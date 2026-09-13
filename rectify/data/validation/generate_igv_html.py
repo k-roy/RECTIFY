@@ -288,12 +288,13 @@ def cat7_row(label, rd):
     n_s, n_e = n_ops[0] if n_ops else (rd["rs"], rd["rs"])
     focused = loc(rd["chrom"], n_s - 200, n_e + 200)
     full    = loc(rd["chrom"], rd["rs"], rd["re"])
+    detail = f'{m["junc_desc"]} · <strong>{m["motif"]}</strong>'
     return (
         f'  <tr>\n'
         f'    {td(f"<code>{label}</code>")}\n'
         f'    {td(strand_tag(rd["strand"]))}\n'
         f'    {td(m["gene"])}\n'
-        f'    {td(f'{m["junc_desc"]} · <strong>{m["motif"]}</strong>', "detail")}\n'
+        f'    {td(detail, "detail")}\n'
         f'    {td(igv_link(focused, focused))}\n'
         f'    {td(igv_link(full, "full"))}\n'
         f'  </tr>'

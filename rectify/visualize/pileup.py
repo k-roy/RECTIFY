@@ -1268,7 +1268,8 @@ def plan_read_panel(name: str, reads: Sequence[Read], keep: Sequence[Cluster], *
 # ---------------------------------------------------------------------------
 # drawing: one panel
 # ---------------------------------------------------------------------------
-def _squished_rows(ax, reads: Sequence[Read], plan: PanelPlan, *, role, region, xform, zorder):
+def _squished_rows(ax, reads: Sequence[Read], plan: PanelPlan, *, role, region, xform, zorder,
+                   tail_src="clip"):
     """Per-read rows at a pitch the budget can honour, with the LINE WIDTH DERIVED FROM
     THE PITCH. ``tracks.reads``'s fixed 4.0 pt overdraws 2.2x at 40 reads and 22x at 400
     in a 1 in strip (Chanfreau planning/880 checkpoint 1b) -- the same class of defect
@@ -1331,7 +1332,8 @@ def read_panel(ax, reads: Sequence[Read], keep: Sequence[Cluster] = (), *,
         ax.spines[side].set_visible(False)
 
     if plan.mode == "squished":
-        _squished_rows(ax, reads, plan, role=role, region=region, xform=xform, zorder=zorder)
+        _squished_rows(ax, reads, plan, role=role, region=region, xform=xform, zorder=zorder,
+                       tail_src=tail_src)
     else:
         y = plan.bands_mm
         for b in plan.bands:

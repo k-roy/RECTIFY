@@ -16,6 +16,8 @@ Author: Kevin R. Roy
 Date: 2026-03-19
 """
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyBboxPatch, Rectangle, FancyArrowPatch

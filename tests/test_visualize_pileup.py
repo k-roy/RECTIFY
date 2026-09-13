@@ -56,6 +56,22 @@ def test_read_from_rbrowse_record():
     assert r.junctions == [(30, 10)]
 
 
+@pytest.mark.parametrize("tail_src,expected", [("clip", 7), ("pt", 23)])
+@pytest.mark.parametrize("strand", ["+", "-"])
+def test_squished_panel_draws_the_requested_tail_measure(ax, tail_src, expected, strand):
+    read = P.Read("r", strand, 100, 180, [(100, 80)], tail=7, clip3=9, tail_pt=23)
+    plan = P.read_panel(
+        ax, [read], budget_mm=20, mode="squished", merged_mm=0,
+        guides=False, tail_src=tail_src)
+    assert plan.mode == "squished"
+    tails = [line for line in ax.lines
+             if _hex(line.get_color()) == TOK.color("polya").upper()]
+    assert len(tails) == 1
+    x0, x1 = tails[0].get_xdata()
+    assert x1 - x0 == expected
+    assert (x0 == read.end) if strand == "+" else (x1 == read.start)
+
+
 # ----------------------------------------------------------------- merged raster
 def test_merged_column_is_a_majority(ax):
     # 8 reads with bodies 0-100; 1 of them has a 20-nt tail from 100 -- a minority
