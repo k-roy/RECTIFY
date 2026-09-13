@@ -15,6 +15,13 @@ be useful without access to any lab infrastructure.
 > layout rather than the tool. **Absence from this file is weak evidence, not proof, that something
 > works.**
 
+> **2026-09-13 reconciliation:** Git ancestry and current source confirm that
+> the chimeric contig/strand assembly fix (`d3ba8c1`, `80c054c`), Type-2
+> no-collapse default (`599260c`), parallel cDNA QC (`7ff8f5c`) and Path-A
+> carried tail fix (`9b18d50`) are all on `master`. Their stale open entries
+> have been removed; see `CHANGELOG.md`. The rest of this list still includes
+> historical entries and should be checked against the installed revision.
+
 **Conventions.** Each entry carries a status, the affected versions/commits, a workaround, and
 where the fix lives. **Closing an entry is part of the fix**: when a fix merges to `master`, delete
 its entry here and record it in `CHANGELOG.md`. A stale issues list that claims fixed things are
@@ -22,194 +29,60 @@ broken is worse than no list at all.
 
 ---
 
-## 🔴 Chimeric consensus can emit a record assembled from TWO aligners — fixed on a branch, not on `master`
+## Resolver B2 local scoring can worsen the whole emitted placement
 
-- **Status:** fixed on `fix/consensus-contig-swap-864` (which supersedes and includes the
-  narrower `fix/runall-quantseq-862`); **`master` (`fd2e2d2`) still has it**
-- **Affects:** any multi-aligner run with `--chimeric-consensus`, which is **the `run-all`
-  default** (`run_command.py:1021-1034`). `rectify align` / `rectify consensus` default it OFF.
-  The mechanism is datatype-independent — it lives in the disagreement fallback, not in anything
-  short-read-specific — and it has now been measured on **four** panels, short-read AND long-read
-  (below).
-- **Impact:** an output record can carry one aligner's **chromosome, strand, MAPQ and aux tags**
-  with another aligner's **position and CIGAR**, while the `Xa` tag credits the second one.
-  Sometimes it crashes; otherwise it is written silently to a locus no aligner reported.
-- **Workaround on `master`:** `run-all --no-chimeric-consensus`, or a single-aligner panel.
+- **Status:** reproduced on `af2f788`, 2026-09-13; not fixed here.
+- **Affected path:** Case B2 in `align/overhang_resolver.py` scores a short
+  window beside a proposed intron but relocates the complete terminal M block.
+- **Witness:** a synthetic `360M` becomes `200M300N160M` after a local score
+  improvement, while actual emitted-CIGAR mismatches rise from 30 to 94. No
+  scoring mocks were used. Biological frequency remains unmeasured.
+- **Fix direction:** score/validate all relocated bases, with both-strand
+  genuine-rescue controls. The mirrored B3 path needs the same review.
 
-`select_best_chimeric` refuses to assemble unless every candidate is on one contig AND one strand,
-and otherwise falls back to `_fallback_simple_selection` — which returns the **winner's**
-`chimeric_ref_start` and CIGAR **but no chromosome and no strand**.
-`consensus._process_and_write_batch` then chooses a "template" read by **iteration order over
-`aligner_reads.values()`**, gated only on sequence length, and
-`chimeric_consensus.build_chimeric_read` builds a fresh record taking `reference_id`, the strand
-bits, `mapping_quality` and the aux tags from that template. When the candidates disagree, the
-record is `<template's chrom/strand>` × `<winner's position/CIGAR>`.
+## Canonical motif credit is inconsistent in consensus selection
 
-Measured on `fd2e2d2`:
+- **Status:** open; source verified on `af2f788`, 2026-09-13.
+- **Affected paths:** `consensus/extract.py::check_canonical_splice_sites` omits
+  AT-AC. `consensus/chimeric_consensus.py::_canonical_within_window` recognizes
+  only genomic forward GT/GC-AG, while `score_segment` receives no strand.
+- **Impact:** minor-class junctions and minus-strand canonical junctions can
+  receive a non-canonical penalty in consensus selection. In chimeric segment
+  scoring the difference is -3 versus +5 per junction. Biological incidence
+  has not been measured by this audit.
+- **Fix direction:** paired motifs in transcript orientation, strand passed
+  through the selector, and both-strand whole-selection controls. Do not expand
+  donor and acceptor sets independently: AT-AG and GT-AC are not AT-AC.
 
-| panel | rate |
-|---|---|
-| QuantSeq `--short-read --dT-primed-cDNA`, 200k reads, bbmap + bwa | 2,532 / 179,062 reads took the cross-contig fallback |
-| TruSeq short-read panel, 200k reads SE, 5 arms | **115 / 157,475 = 0.073 %** written to the wrong chromosome |
-| TruSeq short-read panel, 200k read pairs PE, 7 arms | **25 / 20,000 = 0.125 %** (first two checkpoint batches) |
-| ONT DRS, 50k reads, minimap2 + uLTRA + deSALT + overhang-resolver | **29 / 48,362 = 0.060 %** |
-| ONT DRS, 10k reads, same panel | **7 / 9,743 = 0.072 %** |
-| ONT PCR-cDNA, 5k clusters, minimap2 + uLTRA | **5 / 4,787 = 0.104 %** (4 contig + 1 **strand**) |
+The former claim that the resolver index and 2H scorer cannot represent AT-AC
+is obsolete. Their paired AT-AC support is already enabled by default; keep it
+on. The aggregation table's corresponding omission is repaired in the September
+13 audit changes. See [audit and validation](docs/development/2026-09-13-junction-audit.md).
 
-The two long-read rows are **lower bounds**: those runs deleted their per-aligner BAMs, so the
-check there was contig+strand against each arm's per-read correction record, not the full
-(RNAME, POS, CIGAR) triple.
+## Junction proposals rejected during surgery can hide a valid runner-up
 
-Only ~8 % of the swapped records overran the borrowed contig and were caught by
-`_validate_bam_sample`; the rest passed every guard. One QuantSeq example: read
-`D00689:118:C890GANXX:8:2204:16881:55011` was placed by bwa at `chrIX:300228` (`2S48M`) and by
-bbmap at `chrXIII:480619` (`1=1X47=1X`), and the consensus wrote `chrIX:480619` — past the end of
-chrIX (439,888 nt). One TruSeq example: bbmap won with `chrI:165474 49=1X25=`, and the first arm
-in the dict supplied chrX, MAPQ 60, FLAG 89 and its entire tag set.
+- **Status:** reproduced on `af2f788`, 2026-09-13; not fixed here.
+- **Affected path:** `refine_read_junctions` keeps one winning proposal, then
+  `_apply_replacements_to_read` may refuse it without trying another candidate.
+- **Witness:** on `20M100N5D20M`, controlled scores rank acceptor +2 ahead of
+  +5. The +2 proposal leaves a forbidden adjacent 3D and is refused; +5 is
+  independently realizable as `20M105N20M`. This demonstrates a missing-candidate
+  mechanism, not a measured biological FN rate.
+- **Fix direction:** check realizability before selecting the winner, preserving
+  the incumbent and existing evidence gates; test interacting edits on a read.
 
-**Fix:** `ChimericResult` now carries an **anchor** — the candidate whose placement
-`chimeric_ref_start`/`chimeric_cigar` describe — and `build_chimeric_read` takes RNAME, strand and
-MAPQ from it, with the template preferred to be the anchor itself. An **emit-time invariant**
-refuses to write any record whose RNAME/POS/CIGAR/strand are not all the selector's, and, for a
-pass-through (unstitched) result, whose triple is not exactly the winning candidate's own
-placement. A no-op when all arms share a contig and strand, which includes every true-chimeric
-assembly.
+## Station B provenance can misidentify independent junction support
 
----
-
-## 🟡 Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — fixed on a branch, not on `master`
-
-- **Status:** fixed on `feat/cdna-stage1-qc` (`599260c`), also merged into
-  `feat/netseq-junction-rescue-836`; **`master` still has it**
-
-## ✅ Type-2 (no-UMI) cDNA reads are deduplicated by coordinate — FIXED ON `master`
-
-- **Status:** **FIXED.** `599260c` is an ancestor of `master` as of `fd2e2d2`
-  (`git merge-base --is-ancestor 599260c master` → true); the default is now
-  `--type2-collapse none` (`core/cdna/cluster.py:23`, `commands/cdna_correct_command.py:124,266,384`).
-  **Verified on real output, not on the default value**: a `run-all --ONT-cDNA` on 49,831 in-house
-  PCB114 reads reported `type2_reads = 8,517` and `type2_clusters = 8,517` — exactly equal, i.e.
-  zero Type-2 reads collapsed (planning/860). Type-1 collapse on the same run was a real 12.7 %.
-  Kept here with the history because the measured magnitude below is still the reason to distrust
-  any Type-2 count produced before `fd2e2d2`.
-- **Affects:** `rectify correct-cdna` (ONT PCR-cDNA Stage 1), all versions up to and including `47e3b39`
-- **Impact:** Type-2 record counts understated ~2×, **depth-dependently**
-
-`correct-cdna` routed every Type-2 (SSP-less) anchor bucket through a coordinate collapse that
-grouped reads on exact `(aln_start, aln_end)` and treated each group as PCR duplicates of one
-molecule. **Type-2 reads carry no UMI**, so there is no evidence by which to call two of them the
-same molecule; the collapse measured *positional concentration*, not amplification.
-
-Measured on one 18-library cohort: **13,292,754 Type-2 reads → 6,450,950 records, 51.5 % removed.**
-The rate scaled with sequencing depth — 4–6 % on ~50 k-read libraries versus 44–57 % on
-multi-million-read libraries — while true UMI-measured PCR duplication on the *same* libraries was
-24–41 %. PCR duplication is a property of a library, not of how deeply it was sequenced; positional
-crowding is what scales that way. The excess was therefore genuinely distinct molecules merged away.
-
-🔴 **Because the bias tracks depth, it does not cancel in a between-sample ratio.** Any comparison
-of Type-2 abundance across libraries of differing depth is confounded.
-
-- **Type-1 records are unaffected** — UMI-anchored deduplication was never in question, and Type-1
-  is typically 82–88 % of reads.
-- **Workaround on `master`:** treat Type-2 record counts as unusable for abundance or cross-sample
-  comparison; use Type-1 only. Or run the branch above, where the default is `--type2-collapse none`.
-- **After the fix:** each Type-2 read is one observation. Grouping Type-2 reads by 3′ end is still
-  correct as **isoform / CPA-site clustering in `cdna-analyze` (Stage 3)**, where it is labelled as
-  such — it is simply not deduplication and no longer happens in Stage 1.
-
-Note: `docs/quickstart_cdna.md` already specified the correct behaviour ("Deduplication: None
-(each read is one observation)"), so the code was violating its own documented contract.
-
----
-
-## 🟡 Stage-1 cDNA QC is missing whenever `--workers > 1` — fixed on a branch, not on `master`
-
-- **Status:** fixed on `feat/cdna-stage1-qc` (`7ff8f5c`), also merged into
-  `feat/netseq-junction-rescue-836`; **`master` still has it**
-- **Affects:** `rectify correct-cdna` with `--workers > 1` — i.e. effectively every production run
-- **Impact:** no correctness effect on the output FASTQ; QC reporting only
-
-The region-parallel path computed the read-type, XF-tier and tail-length metrics per region and then
-discarded them, and the parent process aggregated only a fixed key list that excluded them. The
-serial path printed a full QC block while the parallel path printed almost none of it, so runs
-shipped with no read-type breakdown and the numbers had to be reconstructed by hand from the output
-FASTQ.
-
-- **Workaround on `master`:** rerun a subset with `--workers 1` to see the QC block, or derive the
-  metrics from the `XT` / `XY` / `XC` tags in `stage1_consensus.fastq.gz`.
-- **After the fix:** one shared implementation serves both paths (verified to produce identical
-  output), adds UMI duplication rate and `XY` sub-type breakdown, and writes a machine-readable
-  `stage1_qc.json` beside the FASTQ.
-
-🔴 **Interpretation trap, independent of this bug:** the read-level and molecule-level Type-1
-fractions are **different quantities**. The ~82 % figure documented in
-`docs/algorithms/cdna_correct.md` is the **read-level** one; comparing a molecule-level fraction
-against it reads as a false failure. Both are now reported and explicitly labelled.
-
----
-
-## 🔴 `run-all --ONT-cDNA` zeroed the poly(A) length column — fixed on a branch, not on `master`
-
-- **Status:** fixed on `fix/runall-cdna-860`; **`master` still has it**
-- **Affects:** `rectify run-all --ONT-cDNA` (Path A — the DEFAULT for this datatype), every version
-  up to and including `fd2e2d2`. The stepwise route (`correct-cdna` → `align` → **`cdna-analyze`**)
-  is unaffected, because `cdna-analyze` is the one consumer that reads `XA`.
-- **Impact:** `polya_length` in `corrected_reads.tsv` is ~0 for the whole library and
-  `polya_source` is `none` for every row — on the datatype whose purpose is 3′-end and poly(A)
-  analysis.
-
-`correct --ONT-cDNA` took the pre-trim tail length only from the `pl` tag, which **only**
-`trim-cdna-polya` writes. Path A deliberately does not run `trim-cdna-polya`: `correct-cdna`
-stage 1 pretrims the tail off the emitted CONSENSUS and records its length as `XA:i` instead.
-So the aligned molecule has no tail left to measure, `pl` is absent, and the post-alignment
-measurement is made on a read that by construction has none — the *same* failure the `pl` tag was
-introduced to prevent on Path B, reached by a different route.
-
-Measured on 49,831 real in-house PCB114 reads (`wtaa_rep1`, at `fd2e2d2`):
-
-| carrier | state |
-|---|---|
-| stage-1 `XA:i` (consensus pretrim) | present on **100 %** of molecules, **non-zero on 95.5 %**, per-cluster median tail **20–30 nt** |
-| dorado `pt:i` (in the input FASTQ comment) | present on **100 %** of input reads, non-zero on 86.9 % |
-| `pl` (trim stage) | **never written** on this path |
-| ⇒ `corrected_reads.tsv` `polya_source` | **`none` on 100 % of rows** |
-| ⇒ `corrected_reads.tsv` `polya_length` | non-zero on 27 %, **median 1 nt**, only 40 of 4,726 rows ≥ 20 nt |
-| ⇒ `corrected_reads.tsv` `pt_tag` | **empty on 100 % of rows** |
-
-Three independent carriers of the same quantity, none of them read.
-
-- **Workaround on `master`:** do not use `polya_length` from a `run-all --ONT-cDNA` run. Either run
-  the stepwise route and take the tail from `cdna-analyze`, or read `XA:i` off
-  `stage1_consensus.fastq.gz` yourself and join on the molecule id.
-- **The fix:** `correct --ONT-cDNA` falls back to `XA` when `pl` is absent, recording
-  `polya_source = "cdna_stage1"` — deliberately distinct from `trim_stage` so the route stays
-  legible. `None` (tag absent → fall through to the post-alignment value) and `0` (a measured
-  zero-length tail) stay distinguishable, as they already did for `pl`. The fallback is inside the
-  existing `if ont_cDNA:` gate, so DRS and every other protocol are untouched.
-
----
-
-## 🔴 Junction machinery is minor-intron (U12) blind — OPEN
-
-- **Status:** open, not fixed
-- **Affects:** junction scoring and splice-site indexing on U12-type introns
-- **Impact:** AT–AC introns are unrepresentable and score at the worst tier
-
-Four sites are involved: the splice-site index has no plus-strand `AC` acceptor kind
-(`splice_site_index.py`); the canonical dinucleotide set omits AT–AC and AT–AG
-(`overhang_informativeness.py`); plus-strand AT–AC scores at tier 8 and the treatment is
-strand-asymmetric (`junction_scoring.py`); and the canonical homopolymer prior applies a 0.5-unit
-handicap against true U12 junctions (`junction_scoring.py`).
-
-Measured consequence: **92.5 % of STX10 long reads land on a phantom unannotated `AG` 5–6 nt off**
-the true junction.
-
-- **Workaround:** treat U12/minor-intron junction calls as unreliable; do not use RECTIFY junction
-  tiers to adjudicate AT–AC introns.
-- **Fix guidance:** address AT–AC and AT–AG together and bump `_FORMAT_VERSION` 2 → 3.
-
-⚠️ The internal record points at a `TODO_MINOR_INTRON_GRAMMAR.md` patch spec at the repo root, but
-**that file is not present in the tree** — the pointer is currently dangling.
+- **Status:** open; source verified on `af2f788`, 2026-09-13.
+- **Affected paths:** micro-exon recovery writes `XB` for drawn exon coordinates;
+  cDNA also uses `XB` for strand-split counts. Resolver migration to `XE` did not
+  resolve this separate collision. Aggregation currently interprets any nonempty
+  `XB` as a micro-exon draw and credits every intron on that read.
+- **Impact:** cDNA strand metadata and distant original introns can be counted
+  as Station-B-derived. Do not use `station_b_reads` as an independent-support
+  gate until tags and coordinate-specific provenance are corrected.
+- **Fix direction:** a distinct tag with an explicit migration policy; attribute
+  only introns created by the recorded micro-exon configuration.
 
 ---
 

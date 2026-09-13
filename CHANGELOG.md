@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/recount_junction_support.py` recounts exact proposed destinations on
+  original BAMs, unions primary read names across aligner arms, excludes the
+  moving read, and reports a separate contiguous-anchor support count.
+
 - **cDNA stage 1 carries dorado's poly(A) estimate: `XP:i` / `XD:i`** (rbrowse
   request, Kevin 2026-09-12). The raw uBAM carries `pt:i` on every read (91 %
   positive, mean 40 nt on WW1) and Path A dropped it; the consensus carried only
@@ -132,6 +136,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag `XO:Z`; never an N-op — station C decides sites, this decides counts.
 
 ### Fixed
+
+- September 13 junction accuracy audit: triage's correction-regression guard
+  now compares every original arm before bypassing a read; micro-exon search
+  refuses overflowing candidate sets instead of selecting from a truncated
+  prefix. Annotation lookups avoid copying the remaining chromosome list.
+- PyYAML is declared as a pip and conda runtime dependency; the bundled ncRNA
+  atlas loader imports it unconditionally.
+- Junction mismatch evidence is local to each junction on a multi-intron read
+  and recognizes reference-compressed SEQ `=` as matches. The single-arm pool
+  no longer doubles unspliced support, and sequential fallback retains all
+  optional signals. Pool cache format is now 3; older evidence is rebuilt.
+- `cdna-analyze` counts only primary alignments as molecules and attaches new
+  coordinate-derived tags only to their primary placements. Other BAM records
+  remain available with their existing tags.
+- Junction aggregation recognizes the paired AT-AC class on both strands and
+  no longer stores unused read-name lists for every junction observation.
+- Squished pileup panels receive the selected poly(A) source. Developer figure
+  generation imports `Path`; validation HTML generation parses on supported
+  Python versions before 3.12.
+- Reconciled stale known-issue entries with fixes already on master: chimeric
+  placement identity (`d3ba8c1`, `80c054c`), Type-2 no-collapse (`599260c`),
+  parallel cDNA QC (`7ff8f5c`) and Path-A carried tail length (`9b18d50`).
 
 - **Module 2F — the annotated placement holds unless a shift wins by a margin;
   the gap bound scales with the block** (`splice/splice_aware_5prime.py`; T1 of
