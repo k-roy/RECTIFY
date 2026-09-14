@@ -688,6 +688,39 @@ def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: i
     return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_mov)
 
 
+def _realizable(
+    read: pysam.AlignedSegment,
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+    new_js: int,
+    new_je: int,
+    genome_seq: str,
+    strand: str,
+    hp_pen: float,
+    W: int,
+) -> bool:
+    """True when ``_apply_junction_replacement`` would WRITE the move
+    ``(ns, ne) -> (new_js, new_je)`` for *read* — a dry run on a copy.
+
+    The surgery refuses a move for reasons the scorer never sees: the boundary-
+    shift guard, a reference/query span mismatch, the indel-burden invariant and
+    ISSUE-031's no-I/D-beside-the-N rule.  A candidate it refuses is not a
+    placement this read can carry, so the ranking in ``refine_read_junctions``
+    walks past it to the best candidate that CAN be written (Codex audit
+    2026-09-13, witness ``20M100N5D20M``: acceptor +2 leaves ``3D`` beside the
+    N and is refused; acceptor +5 absorbs the deletion and is realizable —
+    keeping only the head of the ranking hid the +5).  Any exception counts as a
+    refusal.  Originally 018's F1 probe (5b81d88), landed here on its own."""
+    try:
+        trial = read.__copy__()
+        return bool(_apply_junction_replacement(
+            trial, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand, hp_pen, W,
+        ))
+    except Exception:
+        return False
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -703,6 +736,7 @@ def refine_read_junctions(
     max_junction_size: Optional[int] = None,
     max_candidates_per_nop: Optional[int] = None,
     profile: Optional[JunctionRefineProfile] = None,
+    counters: Optional[Counter] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
     motif_blind: bool = False,
     hold_margin: float = 0.0,
@@ -862,7 +896,7 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
+        ranked: List[tuple] = []   # every candidate (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
@@ -982,11 +1016,34 @@ def refine_read_junctions(
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
                 candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
-            if best_tuple is None or candidate_tuple < best_tuple:
-                best_tuple = candidate_tuple
+            ranked.append(candidate_tuple)
 
-        if best_tuple is None:
+        if not ranked:
             continue
+
+        # --- Realizability: the ranking is over candidates the surgery can WRITE ---
+        # The winner used to be the best-scoring candidate, full stop; if the
+        # surgery then refused it (boundary-shift guard, span mismatch, the
+        # indel-burden invariant, ISSUE-031) the read silently kept its stock
+        # placement and the runner-up was never tried.  Walk the ranking, dry-run
+        # the surgery on the head, drop what cannot be written and count it.  The
+        # incumbent needs no surgery and always stops the walk.
+        ranked.sort()
+        best_tuple = None
+        for _tup in ranked:
+            _cjs, _cje = _tup[5], _tup[6]
+            if (_cjs, _cje) == (ns, ne):
+                best_tuple = _tup
+                break
+            if _realizable(read, cigar_idx, ns, ne, _cjs, _cje, genome_seq, strand, hp_pen, W):
+                best_tuple = _tup
+                break
+            if profile is not None:
+                profile.inc('unrealizable_winner_skipped')
+            if counters is not None:
+                counters['unrealizable_winner_skipped'] += 1
+        if best_tuple is None:
+            continue    # nothing writable and the incumbent is not a candidate: stay
 
         # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
         # (the trailing `delta` is the scorer's applied slide, structurally 0;
@@ -1522,11 +1579,10 @@ def _apply_junction_replacement(
     # 6–48 bp "drift".  Refinement corrects ONE splice site at a time; a simultaneous
     # donor+acceptor relocation via compensating indels is the fabrication signature.
     #
-    # Single-boundary corrections (donor-only or acceptor-only) are NOT touched — they
-    # move one splice site and the indel they add represents a real intron-length change
-    # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
-    # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
-    # (raw) placement — the conservative, correct outcome.
+    # Refused reads keep their incumbent (raw) placement — the conservative outcome.
+    # (Two older statements used to sit here and are now FALSE: single-boundary moves
+    # are not exempt, and a burden-reducing move is not automatically applied — both
+    # go through the adjacency rule below.)
     #
     # ISSUE-031 (Kevin, 2026-09-06, read-review cards 238d21ab/ede71fa4/3ceddb4b/8d1fe5ee/
     # 8ef6e9c0/b3a48de3/dbcdfdd1 + control 0af7072a): "never put a D next to an N".  The
@@ -1537,7 +1593,7 @@ def _apply_junction_replacement(
     # now enforced for EVERY move, and in addition no move may leave an I/D adjacent to the
     # N on either side unless that exact op was already adjacent before the move (a stock
     # alignment's own indel is the aligner's record and is left alone, not "fixed").  The
-    # realizability probe (_move_realizable) dry-runs this function, so a refused move is
+    # realizability probe (`_realizable`) dry-runs this function, so a refused move is
     # skipped in the ranking and counted as unrealizable_winner_skipped.
     old_indel = sum(l for op, l in cigar     if op in (_I, _D))
     new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
@@ -1675,6 +1731,7 @@ def _run_sequential(
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
          pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
 
+        _seq_counters: Counter = Counter()   # decision-level events (see refine_read_junctions)
         for read in bam_in:
             stats['total'] += 1
             if read.is_unmapped or not read.cigartuples:
@@ -1713,6 +1770,7 @@ def _run_sequential(
                     max_junction_size=max_junction_size,
                     max_candidates_per_nop=max_candidates_per_nop,
                     profile=read_profile,
+                    counters=_seq_counters,
                     penalty_table=eff_table,
                     motif_blind=motif_blind,
                     hold_margin=hold_margin,
@@ -1742,6 +1800,8 @@ def _run_sequential(
                 stats['refined'] += 1
             else:
                 stats['unchanged'] += 1
+    for _k, _n in _seq_counters.items():
+        stats[_k] = stats.get(_k, 0) + _n
 
 
 def _run_parallel(
@@ -1846,8 +1906,10 @@ def _run_parallel(
         for batch_results in pool.imap_unordered(_refine_read_batch, batches):
             if isinstance(batch_results, dict):
                 all_results.extend(batch_results.get('results', []))
-                if profile is not None:
+                if profile is not None and batch_results.get('profile') is not None:
                     profile.merge(batch_results.get('profile'))
+                for _k, _n in (batch_results.get('counters') or {}).items():
+                    stats[_k] = stats.get(_k, 0) + _n
             else:
                 all_results.extend(batch_results)
     _profile_time(profile, 'parallel_worker_scoring', _t_workers)
@@ -1936,6 +1998,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
     profile = JunctionRefineProfile(profile_sample_rate) if profile_enabled else None
 
     results: List[Tuple[str, List]] = []
+    counters: Counter = Counter()
     for i, sam_str in enumerate(sam_strings):
         try:
             _t_parse = time.perf_counter() if profile is not None else 0.0
@@ -1953,6 +2016,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
                 eff_kw = kw
             if profile is not None and (i % profile_sample_rate == 0):
                 eff_kw = {**eff_kw, 'profile': profile}
+            eff_kw = {**eff_kw, 'counters': counters}
             replacements = refine_read_junctions(
                 read, junctions_idx, annotated_set, genome_seq, strand, **eff_kw
             )
@@ -1961,9 +2025,8 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
             results.append((sam_str, []))
             if profile is not None:
                 profile.inc('worker_errors')
-    if profile is not None:
-        return {'results': results, 'profile': profile.to_raw_dict()}
-    return results
+    return {'results': results, 'counters': dict(counters),
+            'profile': profile.to_raw_dict() if profile is not None else None}
 
 
 # ---------------------------------------------------------------------------

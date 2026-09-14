@@ -28,6 +28,15 @@ sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice import junction_refiner as jr  # noqa: E402
 
+@pytest.fixture(autouse=True)
+def _decision_layer_only(monkeypatch):
+    """These tests pin the RANKING (the decision layer) on hermetic reads whose bases match
+    nowhere, so every move is unwritable. Since 97a8438 the ranking walks past candidates the
+    surgery cannot write (`_realizable`); stub the probe so the decision is still observable.
+    Surgery-level truth is tested in test_2h_realizable_ranking.py."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
+
+
 CHROM = "chrT"
 GLEN = 600
 REF_START = 150
