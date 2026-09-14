@@ -40,19 +40,18 @@ broken is worse than no list at all.
 - **Fix direction:** score/validate all relocated bases, with both-strand
   genuine-rescue controls. The mirrored B3 path needs the same review.
 
-## Canonical motif credit is inconsistent in consensus selection
+## Canonical motif credit in consensus selection — fixed 2026-09-14
 
-- **Status:** open; source verified on `af2f788`, 2026-09-13.
-- **Affected paths:** `consensus/extract.py::check_canonical_splice_sites` omits
-  AT-AC. `consensus/chimeric_consensus.py::_canonical_within_window` recognizes
-  only genomic forward GT/GC-AG, while `score_segment` receives no strand.
-- **Impact:** minor-class junctions and minus-strand canonical junctions can
+- **Status:** fixed by `44d5ee9`; whole-selection and both-strand tests pass.
+- **Before the fix:** `consensus/extract.py::check_canonical_splice_sites` omitted
+  AT-AC. `consensus/chimeric_consensus.py::_canonical_within_window` recognized
+  only genomic forward GT/GC-AG, while `score_segment` received no strand.
+- **Impact:** minor-class junctions and minus-strand canonical junctions could
   receive a non-canonical penalty in consensus selection. In chimeric segment
   scoring the difference is -3 versus +5 per junction. Biological incidence
   has not been measured by this audit.
-- **Fix direction:** paired motifs in transcript orientation, strand passed
-  through the selector, and both-strand whole-selection controls. Do not expand
-  donor and acceptor sets independently: AT-AG and GT-AC are not AT-AC.
+- **Fix:** shared paired motifs and strand propagation through the selector;
+  mixed-pair, sequence-equivalence and whole-selection regression controls.
 
 The former claim that the resolver index and 2H scorer cannot represent AT-AC
 is obsolete. Their paired AT-AC support is already enabled by default; keep it
@@ -71,18 +70,18 @@ on. The aggregation table's corresponding omission is repaired in the September
 - **Fix direction:** check realizability before selecting the winner, preserving
   the incumbent and existing evidence gates; test interacting edits on a read.
 
-## Station B provenance can misidentify independent junction support
+## Legacy Station B provenance needs reprocessing
 
-- **Status:** open; source verified on `af2f788`, 2026-09-13.
-- **Affected paths:** micro-exon recovery writes `XB` for drawn exon coordinates;
-  cDNA also uses `XB` for strand-split counts. Resolver migration to `XE` did not
-  resolve this separate collision. Aggregation currently interprets any nonempty
-  `XB` as a micro-exon draw and credits every intron on that read.
-- **Impact:** cDNA strand metadata and distant original introns can be counted
-  as Station-B-derived. Do not use `station_b_reads` as an independent-support
-  gate until tags and coordinate-specific provenance are corrected.
-- **Fix direction:** a distinct tag with an explicit migration policy; attribute
-  only introns created by the recorded micro-exon configuration.
+- **New output fixed:** versioned `Xb` records successful live micro-exon calls,
+  preserves cDNA `XB` and validation `XV`, and credits only the exact created
+  junctions. Chimeric consensus retains provenance from each selected N's source.
+- **Legacy limitation:** XB coordinate strings describe plans, not necessarily
+  successful edits. They cannot be converted into verified provenance safely.
+  Aggregation reports `station_b_unverified_reads` and a reprocessing notice.
+  cDNA `n_top/n_bottom` XB values do not count as micro-exon evidence.
+- **Support interpretation:** missing Xb is not proof of independent stock support.
+  Recount destination support on the original BAMs. See the
+  [schema, migration and validation](docs/development/2026-09-14-consensus-provenance.md).
 
 ---
 

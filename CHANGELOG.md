@@ -137,6 +137,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Consensus canonical credit now includes paired AT-AC motifs on both strands;
+  chimeric scoring uses the transcript strand and preserves equivalent placements.
+- Micro-exon provenance uses versioned `Xb` instead of overwriting cDNA `XB` and
+  validation `XV`. Only successful live rewrites are recorded, and only their
+  exact selected junctions receive credit, including through chimeric consensus.
+  Legacy or invalid provenance is reported in `station_b_unverified_reads` and
+  requires reprocessing original alignments for complete attribution.
+
 - September 13 junction accuracy audit: triage's correction-regression guard
   now compares every original arm before bypassing a read; micro-exon search
   refuses overflowing candidate sets instead of selecting from a truncated

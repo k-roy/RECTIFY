@@ -79,6 +79,10 @@ alone does not identify a biological side.
 
 ### 2. Make canonical credit consistent throughout consensus
 
+**Follow-up:** fixed on 2026-09-14 (`44d5ee9`); see the
+[whole-selection controls](2026-09-14-consensus-provenance.md). The findings below
+describe the pre-fix state.
+
 The aggregate-table fix does not repair upstream selection:
 
 - `consensus/extract.py::check_canonical_splice_sites` omits AT-AC.
@@ -92,6 +96,10 @@ and ambiguity-equivalent placements. Retain default-on AT-AC in the resolver and
 2H scorer, where support already exists.
 
 ### 3. Keep population support independent of the correction
+
+**Follow-up:** the micro-exon tag collision and per-junction provenance portion
+is repaired by the [2026-09-14 schema migration](2026-09-14-consensus-provenance.md).
+The requirement to recount independent support on original BAMs still applies.
 
 Use `scripts/recount_junction_support.py` with explicit move targets and ORIGINAL
 BAMs. It streams each arm once, unions primary QNAMEs, excludes the moving QNAME,
