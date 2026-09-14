@@ -145,7 +145,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
             i_oc_term  = hdr.index('oc_terminal_base')           if 'oc_terminal_base'           in hdr else -1
             # ISSUE-040 station B: the micro-exon configuration to DRAW, the equally good ones to
-            # record (BAM tags XB / XV), and the intron the writer locates on the LIVE record.
+            # record (versioned BAM tag Xb), and the intron the writer locates on the LIVE record.
             # Measured 2026-09-08: omitting these here is how the ON arm's TSV claimed a split the
             # BAM never got — the row reaches the writer only through this loader.
             i_sb_seg   = hdr.index('station_b_microexons')        if 'station_b_microexons'       in hdr else -1
@@ -686,13 +686,19 @@ def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> 
     if correction.get('station_b_applied') not in (1, '1', True):
         return False
     from ..splice.microexon import parse_calls, rewrite_with_microexons
+    from ..splice.microexon_provenance import record_microexon_draws
     calls = parse_calls(correction.get('station_b_microexons') or '',
                         str(correction.get('station_b_intron_start') or ''),
                         str(correction.get('station_b_intron_end') or ''))
     if not calls:
         return False
+    alternatives = (correction.get('station_b_alternatives') or '').split('|')
+    if len(alternatives) != len(calls):
+        # A truncated alternatives list cannot be assigned to calls reliably.
+        alternatives = [''] * len(calls)
     changed = False
-    for (i_start, i_end), segs in calls:
+    drawn_calls = []
+    for call_idx, ((i_start, i_end), segs) in enumerate(calls):
         if not segs:
             continue
         total = sum(e - s for s, e in segs)
@@ -707,12 +713,18 @@ def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> 
                         try:
                             read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
                             changed = True
+                            drawn_calls.append({'intron': [i_start, i_end],
+                                                'exons': [list(s) for s in segs],
+                                                'alternatives': alternatives[call_idx]})
                         except AssertionError:
                             pass
                         break
                 break
             if op in (0, 2, 3, 7, 8):
                 ref += ln
+    # Record only calls whose live surgery succeeded. This is also the path used
+    # by direct callers; final tags must never be inferred from a planned TSV row.
+    record_microexon_draws(read, drawn_calls)
     return changed
 
 
@@ -803,15 +815,6 @@ def apply_corrected_edits_to_read(
     _xo = correction.get('five_prime_clip_origin') or ''
     if _xo:
         read.set_tag('XO', _xo)
-    # ISSUE-040: the micro-exon configuration DRAWN (XB) and the equally good ones NOT drawn (XV).
-    # Kevin 2026-09-07: where several are equally plausible, draw one and keep the others noted.
-    _xb = correction.get('station_b_microexons') or ''
-    if _xb and correction.get('station_b_applied') in (1, '1', True):
-        read.set_tag('XB', _xb)
-        _xv = correction.get('station_b_alternatives') or ''
-        if _xv:
-            read.set_tag('XV', _xv)
-
     return modified
 
 

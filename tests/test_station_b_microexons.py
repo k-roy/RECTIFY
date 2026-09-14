@@ -415,10 +415,11 @@ def test_the_tsv_loader_carries_the_station_b_columns_to_the_writer(tmp_path):
     assert read.cigartuples == [(0, 60), (3, 140), (0, 6), (3, 254), (0, 100)]
 
 
-def test_the_writer_stamps_XB_and_XV_only_when_it_drew(tmp_path):
+def test_the_writer_stamps_Xb_only_when_it_drew(tmp_path):
     """The tags are the record of what was drawn and what was equally good; an un-applied row must
-    not leave an XB behind claiming a draw that never happened."""
+    not leave an Xb behind claiming a draw that never happened."""
     from rectify.core.bam.bam_writer import apply_corrected_edits_to_read
+    import json
 
     corr = {'corrected_3prime': 559, 'strand': '+', 'five_prime_rescued': False,
             'five_prime_position': None, 'five_prime_soft_clip': 0, 'five_prime_exon_cigar': '',
@@ -428,13 +429,15 @@ def test_the_writer_stamps_XB_and_XV_only_when_it_drew(tmp_path):
             'station_b_applied': 1, 'station_b_intron_start': 60, 'station_b_intron_end': 460}
     read = _orphan_read(MICRO, name='tagged')
     apply_corrected_edits_to_read(read, corr, {CHROM: GENOME_SEQ})
-    assert read.get_tag('XB') == f'{CHROM}:200-206'
-    assert read.get_tag('XV') == f'{CHROM}:300-306'
+    payload = json.loads(read.get_tag('Xb'))
+    assert payload['calls'] == [{'intron': [60, 460], 'exons': [[200, 206]],
+                                 'alternatives': f'{CHROM}:300-306'}]
+    assert not read.has_tag('XB') and not read.has_tag('XV')
 
     corr_off = dict(corr, station_b_applied=0)
     read2 = _orphan_read(MICRO, name='untagged')
     apply_corrected_edits_to_read(read2, corr_off, {CHROM: GENOME_SEQ})
-    assert not read2.has_tag('XB') and not read2.has_tag('XV')
+    assert not read2.has_tag('Xb')
 
 
 # --------------------------------------------------- ISSUE-043: every insertion, not only the first

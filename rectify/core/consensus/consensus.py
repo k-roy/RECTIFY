@@ -1028,6 +1028,7 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 chimeric_result=chimeric_result,
                 header=out_bam.header,
                 anchor_read=anchor,
+                aligner_reads=aligner_reads,
             )
             out_read.flag &= ~0x900  # enforce primary
 

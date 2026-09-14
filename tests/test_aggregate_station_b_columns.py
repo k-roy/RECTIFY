@@ -2,16 +2,15 @@
 
 Kevin, 2026-09-07: "keep the other one as a noted equally good alternative as a auxiliary Sam tag,
 also perhaps in our junction parquet/tsv." The SAM tags are written by `bam_writer`
-(`XB` = drawn, `XV` = equally good, not drawn); this is the junction-level half — `rectify aggregate`
+(`Xb` = versioned successful calls); this is the junction-level half — `rectify aggregate`
 reads those tags off the BAM so a junction table says which junctions exist because a micro-exon was
 drawn, and what the reads behind them could equally have been.
 
-Why it is per junction and not per read: a junction whose `station_b_reads` equals its whole support
-exists ONLY because station B drew it, while one with a mix is also carried by reads the aligner
-placed unaided — a distinction a reader of the table needs and cannot reconstruct from read rows.
+Credit belongs only to the new junctions in the successful call. Untagged reads
+are not automatically independent stock evidence; other stages may have moved them.
 """
+import json
 import pysam
-import pytest
 
 from rectify.core.aggregate.junctions import aggregate_junctions
 
@@ -35,30 +34,36 @@ def _bam(tmp_path, reads):
     return str(p)
 
 
-CIG = [(0, 50), (3, 200), (0, 50)]          # one junction at [50, 250)
+CIG = [(0, 50), (3, 50), (0, 6), (3, 144), (0, 50)]
+
+
+def _tag(alternative):
+    # Literal schema fixture: chosen exon [100,106) splits intron [50,250).
+    return {'Xb': json.dumps({'v': 1, 'chrom': 'chrT', 'strand': '+', 'calls': [
+        {'intron': [50, 250], 'exons': [[100, 106]], 'alternatives': alternative}]})}
 
 
 def test_station_b_columns_are_emitted_even_when_the_station_never_ran(tmp_path):
     df = aggregate_junctions(_bam(tmp_path, [('r1', CIG, 0, {})]))
-    assert list(df['station_b_reads']) == [0]
-    assert list(df['station_b_alternatives']) == ['']
+    assert list(df['station_b_reads']) == [0, 0]
+    assert list(df['station_b_unverified_reads']) == [0, 0]
+    assert list(df['station_b_alternatives']) == ['', '']
 
 
 def test_a_junction_drawn_by_station_b_is_marked_with_its_alternatives(tmp_path):
     reads = [
-        ('drawn', CIG, 0, {'XB': 'chrT:100-106', 'XV': 'chrT:150-156'}),
-        ('drawn2', CIG, 0, {'XB': 'chrT:100-106', 'XV': 'chrT:150-156'}),
-        ('unaided', CIG, 0, {}),                       # the aligner reached it on its own
+        ('drawn', CIG, 0, _tag('chrT:150-156')),
+        ('drawn2', CIG, 0, _tag('chrT:150-156')),
+        ('untagged', CIG, 0, {}),
     ]
     df = aggregate_junctions(_bam(tmp_path, reads))
-    row = df.iloc[0]
-    assert row['full_junction_reads'] == 3
-    assert row['station_b_reads'] == 2                 # a mix: corroborated by an unaided read
-    assert row['station_b_alternatives'] == 'chrT:150-156'
+    assert list(df['full_junction_reads']) == [3, 3]
+    assert list(df['station_b_reads']) == [2, 2]
+    assert list(df['station_b_alternatives']) == ['chrT:150-156'] * 2
 
 
 def test_alternatives_are_deduplicated_and_capped(tmp_path):
-    reads = [(f'r{i}', CIG, 0, {'XB': 'chrT:100-106', 'XV': f'chrT:{200 + i}-{206 + i}'})
+    reads = [(f'r{i}', CIG, 0, _tag(f'chrT:{200 + i}-{206 + i}'))
              for i in range(8)]
     df = aggregate_junctions(_bam(tmp_path, reads))
     alts = df.iloc[0]['station_b_alternatives'].split(';')

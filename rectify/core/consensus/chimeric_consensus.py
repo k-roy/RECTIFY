@@ -30,6 +30,7 @@ import pysam
 import numpy as np
 
 from .extract import canonical_splice_pair
+from ..splice.microexon_provenance import copy_selected_microexon_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -944,6 +945,7 @@ def build_chimeric_read(
     chimeric_result: 'ChimericResult',
     header: pysam.AlignmentHeader,
     anchor_read: Optional[pysam.AlignedSegment] = None,
+    aligner_reads: Optional[Dict[str, pysam.AlignedSegment]] = None,
 ) -> pysam.AlignedSegment:
     """
     Construct a new pysam.AlignedSegment from chimeric selection results.
@@ -973,6 +975,7 @@ def build_chimeric_read(
         anchor_read: The candidate whose placement `ref_start`/`cigar_tuples`
             belong to (``chimeric_result.anchor_aligner``). Defaults to
             ``template_read`` only for callers that cannot supply it.
+        aligner_reads: Source placements for per-junction micro-exon provenance.
 
     Returns:
         New pysam.AlignedSegment ready to write
@@ -1021,7 +1024,7 @@ def build_chimeric_read(
     # reference_start differ from the template's, so those would be stale.
     _POSITIONAL_TAGS = frozenset((
         'NM', 'MD', 'AS', 'XS', 'ms', 'nn', 'ts', 'cm', 's1', 's2',
-        'de', 'rl', 'SA', 'cs', 'cg', 'tp',
+        'de', 'rl', 'SA', 'cs', 'cg', 'tp', 'Xb',
     ))
     for _name, _value, _vtype in template_read.get_tags(with_value_type=True):
         if _name in _POSITIONAL_TAGS:
@@ -1030,6 +1033,8 @@ def build_chimeric_read(
             out.set_tag(_name, _value, value_type=_vtype)
         except (TypeError, ValueError):
             continue
+
+    copy_selected_microexon_provenance(out, chimeric_result, aligner_reads, anchor)
 
     # Custom tags — lowercase second-letter to avoid colliding with the
     # cDNA pipeline's X[upper] tags (XU=UMI, XC=cluster_size, XA=tail_len,

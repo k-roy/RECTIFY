@@ -229,13 +229,13 @@ def test_invariant_raises_if_the_writer_reintroduces_the_splice():
     real = cc.build_chimeric_read
 
     def _pre_fix(template_read, ref_start, cigar_tuples, chimeric_result,
-                 header, anchor_read=None):
+                 header, anchor_read=None, aligner_reads=None):
         # Re-create master's output: the winner's POS/CIGAR on a bystander's
         # contig. Overwriting reference_id AFTER the real build is the only
         # faithful way -- passing anchor_read=template_read would be a no-op,
         # because the fixed template selection already picks the anchor first.
         out = real(template_read, ref_start, cigar_tuples, chimeric_result,
-                   header, anchor_read=anchor_read)
+                   header, anchor_read=anchor_read, aligner_reads=aligner_reads)
         out.reference_id = header.get_tid('chrA')   # the LOSER's contig
         return out
 
