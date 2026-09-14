@@ -29,11 +29,9 @@ from typing import Dict, List, Optional, Tuple, Set
 import pysam
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from .extract import canonical_splice_pair
 
-# Canonical splice site dinucleotides (reuse from consensus.py)
-CANONICAL_5SS = {'GT', 'GC'}
-CANONICAL_3SS = {'AG'}
+logger = logging.getLogger(__name__)
 
 # Splice junctions are coordinate-ambiguous: when the bases flanking the donor
 # and acceptor repeat, the SAME spliced product can be written with the intron
@@ -111,18 +109,13 @@ def _full_junction_anchor(full_events, junc_start: int, junc_end: int):
 
 
 def _canonical_within_window(start: int, end: int, seq: str,
-                             l_amb: int, r_amb: int) -> bool:
+                             l_amb: int, r_amb: int, strand: str = '+') -> bool:
     """True if ANY ambiguity-equivalent placement of the junction yields a
-    canonical (GT/GC..AG) motif. The biologically real junction is the canonical
-    placement, so an aligner that landed one bp off a canonical site within the
-    window still gets canonical credit."""
+    paired canonical motif (GT-AG, GC-AG, AT-AC) on this transcript strand.
+    An aligner that lands one bp off within the sequence-equivalence window
+    still gets canonical credit."""
     for s in range(-l_amb, r_amb + 1):
-        js, je = start + s, end + s
-        if js < 0 or je > len(seq) or je - 2 < 0:
-            continue
-        five_ss = seq[js:js + 2].upper()
-        three_ss = seq[je - 2:je].upper()
-        if five_ss in CANONICAL_5SS and three_ss in CANONICAL_3SS:
+        if canonical_splice_pair(seq, start + s, end + s, strand):
             return True
     return False
 
@@ -570,6 +563,7 @@ def score_segment(
     annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
     annotated_min_anchor: int = _ANNOTATED_SUPPORT_MIN_ANCHOR,
     aligner_full_events: Optional[List[CigarEvent]] = None,
+    strand: str = '+',
 ) -> SegmentScore:
     """
     Score a segment from one aligner based on its position in the read.
@@ -601,6 +595,7 @@ def score_segment(
             this once per run.
         annotated_min_anchor: minimum contiguous matched bases on the SHORTER
             flank of a junction for its annotated bonus to apply.
+        strand: Transcript strand ('+' or '-'); CIGAR coordinates stay genomic.
 
     Returns:
         SegmentScore with detailed breakdown
@@ -663,12 +658,12 @@ def score_segment(
                                 if idx + 1 < len(events) and events[idx + 1].op in (0, 7, 8) else 0)
                 min_anchor = min(left_anchor, right_anchor)
 
-            # Canonical motif, ambiguity-aware (any equivalent placement GT-AG).
+            # Paired canonical motif on the read strand, ambiguity-aware.
             is_canonical = False
             if seq and junc_start >= 0 and junc_end <= len(seq):
                 l_amb, r_amb = junction_ambiguity_window(junc_start, junc_end, seq)
                 is_canonical = _canonical_within_window(
-                    junc_start, junc_end, seq, l_amb, r_amb
+                    junc_start, junc_end, seq, l_amb, r_amb, strand
                 )
                 if is_canonical:
                     score_obj.n_canonical_junctions += 1
@@ -1208,6 +1203,7 @@ def select_best_chimeric(
                 score_result = score_segment(
                     seg_events, seg_type, chrom, genome, annotated_for_segments,
                     aligner_full_events=all_events[name],
+                    strand='-' if is_reverse else '+',
                 )
                 score_result.aligner = name
                 seg.scores[name] = score_result

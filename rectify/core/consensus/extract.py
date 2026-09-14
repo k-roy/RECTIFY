@@ -29,15 +29,21 @@ logger = logging.getLogger(__name__)
 # Many reads share the same 3' endpoint; this avoids repeated sequence lookups.
 _atract_cache: Dict[Tuple[str, int, str], dict] = {}
 
-# Canonical splice site dinucleotides
-CANONICAL_5SS = {'GT', 'GC'}  # 5' splice site (donor)
-CANONICAL_3SS = {'AG'}  # 3' splice site (acceptor)
+# Paired genomic left/right motifs, keyed by transcript strand. Keeping pairs
+# together admits AT-AC without also admitting AT-AG or GT-AC. The minus pairs
+# are reverse complements with the two genomic edges exchanged.
+_CANONICAL_PAIRS = {
+    '+': frozenset({('GT', 'AG'), ('GC', 'AG'), ('AT', 'AC')}),
+    '-': frozenset({('CT', 'AC'), ('CT', 'GC'), ('GT', 'AT')}),
+}
 
-_RC_TABLE = str.maketrans('ACGTNacgtn', 'TGCANtgcan')
 
-
-def _revcomp(seq: str) -> str:
-    return seq.translate(_RC_TABLE)[::-1].upper()
+def canonical_splice_pair(seq: str, start: int, end: int, strand: str) -> bool:
+    """Canonical paired motif at these exact genomic coordinates and strand."""
+    if start < 0 or end > len(seq) or end - start < 4:
+        return False
+    pair = (seq[start:start + 2].upper(), seq[end - 2:end].upper())
+    return pair in _CANONICAL_PAIRS.get(strand, ())
 
 
 @dataclass
@@ -200,17 +206,7 @@ def check_canonical_splice_sites(
         if start < 0 or end > len(seq):
             continue
 
-        if strand == '-':
-            # Minus-strand transcript orientation: genomic right edge is the
-            # donor and genomic left edge is the acceptor.
-            five_ss = _revcomp(seq[end - 2:end].upper())
-            three_ss = _revcomp(seq[start:start + 2].upper())
-        else:
-            # Plus-strand transcript orientation.
-            five_ss = seq[start:start + 2].upper()
-            three_ss = seq[end - 2:end].upper()
-
-        if five_ss in CANONICAL_5SS and three_ss in CANONICAL_3SS:
+        if canonical_splice_pair(seq, start, end, strand):
             canonical += 1
         else:
             non_canonical += 1
