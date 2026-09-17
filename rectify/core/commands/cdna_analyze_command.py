@@ -67,6 +67,15 @@ def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
         return 0
 
 
+def _is_rna_sense(rec: pysam.AlignedSegment) -> bool:
+    """True when the record is a `correct-cdna` consensus emitted RNA-sense
+    (``XN:i:1``, 3457ecc+), so its flag is the molecule's frame after alignment."""
+    try:
+        return int(rec.get_tag("XN")) == 1
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
 def _read_info_from_bam_record(rec: pysam.AlignedSegment,
                                 chrom_seq: str,
                                 tail_stats: Optional[Dict[str, int]] = None,
@@ -100,6 +109,26 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     chrom = rec.reference_name
     aln_start = rec.reference_start
     aln_end = rec.reference_end or aln_start
+
+    # Which end of the BAM SEQ carries the poly(A)?  `XO` was decided on the
+    # PRE-alignment record and describes the molecule in THAT record's BAM-SEQ
+    # frame.  `correct-cdna` emits every molecule RNA-sense (``XN:i:1``), so the
+    # post-align frame is fixed by the flag alone: flag 0 = sense as written =
+    # poly(A) at the RIGHT ('fwd'); flag 16 = the aligner reverse-complemented it
+    # = poly(T) at the LEFT ('rev').  Whenever the consensus re-aligns in the
+    # other frame from its pre-alignment record — a molecule parked on the
+    # chromosome instead of a construct contig, a 5'-truncated molecule whose
+    # clipped 5' part decided the pre-alignment strand — the carried XO is stale
+    # and the walkback runs on the WRONG end: Chanfreau planning/936 measured XO
+    # against the flag on 43 % of the reverse-aligned RPL20B molecules and every
+    # `corrected_3prime` of those sat at the 5' boundary.  On an oriented record
+    # the flag is authoritative and the disagreement is counted; a record without
+    # `XN` (pre-3457ecc output) keeps XO, the only frame label it has.
+    orient_tag = orient
+    if _is_rna_sense(rec):
+        orient = "rev" if rec.is_reverse else "fwd"
+        if orient != orient_tag and tail_stats is not None:
+            tail_stats["xo_frame_corrected"] = tail_stats.get("xo_frame_corrected", 0) + 1
 
     # Canonical cleavage anchor via walkback on post-align coords. The tail length
     # from the same walk is only meaningful when the tail is still in SEQ; a record
@@ -229,6 +258,12 @@ def run(args) -> int:
     log.info("  tail_len provenance: %d walkback (tail in SEQ), %d carried XA "
              "(pretrimmed), %d zero",
              tail_stats["walkback"], tail_stats["carried"], tail_stats["zero"])
+    n_frame_fixed = tail_stats.get("xo_frame_corrected", 0)
+    if n_frame_fixed:
+        log.info("  XO frame taken from the alignment flag on %d oriented molecules "
+                 "(%.1f%%) whose carried XO described the pre-alignment frame "
+                 "(planning/936: poly(A) side, strand and corrected_3prime follow the flag)",
+                 n_frame_fixed, 100.0 * n_frame_fixed / max(1, len(clusters)))
     if clusters and tail_stats["zero"] > 0.95 * len(clusters):
         # A silently dead column is worse than a loud one: the pretrim fix ran for a
         # full library with 100 % zeros and exit 0 before anyone noticed.
