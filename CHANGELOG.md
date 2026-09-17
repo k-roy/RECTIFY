@@ -137,6 +137,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **2H decides every candidate inside the walk, in the writer's order** (Codex
+  audit 2026-09-13/14). The move gates and the CIGAR surgery were consulted about
+  the HEAD of the ranking only, so a head the gates vetoed, or one the surgery
+  refused, kept the read on its stock placement while a permitted, writable
+  runner-up was never tried; and each N-op was dry-run on the original read, so
+  two moves each writable alone could conflict on a shared exon in the real
+  right-to-left write. `refine_read_junctions` now walks the sorted ranking per
+  candidate — the incumbent stops it, the gates run before the dry run, skips are
+  counted as `gate_vetoed_candidate_skipped` / `unrealizable_winner_skipped` —
+  right-to-left on an evolving trial copy, so each N-op is judged on the read the
+  writer will hand its surgery. The 2H policy tests are explicitly policy-only
+  (a documented `policy_only_surgery` fixture) and each file gained writable
+  controls that assert the final CIGAR.
+- **Resolver B2/B3 validate every relocated base, not only the scored window**
+  (CFX-03). The mismatch-flagged linear rescues chose a junction on `arb_seg`
+  query bases per side and then relocated the whole block past the split; on
+  the witness (exon 2 for 40 bases, then back into the intron) the window cleared
+  the margin while the read's mismatch burden rose 30 → 94. The whole block must
+  now beat the current placement by `arb_margin` as well; refusals are counted as
+  `arb_mm_whole_block_refused`.
+- **`cdna-analyze` takes a molecule's frame from the alignment flag on `XN:i:1`
+  records, never from the carried `XO`** (Chanfreau planning/936). `XO` names the
+  PRE-alignment frame; when the consensus re-aligns in the other frame (a
+  molecule parked on the chromosome instead of a construct contig, a
+  5'-truncated molecule whose clipped 5' part decided the pre-alignment strand)
+  the poly(A) walkback ran on the wrong end, the strand flipped and
+  `corrected_3prime` sat on the 5' boundary — 43 % of the reverse-aligned RPL20B
+  molecules. Disagreements are counted and reported; pre-`XN` records keep `XO`.
+- `test_correct_no_bam_warning` expected sub-floor 1-nt and 8-nt clips to be
+  rescued on proximity alone (the pre-floor contract); the fixture now straddles
+  `min_informative_clip_bp()` and asserts both outcomes. `test_restore_polya_from_parquet`
+  skips, with the reason on record, when the gitignored script or its metadata is absent.
+
 - Consensus canonical credit now includes paired AT-AC motifs on both strands;
   chimeric scoring uses the transcript strand and preserves equivalent placements.
 - Micro-exon provenance uses versioned `Xb` instead of overwriting cDNA `XB` and

@@ -29,16 +29,18 @@ broken is worse than no list at all.
 
 ---
 
-## Resolver B2 local scoring can worsen the whole emitted placement
+## Resolver B2 local scoring can worsen the whole emitted placement — fixed 2026-09-16
 
-- **Status:** reproduced on `af2f788`, 2026-09-13; not fixed here.
-- **Affected path:** Case B2 in `align/overhang_resolver.py` scores a short
-  window beside a proposed intron but relocates the complete terminal M block.
-- **Witness:** a synthetic `360M` becomes `200M300N160M` after a local score
-  improvement, while actual emitted-CIGAR mismatches rise from 30 to 94. No
-  scoring mocks were used. Biological frequency remains unmeasured.
-- **Fix direction:** score/validate all relocated bases, with both-strand
-  genuine-rescue controls. The mirrored B3 path needs the same review.
+- **Status:** fixed (CFX-03). Case B2 and its B3 mirror in
+  `align/overhang_resolver.py` now score EVERY relocated base
+  (`_whole_block_improves`): the whole block past / before the split must beat
+  the current placement by `arb_margin`, the same discipline the scored window
+  met. A rewrite that fails keeps the linear alignment and is counted as
+  `arb_mm_whole_block_refused`.
+- **Witness, now a test:** the synthetic `360M` that became `200M300N160M` with
+  mismatches 30 → 94 is refused; a real spliced tail / head still splices with 0
+  mismatches (`tests/test_resolver_whole_block_cfx03.py`). Biological frequency
+  of the witness class remains unmeasured.
 
 ## Canonical motif credit in consensus selection — fixed 2026-09-14
 
@@ -58,17 +60,45 @@ is obsolete. Their paired AT-AC support is already enabled by default; keep it
 on. The aggregation table's corresponding omission is repaired in the September
 13 audit changes. See [audit and validation](docs/development/2026-09-13-junction-audit.md).
 
-## Junction proposals rejected during surgery can hide a valid runner-up
+## Junction proposals rejected during surgery can hide a valid runner-up — fixed 2026-09-16
 
-- **Status:** reproduced on `af2f788`, 2026-09-13; not fixed here.
-- **Affected path:** `refine_read_junctions` keeps one winning proposal, then
-  `_apply_replacements_to_read` may refuse it without trying another candidate.
-- **Witness:** on `20M100N5D20M`, controlled scores rank acceptor +2 ahead of
-  +5. The +2 proposal leaves a forbidden adjacent 3D and is refused; +5 is
-  independently realizable as `20M105N20M`. This demonstrates a missing-candidate
-  mechanism, not a measured biological FN rate.
-- **Fix direction:** check realizability before selecting the winner, preserving
-  the incumbent and existing evidence gates; test interacting edits on a read.
+- **Status:** fixed. `refine_read_junctions` walks the sorted ranking and decides
+  everything PER CANDIDATE: the incumbent stops the walk; the move gates run
+  before the dry run and a vetoed candidate is skipped
+  (`gate_vetoed_candidate_skipped`); a candidate the surgery cannot write is
+  skipped (`unrealizable_winner_skipped`); the first survivor is the move. N-ops
+  are walked right-to-left, the writer's order, on an evolving trial copy, so an
+  N-op is judged on the read `_apply_replacements_to_read` will hand its surgery.
+- **Witnesses, now tests** (`tests/test_2h_realizable_ranking.py`): the original
+  `20M100N5D20M` +2/+5; Codex CFX-12 (a) a gate-vetoed head hiding an annotated
+  canonical runner-up on `20M100N20M`; (b) two individually writable moves on
+  `20M100N5M100N20M` that conflict on the shared `5M` — the second N's move is
+  accepted, the first N's +3 is refused on the updated read and its +1 runner-up
+  is proposed instead (joint result `21M100N1M100N23M`). The 19 policy tests
+  that asserted never-writable proposals are explicitly policy-only, each file
+  with writable controls that assert the final CIGAR.
+- **Still open, a Kevin decision:** ISSUE-047 — an acceptor-only move is realized
+  as `N` + a glued `kD`, never as a block shift, so with ISSUE-031 the
+  cryptic-acceptor discovery path yields no moves at surgery. Two tests
+  xfail(strict) on it; the fix needs a review class before default-on.
+
+## `cdna-analyze` put the poly(A) on the wrong end of re-framed molecules — fixed 2026-09-16
+
+- **Status:** fixed (Chanfreau planning/936). On an `XN:i:1` record (every
+  `correct-cdna` consensus since 3457ecc) the alignment flag is the molecule's
+  frame; the carried `XO` describes the PRE-alignment frame and goes stale
+  whenever the consensus re-aligns in the other frame (a reporter molecule
+  parked on the chromosome instead of the construct contig, a 5'-truncated
+  molecule whose clipped 5' part decided the pre-alignment strand). The walkback,
+  the TSS walk-forward and the strand now follow the flag; disagreements are
+  counted and reported (`XO frame taken from the alignment flag on N oriented
+  molecules`). Records without `XN` keep `XO`.
+- **Measured before the fix:** XO disagreed with the flag on 43 % of the
+  reverse-aligned RPL20B molecules and 13.6 % of the forward-aligned construct
+  ones, concentrated on 5'-truncated molecules; every mis-called
+  `corrected_3prime` sat at the molecule's 5' boundary. Any `cdna-analyze` table
+  written before this fix on a library with re-framed molecules should be
+  regenerated (`cdna-analyze` only; the consensus BAM is unchanged).
 
 ## Legacy Station B provenance needs reprocessing
 
