@@ -123,7 +123,14 @@ def rpl22b_bam(tmp_path_factory):
     header = {'HD': {'VN': '1.6', 'SO': 'coordinate'},
               'SQ': [{'SN': c, 'LN': n} for c, n in contigs]}
     recs = []
-    for clip in (1, 8, 57):          # 1 bp must rescue, not only comfortable clips
+    # 1 and 8 nt are BELOW the informative-clip floor (`min_informative_clip_bp()`
+    # = 10: no clip shorter than that can be told from chance anywhere in the
+    # searched space, Kevin 2026-09-07 "every landing meets the evidence floor"),
+    # so they must stay soft-clipped even at an annotated 3'SS; 12 and 57 nt are
+    # evidence at the attachment tier and must become the exon block.  The
+    # original fixture (planning/691) expected the 1-nt clip to rescue on
+    # proximity alone — that was the pre-floor contract.
+    for clip in (1, 8, 12, 57):
         a = pysam.AlignedSegment()
         a.query_name = f'rpl22b_clip{clip}'
         a.query_sequence = g[_I_S - _BODY:_I_S] + g[_I_E:_I_E + clip]
@@ -175,10 +182,17 @@ def test_cli_warns_then_the_remediation_works(rpl22b_bam, tmp_path):
     assert 'NO CORRECTED BAM WAS WRITTEN' not in r2.stderr
     assert out_bam.exists()
 
+    from rectify.core.splice.splice_aware_5prime import min_informative_clip_bp
+    floor = min_informative_clip_bp()
+    assert 8 < floor <= 12, floor          # the fixture straddles the floor on purpose
     with pysam.AlignmentFile(str(out_bam)) as f:
         cigars = {a.query_name: a.cigarstring for a in f}
-    assert len(cigars) == 3
+    assert len(cigars) == 4
     for name, cig in cigars.items():
         clip = int(name.rsplit('clip', 1)[1])
-        # 321 = the RPL22B intron; the clip becomes an exon block beyond it.
-        assert f'321N{clip}M' in cig, f'{name}: {cig}'
+        if clip >= floor:
+            # 321 = the RPL22B intron; the clip becomes an exon block beyond it.
+            assert f'321N{clip}M' in cig, f'{name}: {cig}'
+        else:
+            # below the floor the clip is not evidence: the read keeps its soft clip
+            assert cig == f'{_BODY}M{clip}S', f'{name}: {cig}'

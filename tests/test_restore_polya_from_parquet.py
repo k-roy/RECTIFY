@@ -37,6 +37,17 @@ _METADATA_TSV = (
 )
 _CAT3_PLUS_2 = "79f61403-cf63-4522-b555-569590dc4304"
 
+# `scripts/validation_data/` is gitignored (.gitignore: the rebuild scripts and
+# their trim metadata are collaborator data that live only in the root checkout),
+# so in a clean clone or a worktree neither the script nor the metadata exists.
+# That is an absent-fixture condition, not a defect: skip with the reason on
+# record instead of failing at `spec.loader.exec_module`.
+pytestmark = pytest.mark.skipif(
+    not (_SCRIPT_PATH.exists() and _METADATA_TSV.exists() and _SOURCE_BAM.exists()),
+    reason="restore_polya_from_parquet.py / its trim metadata are gitignored collaborator "
+           "data present only in the root checkout",
+)
+
 
 def _load_script_module():
     """Import the script as a module from its file path (it lives outside the package)."""
