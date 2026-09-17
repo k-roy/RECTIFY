@@ -1044,6 +1044,41 @@ def _bump(stats: ResolverStats, key: str, n: int = 1) -> None:
     stats.extra[key] = stats.extra.get(key, 0) + n
 
 
+def _whole_block_improves(dq: str, q_lo: int, q_hi: int, chrom_seq: str,
+                          cur_ref_start: int, new_ref_start: int,
+                          cfg: 'ResolverConfig', stats: ResolverStats) -> bool:
+    """CFX-03 (Codex audit 2026-09-13): the B2/B3 rewrites score a LOCAL window
+    (``arb_seg`` query bases on each side of the proposed junction) but relocate
+    the WHOLE terminal block past the split — every base of it moves by the
+    intron length.  A window that improves says nothing about the bases beyond
+    it: on the witness (``360M`` → ``200M300N160M``, exon-2 for 40 bases and then
+    back into the intron) the 80-base window cleared the margin while the
+    read's actual mismatch burden rose 30 → 94.  So validate ALL relocated bases
+    ``dq[q_lo:q_hi]`` against both placements under the same discipline the
+    window had to meet: the new placement must beat the current one by
+    ``arb_margin`` over the whole block.  Refusals are counted as
+    ``arb_mm_whole_block_refused`` and the read keeps its linear alignment."""
+    seg = dq[q_lo:q_hi]
+    n = len(seg)
+    if n <= 0:
+        return False
+    if (cur_ref_start < 0 or new_ref_start < 0
+            or cur_ref_start + n > len(chrom_seq) or new_ref_start + n > len(chrom_seq)):
+        _bump(stats, 'arb_mm_whole_block_refused')
+        return False
+    ed_cur = hp_edit_distance_bounded(seg, chrom_seq[cur_ref_start:cur_ref_start + n])
+    bound = ed_cur - cfg.arb_margin
+    if bound < 0:
+        _bump(stats, 'arb_mm_whole_block_refused')
+        return False
+    ed_new = hp_edit_distance_bounded(seg, chrom_seq[new_ref_start:new_ref_start + n],
+                                      cutoff=bound)
+    if ed_new > bound:
+        _bump(stats, 'arb_mm_whole_block_refused')
+        return False
+    return True
+
+
 def _boundary_kinds(strand: str,
                     acceptor_classes: str = 'canonical') -> Tuple[str, str]:
     """(left_kind, right_kind) of an intron's genomic boundaries."""
@@ -1573,6 +1608,13 @@ def _rearbitrate_read(
                         ed_cur_o = ed_cur
                         best_o = o
             if best_overall is not None:
+                # CFX-03: the whole tail past the split is relocated to the new
+                # acceptor; every base of it must be explained better there.
+                _, d_new, e_new = best_overall
+                if not _whole_block_improves(dq, m_qs + best_o, m_qs + mlen, chrom_seq,
+                                             d_new, e_new, cfg, stats):
+                    best_overall = None
+            if best_overall is not None:
                 _, d_new, e_new = best_overall
                 new_ct = ct[:last_m] + [(0, best_o), (3, e_new - d_new),
                                         (0, mlen - best_o)] + ct[last_m + 1:]
@@ -1666,6 +1708,13 @@ def _rearbitrate_read(
                         best_overall = win
                         ed_cur_o = ed_cur
                         best_o = o
+            if best_overall is not None:
+                # CFX-03 mirror: the whole head before the split is relocated to
+                # end at the new donor; validate every base of it.
+                _, d_new, e_new = best_overall
+                if not _whole_block_improves(dq, m_qs, m_qs + best_o, chrom_seq,
+                                             block_ref, d_new - best_o, cfg, stats):
+                    best_overall = None
             if best_overall is not None:
                 _, d_new, e_new = best_overall
                 new_ct = ct[:first_m] + [(0, best_o), (3, e_new - d_new),
