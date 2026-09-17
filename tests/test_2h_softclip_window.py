@@ -37,6 +37,15 @@ sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice import junction_refiner as jr  # noqa: E402
 
+@pytest.fixture(autouse=True)
+def _decision_layer_only(monkeypatch):
+    """These tests pin the RANKING (the decision layer) on hermetic reads whose bases match
+    nowhere, so every move is unwritable. Since 97a8438 the ranking walks past candidates the
+    surgery cannot write (`_realizable`); stub the probe so the decision is still observable.
+    Surgery-level truth is tested in test_2h_realizable_ranking.py."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
+
+
 CHROM = "chrT"
 GLEN = 600
 REF_START = 150
@@ -140,9 +149,8 @@ def test_positional_signal_reads_the_same_window(monkeypatch):
         return real(genome_seq, q, q_split, ne, new_je, **kw)
 
     monkeypatch.setattr(jr, "_positional_signal", spy)
-    # NOTE (2026-09-09): 018 monkeypatched `jr._realizable` here. That realizability PROBE is
-    # 018-only machinery and is NOT on master, so nothing drops the candidate before the veto
-    # path — the veto path is reached without help. See the module note below.
+    # (`jr._realizable` is stubbed by the autouse fixture, as 018 did here, so the candidate
+    # reaches the veto path instead of being dropped as unwritable.)
     read = _read(CIGAR_CLIPPED, QUERY)
     # alternative wins by 1.0 < hold_margin 2.0 -> veto path -> positional gate consulted
     _capture_scorer(monkeypatch, read, "+", {INCUMBENT: 3.0, ALTERNATIVE: 2.0},
@@ -228,12 +236,9 @@ def test_leading_clip_does_not_change_the_decision(clip):
         return [(s, e, ns, ne) for (_, s, e, ns, ne) in repl]
 
     unclipped = decide(_decision_read(genome, 0))
-    # 🔴 ON MASTER THE DECISION AND THE WRITE DISAGREE, and this assertion pins that.
     # The read's bases pick the alternative (200, 303). ISSUE-031 refuses to WRITE it (the
-    # acceptor-only +3 needs a 3I glued to the N), but on master nothing removes it from the
-    # RANKING first — 018 added a realizability probe for exactly that and the probe is not
-    # here. So `decide()` still reports the move that the surgery will then refuse.
-    # That gap is real and tracked; it is not what this test is about. The point stands
-    # either way: a leading clip must not change the decision.
+    # acceptor-only +3 needs a 3I glued to the N — ISSUE-047), and since 97a8438 the ranking
+    # would walk past it as unrealizable; the autouse fixture stubs that probe because the
+    # point here is the DECISION: a leading clip must not change it.
     assert unclipped == [(200, 300, 200, 303)], unclipped
     assert decide(_decision_read(genome, clip)) == unclipped

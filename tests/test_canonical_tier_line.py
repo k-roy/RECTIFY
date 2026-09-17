@@ -83,17 +83,32 @@ def _read(cigar=CLEAN_CIGAR):
     return r
 
 
-def _winner(monkeypatch, genome, scores, annotated=(ALTERNATIVE,), window=10):
+def _winner(monkeypatch, genome, scores, annotated=(ALTERNATIVE,), window=10, cigar=CLEAN_CIGAR):
     def fake_score(query, q_split, js, je, genome_seq, **kw):
         return scores[(js, je)], 0
 
     monkeypatch.setattr(jr, "_score_junction", fake_score)
     idx = jr._build_junction_index({(CHROM, s, e) for s, e in scores})
     repl = jr.refine_read_junctions(
-        _read(), idx, {(CHROM, s, e) for s, e in annotated}, genome, "+",
+        _read(cigar), idx, {(CHROM, s, e) for s, e in annotated}, genome, "+",
         boundary_error_window=window,
     )
     return (repl[0][3], repl[0][4]) if repl else None
+
+
+
+@pytest.fixture
+def policy_only_surgery(monkeypatch):
+    """POLICY-ONLY SCOPE.  The tests that take this fixture assert a ranking /
+    gate DECISION on a synthetic read over a filler genome, where the move under
+    test is not writable: a boundary shift on such a read can only be realized
+    with a compensating I/D beside the N, which ISSUE-031 refuses.  Since 2H
+    ranks only candidates the surgery can write, the probe is stubbed to
+    "writable" here so the assertion stays about the decision.  Whether a
+    decision can be MATERIALIZED is tested separately: the writable controls at
+    the bottom of this file (reads carrying the deletion the move absorbs, final
+    CIGAR asserted) and tests/test_2h_realizable_ranking.py."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +145,7 @@ def test_a_clean_non_AG_acceptor_is_still_scored(context):
 
 
 @pytest.mark.parametrize("context", ["CGG", "CAT"])
-def test_a_clean_non_AG_acceptor_moves_to_the_annotated_GT_AG(monkeypatch, context):
+def test_a_clean_non_AG_acceptor_moves_to_the_annotated_GT_AG(monkeypatch, context, policy_only_surgery):
     """The bc1283c7 / 12b2bc34 case, end to end, with the real pre-filter on.
 
     The alternative even scores slightly WORSE on read evidence (as it did for
@@ -152,7 +167,7 @@ def test_a_clean_proper_junction_is_still_skipped(monkeypatch, context):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("context", ["CGG", "CAT"])
-def test_a_non_AG_incumbent_forfeits_is_alt_priority(monkeypatch, context):
+def test_a_non_AG_incumbent_forfeits_is_alt_priority(monkeypatch, context, policy_only_surgery):
     """At an EXACT tie the canonical alternative wins (the 12b2bc34 shape)."""
     assert _winner(monkeypatch, _genome(context),
                    {INCUMBENT: 1.407, ALTERNATIVE: 1.407}, window=0) == ALTERNATIVE
@@ -186,10 +201,51 @@ def test_a_non_AG_candidate_does_not_collect_the_canonical_prior(monkeypatch):
                    {INCUMBENT: 0.834, ALTERNATIVE: 0.834 + gap}, window=0) is None
 
 
-def test_the_prior_is_what_carries_a_worse_scoring_canonical_alternative(monkeypatch):
+def test_the_prior_is_what_carries_a_worse_scoring_canonical_alternative(monkeypatch, policy_only_surgery):
     """Sanity: inside the prior the canonical alternative wins, outside it loses."""
     g = _genome("CAT")
     inside = {INCUMBENT: 0.834, ALTERNATIVE: 0.834 + _CANONICAL_HP_PRIOR - 0.01}
     outside = {INCUMBENT: 0.834, ALTERNATIVE: 0.834 + _CANONICAL_HP_PRIOR + 0.01}
     assert _winner(monkeypatch, g, inside) == ALTERNATIVE
     assert _winner(monkeypatch, g, outside) is None
+
+
+# ---------------------------------------------------------------------------
+# Writable controls: the same line, on a move the surgery CAN write
+# ---------------------------------------------------------------------------
+
+class TestWritableControls:
+    """``50M100N6D44M`` -> acceptor +6 absorbs the deletion (``50M106N44M``), so
+    the canonical-prior decision materializes for real and the CIGAR is
+    asserted.  The 6D sits at the boundary, so the real pre-filter (window 10)
+    sees a boundary error and scores the N-op on its own."""
+
+    D6 = [(0, 50), (3, 100), (2, 6), (0, 44)]
+
+    def _proposals(self, monkeypatch, genome, scores):
+        def fake_score(query, q_split, js, je, genome_seq, **kw):
+            return scores[(js, je)], 0
+        monkeypatch.setattr(jr, "_score_junction", fake_score)
+        idx = jr._build_junction_index({(CHROM, s, e) for s, e in scores})
+        r = _read(self.D6)
+        repl = jr.refine_read_junctions(
+            r, idx, {(CHROM, *ALTERNATIVE)}, genome, "+", boundary_error_window=10)
+        return r, repl
+
+    def test_the_move_is_writable_by_the_real_surgery(self):
+        assert jr._realizable(_read(self.D6), 1, *INCUMBENT, *ALTERNATIVE,
+                              _genome("CGG"), "+", 0.25, 15)
+
+    @pytest.mark.parametrize("context", ["CGG", "CAT"])
+    def test_a_non_AG_acceptor_moves_and_the_cigar_follows(self, monkeypatch, context):
+        r, repl = self._proposals(monkeypatch, _genome(context),
+                                  {INCUMBENT: 0.834, ALTERNATIVE: 1.000})
+        assert [(x[3], x[4]) for x in repl] == [ALTERNATIVE]
+        out, applied = jr._apply_replacements_to_read(r, repl, _genome(context), "+", 0.25, 15)
+        assert applied and out.cigarstring == "50M106N44M"
+
+    @pytest.mark.parametrize("context", ["CAG", "AAG"])
+    def test_a_proper_incumbent_holds_even_when_the_move_is_writable(self, monkeypatch, context):
+        r, repl = self._proposals(monkeypatch, _genome(context),
+                                  {INCUMBENT: 1.407, ALTERNATIVE: 1.407})
+        assert repl == []

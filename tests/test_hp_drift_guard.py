@@ -29,7 +29,25 @@ RECTIFY_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(RECTIFY_ROOT))
 
 from rectify.core.splice.junction_refiner import _hp_run_across, refine_read_junctions
+from rectify.core.splice import junction_refiner as jr
 from rectify.core.splice.junction_scoring import _D, _EQ, _N
+
+
+@pytest.fixture
+def policy_only_surgery(monkeypatch):
+    """POLICY-ONLY SCOPE.  The tests that take this fixture assert a ranking /
+    gate DECISION on a synthetic read over a filler genome, where the move under
+    test is not writable: a boundary shift on such a read can only be realized
+    with a compensating I/D beside the N, which ISSUE-031 refuses.  Since 2H
+    ranks only candidates the surgery can write, the probe is stubbed to
+    "writable" here so the assertion stays about the decision.  Whether a
+    decision can be MATERIALIZED is tested separately: tests/test_2h_realizable_ranking.py.  This file has no writable
+    control of its own: the into-run drift on the undercalled read needs an I
+    beside the N, which the indel-burden invariant refuses before the HP
+    exemption is reached; the guard's VETO (`test_guard_vetoes_the_drift`) is a
+    real decision either way."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
+
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +153,7 @@ def test_true_acceptor_is_a_transition_and_drift_is_inside_run():
     assert _hp_run_across(GENOME, A + 1, 4) == 8       # drift +1: inside the 8-A run
 
 
-def test_unguarded_replacer_drifts_into_the_homopolymer():
+def test_unguarded_replacer_drifts_into_the_homopolymer(policy_only_surgery):
     """With no guard (margin 0), the better-scoring intron-grown placement wins."""
     assert _acceptors_after_refine(hp_drift_margin=0.0) == A + 1
 
@@ -158,7 +176,7 @@ def test_guard_margin_is_hp_specific():
     assert _hp_run_across(GENOME, A + 1, 4) == 8       # the drift: guarded (inside the run)
 
 
-def test_margin_zero_is_byte_identical_to_no_guard():
+def test_margin_zero_is_byte_identical_to_no_guard(policy_only_surgery):
     """hp_drift_margin=0.0 must not change any decision (the shipped default off).
     The undercalled read drifts to A+1 both with the param unset and =0.0."""
     # param unset uses the 0.0 default; explicit 0.0 must match.

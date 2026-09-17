@@ -63,7 +63,7 @@ def _genome(*specs):
     return "".join(g)
 
 
-def _read():
+def _read(cigar=CIGAR):
     header = pysam.AlignmentHeader.from_dict(
         {"HD": {"VN": "1.6"}, "SQ": [{"SN": CHROM, "LN": GLEN}]}
     )
@@ -72,9 +72,10 @@ def _read():
     r.reference_id = 0
     r.reference_start = REF_START
     r.mapping_quality = 60
-    r.cigartuples = CIGAR
-    r.query_sequence = "ACGT" * 25
-    r.query_qualities = pysam.qualitystring_to_array("I" * 100)
+    r.cigartuples = cigar
+    n = sum(l for op, l in cigar if op in (0, 1, 4, 7, 8))
+    r.query_sequence = ("ACGT" * (n // 4 + 1))[:n]
+    r.query_qualities = pysam.qualitystring_to_array("I" * n)
     return r
 
 
@@ -89,6 +90,21 @@ def _winner(monkeypatch, genome, scores, annotated=(), strand="+", window=0):
         boundary_error_window=window,
     )
     return (repl[0][3], repl[0][4]) if repl else None
+
+
+
+@pytest.fixture
+def policy_only_surgery(monkeypatch):
+    """POLICY-ONLY SCOPE.  The tests that take this fixture assert a ranking /
+    gate DECISION on a synthetic read over a filler genome, where the move under
+    test is not writable: a boundary shift on such a read can only be realized
+    with a compensating I/D beside the N, which ISSUE-031 refuses.  Since 2H
+    ranks only candidates the surgery can write, the probe is stubbed to
+    "writable" here so the assertion stays about the decision.  Whether a
+    decision can be MATERIALIZED is tested separately: the writable controls at
+    the bottom of this file (reads carrying the deletion the move absorbs, final
+    CIGAR asserted) and tests/test_2h_realizable_ranking.py."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +171,7 @@ def test_an_annotated_atac_incumbent_is_protected_by_the_evidence_gate(monkeypat
                    annotated=(INTRON,)) is None
 
 
-def test_that_protection_still_yields_to_a_full_unit_of_evidence(monkeypatch):
+def test_that_protection_still_yields_to_a_full_unit_of_evidence(monkeypatch, policy_only_surgery):
     g = _genome((*INTRON, "AT", "AC"), (*ALT_A, "GT", "AG"))
     assert _winner(monkeypatch, g, {INTRON: 1.5, ALT_A: 0.2},
                    annotated=(INTRON,)) == ALT_A
@@ -171,7 +187,7 @@ def test_a_clean_atac_junction_is_not_re_examined_by_the_pre_filter(monkeypatch)
 # Consumer 2: an AT-AC CANDIDATE competes at canonical rank
 # ---------------------------------------------------------------------------
 
-def test_an_atac_candidate_collects_the_canonical_prior(monkeypatch):
+def test_an_atac_candidate_collects_the_canonical_prior(monkeypatch, policy_only_surgery):
     """Incumbent broken, so the prior is live; the AT-AC alternative scores
     WORSE on read evidence and is carried by the discount."""
     g = _genome((*INTRON, "AA", "CC"), (*ALT_A, "AT", "AC"))
@@ -189,7 +205,7 @@ def test_an_atac_candidate_outside_the_prior_still_loses(monkeypatch):
                     ALT_A: 0.834 + _CANONICAL_HP_PRIOR + 0.01}) is None
 
 
-def test_a_gt_ag_candidate_beats_an_atac_one_at_equal_score(monkeypatch):
+def test_a_gt_ag_candidate_beats_an_atac_one_at_equal_score(monkeypatch, policy_only_surgery):
     """`_ATAC_TIER` is 1, so the major class takes the tie."""
     g = _genome((*INTRON, "AA", "CC"), (*ALT_A, "AT", "AC"), (*ALT_B, "GT", "AG"))
     assert jr._canonical_tier(*ALT_A, g, "+") == _ATAC_TIER
@@ -198,9 +214,60 @@ def test_a_gt_ag_candidate_beats_an_atac_one_at_equal_score(monkeypatch):
                    {INTRON: 0.834, ALT_A: 0.2, ALT_B: 0.2}) == ALT_B
 
 
-def test_an_atac_candidate_beats_a_broken_one_at_equal_score(monkeypatch):
+def test_an_atac_candidate_beats_a_broken_one_at_equal_score(monkeypatch, policy_only_surgery):
     """And it outranks anything outside the grammar."""
     g = _genome((*INTRON, "AA", "CC"), (*ALT_A, "AT", "AC"), (*ALT_B, "AT", "AG"))
     assert jr._canonical_tier(*ALT_B, g, "+") >= 4
     assert _winner(monkeypatch, g,
                    {INTRON: 0.834, ALT_A: 0.2, ALT_B: 0.2}) == ALT_A
+
+
+# ---------------------------------------------------------------------------
+# Writable control: an AT-AC candidate carried by the prior, materialized
+# ---------------------------------------------------------------------------
+
+class TestWritableControls:
+    """A PURE SLIDE the fast path writes without any indel: the 8 bases
+    [200,208) and [300,308) are both ``ATCCCCAC``, so the incumbent [200,300)
+    (AT..CC — HALF a pair, broken) slides +8 onto [208,308) (AT..AC, the pair,
+    `_ATAC_TIER`).  The prior decides on a writable move and the CIGAR follows
+    (``50M100N50M`` -> ``58M100N42M``)."""
+
+    ALT = (208, 308)
+
+    @staticmethod
+    def _genome():
+        g = list("C" * GLEN)
+        g[200:208] = list("ATCCCCAC")
+        g[300:308] = list("ATCCCCAC")
+        g[208:210] = list("AT")
+        g[298:300] = list("CC")
+        return "".join(g)
+
+    def _run(self, monkeypatch, scores):
+        def fake_score(query, q_split, js, je, genome_seq, **kw):
+            return scores[(js, je)], 0
+        monkeypatch.setattr(jr, "_score_junction", fake_score)
+        idx = jr._build_junction_index({(CHROM, s, e) for s, e in scores})
+        r = _read()
+        repl = jr.refine_read_junctions(r, idx, set(), self._genome(), "+",
+                                        boundary_error_window=0)
+        out, applied = jr._apply_replacements_to_read(r, repl, self._genome(), "+", 0.25, 15)
+        return repl, (out.cigarstring if applied else None)
+
+    def test_frame(self):
+        g = self._genome()
+        assert jr._canonical_tier(*INTRON, g, "+") > _CANONICAL_TIER_MAX
+        assert jr._canonical_tier(*self.ALT, g, "+") == _ATAC_TIER
+        assert jr._realizable(_read(), 1, *INTRON, *self.ALT, g, "+", 0.25, 15)
+
+    def test_an_atac_candidate_carried_by_the_prior_materializes(self, monkeypatch):
+        repl, cig = self._run(monkeypatch,
+                              {INTRON: 0.834, self.ALT: 0.834 + _CANONICAL_HP_PRIOR - 0.01})
+        assert [(x[3], x[4]) for x in repl] == [self.ALT]
+        assert cig == "58M100N42M"
+
+    def test_outside_the_prior_it_still_loses_even_though_writable(self, monkeypatch):
+        repl, cig = self._run(monkeypatch,
+                              {INTRON: 0.834, self.ALT: 0.834 + _CANONICAL_HP_PRIOR + 0.01})
+        assert repl == [] and cig is None

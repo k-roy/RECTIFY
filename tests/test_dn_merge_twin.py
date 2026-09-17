@@ -85,6 +85,21 @@ def _winner(monkeypatch, scores, annotated=frozenset()):
     return (repl[0][3], repl[0][4]) if repl else None
 
 
+
+@pytest.fixture
+def policy_only_surgery(monkeypatch):
+    """POLICY-ONLY SCOPE.  The tests that take this fixture assert a ranking /
+    gate DECISION on a synthetic read over a filler genome, where the move under
+    test is not writable: a boundary shift on such a read can only be realized
+    with a compensating I/D beside the N, which ISSUE-031 refuses.  Since 2H
+    ranks only candidates the surgery can write, the probe is stubbed to
+    "writable" here so the assertion stays about the decision.  Whether a
+    decision can be MATERIALIZED is tested separately: the writable controls at
+    the bottom of this file (reads carrying the deletion the move absorbs, final
+    CIGAR asserted) and tests/test_2h_realizable_ranking.py."""
+    monkeypatch.setattr(jr, "_realizable", lambda *a, **k: True)
+
+
 # ---------------------------------------------------------------------------
 # _dn_run_extent
 # ---------------------------------------------------------------------------
@@ -136,13 +151,13 @@ def test_both_annotated_keeps_the_reads_own_form(monkeypatch):
                    annotated={RAW, TWIN}) is None
 
 
-def test_a_genuine_alternative_is_still_reachable(monkeypatch):
+def test_a_genuine_alternative_is_still_reachable(monkeypatch, policy_only_surgery):
     """Only the twin is special: real candidates are scored as before."""
     assert _winner(monkeypatch, {RAW: 4.7, TWIN: 0.0, OTHER: 0.5},
                    annotated={OTHER}) == OTHER
 
 
-def test_a_read_without_an_abutting_deletion_is_unaffected(monkeypatch):
+def test_a_read_without_an_abutting_deletion_is_unaffected(monkeypatch, policy_only_surgery):
     """No D means no twin — (200,303) is then an ordinary candidate."""
     def fake_score(query, q_split, js, je, genome_seq, **kw):
         return {RAW: 4.7, TWIN: 0.0}[(js, je)], 0
@@ -154,3 +169,24 @@ def test_a_read_without_an_abutting_deletion_is_unaffected(monkeypatch):
         boundary_error_window=0,
     )
     assert [(r[3], r[4]) for r in repl] == [TWIN]
+
+
+# ---------------------------------------------------------------------------
+# Writable control: the annotated-twin relabel is a real, writable move
+# ---------------------------------------------------------------------------
+
+def test_writable_control_the_annotated_twin_relabel_materializes(monkeypatch):
+    """The 3178286c case IS writable — absorbing the abutting 3D into the N is
+    exactly the surgery's delta_end > 0 path with no query bases to re-home —
+    so it is asserted through the real surgery to the final CIGAR."""
+    def fake_score(query, q_split, js, je, genome_seq, **kw):
+        return {RAW: 4.7, TWIN: 3.5}[(js, je)], 0
+
+    monkeypatch.setattr(jr, "_score_junction", fake_score)
+    idx = jr._build_junction_index({(CHROM, *RAW), (CHROM, *TWIN)})
+    r = _read()
+    repl = jr.refine_read_junctions(r, idx, {(CHROM, *TWIN)}, GENOME, "+",
+                                    boundary_error_window=0)
+    assert [(x[3], x[4]) for x in repl] == [TWIN]
+    out, applied = jr._apply_replacements_to_read(r, repl, GENOME, "+", 0.25, 15)
+    assert applied and out.cigarstring == "50M103N47M"

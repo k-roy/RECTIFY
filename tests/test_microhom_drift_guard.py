@@ -328,11 +328,13 @@ def test_positional_signal_favours_the_real_cryptic():
     assert _positional_signal(PG_GENOME, r.query_sequence, 40, PG_NE, PG_NE) is None
 
 
+@pytest.mark.xfail(strict=True, reason='ISSUE-047: the surgery realizes an acceptor-only move as N + a glued kD (never a block shift), ISSUE-031 refuses that glue, and 2H now ranks only realizable candidates — so the cryptic acceptor is undiscoverable AT SURGERY. On master before realizability this test pinned a proposal the surgery silently refused (40M90N16M stayed). Needs the block-shift surgery + a review class, not a re-pin.')
 def test_frame_check_cryptic_is_discoverable_and_in_microhomology():
     assert _pg_acc() == PG_JE                                  # guard OFF: discovered
     assert _move_microhomology(PG_GENOME, PG_NS, PG_NE, PG_NS, PG_JE) >= 0.5   # trips the flag
 
 
+@pytest.mark.xfail(strict=True, reason='ISSUE-047: the surgery realizes an acceptor-only move as N + a glued kD (never a block shift), ISSUE-031 refuses that glue, and 2H now ranks only realizable candidates — so the cryptic acceptor is undiscoverable AT SURGERY. On master before realizability this test pinned a proposal the surgery silently refused (40M90N16M stayed). Needs the block-shift surgery + a review class, not a re-pin.')
 def test_positional_gate_spares_a_veto_band_cryptic():
     # margin alone vetoes the (drift-flagged, near-tie) move → held at incumbent
     assert _pg_acc(microhom_drift_margin=8.0) == PG_NE

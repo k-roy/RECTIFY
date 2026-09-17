@@ -688,6 +688,39 @@ def _positional_signal(genome_seq: str, q: str, q_split: int, ne: int, new_je: i
     return _semiglobal_ed(rescue, ref_inc) - _semiglobal_ed(rescue, ref_mov)
 
 
+def _realizable(
+    read: pysam.AlignedSegment,
+    cigar_idx: int,
+    ns: int,
+    ne: int,
+    new_js: int,
+    new_je: int,
+    genome_seq: str,
+    strand: str,
+    hp_pen: float,
+    W: int,
+) -> bool:
+    """True when ``_apply_junction_replacement`` would WRITE the move
+    ``(ns, ne) -> (new_js, new_je)`` for *read* — a dry run on a copy.
+
+    The surgery refuses a move for reasons the scorer never sees: the boundary-
+    shift guard, a reference/query span mismatch, the indel-burden invariant and
+    ISSUE-031's no-I/D-beside-the-N rule.  A candidate it refuses is not a
+    placement this read can carry, so the ranking in ``refine_read_junctions``
+    walks past it to the best candidate that CAN be written (Codex audit
+    2026-09-13, witness ``20M100N5D20M``: acceptor +2 leaves ``3D`` beside the
+    N and is refused; acceptor +5 absorbs the deletion and is realizable —
+    keeping only the head of the ranking hid the +5).  Any exception counts as a
+    refusal.  Originally 018's F1 probe (5b81d88), landed here on its own."""
+    try:
+        trial = read.__copy__()
+        return bool(_apply_junction_replacement(
+            trial, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand, hp_pen, W,
+        ))
+    except Exception:
+        return False
+
+
 def refine_read_junctions(
     read: pysam.AlignedSegment,
     all_junctions_idx: Dict[str, List[Tuple[int, int]]],
@@ -703,6 +736,7 @@ def refine_read_junctions(
     max_junction_size: Optional[int] = None,
     max_candidates_per_nop: Optional[int] = None,
     profile: Optional[JunctionRefineProfile] = None,
+    counters: Optional[Counter] = None,
     penalty_table: Optional[HpPenaltyTable] = None,
     motif_blind: bool = False,
     hold_margin: float = 0.0,
@@ -782,7 +816,21 @@ def refine_read_junctions(
 
     replacements = []
 
-    for cigar_idx, ns, ne, q_split in _iter_n_ops(read):
+    # The N-ops are walked RIGHT-TO-LEFT (descending cigar_idx), the order in which
+    # `_apply_replacements_to_read` writes them, on an evolving TRIAL copy of the
+    # read: each accepted move is applied to the trial before the next N-op is
+    # judged, so a candidate is dry-run against the read AS THE WRITER WILL SEE IT.
+    # Two moves that are each writable alone can conflict through a shared exon
+    # (Codex CFX-12, 2026-09-14: `20M100N5M100N20M`, first N +3 and second N -3
+    # both pass alone; written right-to-left the second leaves `2M`, the first is
+    # refused, and its +1 runner-up — writable on the updated read — was never
+    # tried).  Scoring is unaffected by the order: `q`, `q_split` and (ns, ne)
+    # come from the ORIGINAL read, and a rightward surgery never shifts the
+    # cigar index of an N-op to its left.  The trial is made lazily, so a read
+    # with no accepted move pays nothing.
+    trial: Optional[pysam.AlignedSegment] = None
+
+    for cigar_idx, ns, ne, q_split in reversed(list(_iter_n_ops(read))):
         q_split += q_clip   # index into query_sequence (see ISSUE-021 above)
         if profile is not None:
             profile.inc('n_ops_examined')
@@ -862,7 +910,7 @@ def refine_read_junctions(
         # ed≥1.0; within the sub-integer HP noise floor (|ed_A - ed_B| < 1.0)
         # canonical annotated junctions are preferred.
 
-        best_tuple = None   # best (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
+        ranked: List[tuple] = []   # every candidate (score_bin, pri2, pri3, is_novel, move_dist, js, je, delta)
         incumbent_score = None   # score_cmp of the current placement (for hold_margin)
 
         # Canonical tier of the current N-op determines tie-break priority ordering.
@@ -982,126 +1030,171 @@ def refine_read_junctions(
             else:
                 # Current junction is acceptably canonical: prefer it at equal score
                 candidate_tuple = (score_cmp, is_alt, tier_key, novel_key, move_dist, js, je, delta)
-            if best_tuple is None or candidate_tuple < best_tuple:
-                best_tuple = candidate_tuple
+            ranked.append(candidate_tuple)
 
-        if best_tuple is None:
+        if not ranked:
             continue
 
-        # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
-        # (the trailing `delta` is the scorer's applied slide, structurally 0;
-        #  kept so the tuple shape still mirrors _score_junction's contract.)
-        best_score_cmp = best_tuple[0]
-        _, _, _, _, _, new_js, new_je, _ = best_tuple
+        # --- The walk: every decision is PER CANDIDATE, in rank order --------
+        # The winner used to be the best-scoring candidate, full stop: the move
+        # gates and the surgery were consulted about the HEAD only, so a head the
+        # gates vetoed, or one the surgery refused, silently kept the read on its
+        # stock placement while a permitted, writable runner-up was never tried
+        # (Codex audit 2026-09-13/14: `20M100N5D20M` acceptor +2 refused by
+        # ISSUE-031 hides the +5 that absorbs the deletion; on `20M100N20M` a
+        # gate-vetoed non-canonical head hides an annotated canonical runner-up).
+        # Now the ranking is walked: the incumbent stops the walk (a lower-ranked
+        # move must not beat the no-edit option), a candidate the gates veto is
+        # skipped and counted, a candidate the surgery cannot write is skipped and
+        # counted, and the first candidate that survives both is the move.  The
+        # cheap gates run before the dry run.
+        ranked.sort()
 
-        moves = (new_js != ns or new_je != ne)
-        # Move gate.  Two priors against a marginally-better-scoring displacement:
-        #   * hold_margin      — a BLUNT prior: any move must beat the incumbent by it.
-        #   * hp_drift_margin   — a TARGETED prior: only a move that slides a boundary
-        #                         INTO a homopolymer run (the ubiquitous-undercall
-        #                         drift that fabricates false non-canonical junctions)
-        #                         must clear the extra margin; a move to a genuine
-        #                         sequence transition (a real non-canonical acceptor)
-        #                         is untouched, preserving motif-blind discovery.
-        # Both default to 0.0 → byte-identical incumbent behaviour.
-        eff_margin = hold_margin
-        if moves and hp_drift_margin > 0.0:
-            into_hp = (_hp_run_across(genome_seq, new_js, hp_drift_min_run) > 0 or
-                       _hp_run_across(genome_seq, new_je, hp_drift_min_run) > 0)
-            if into_hp:
-                eff_margin += hp_drift_margin
-                if profile is not None:
-                    profile.inc('hp_drift_flagged')
-        #   * microhom_drift_margin — the GENERAL analog of hp_drift_margin: a move
-        #     whose boundary shift sits in a local MICROHOMOLOGY context (a near-tandem
-        #     repeat at the drift distance, microhomology fraction >= microhom_threshold)
-        #     is the non-homopolymer drift that fabricates false non-canonical junctions
-        #     (spike-in-confirmed, HP-guard-blind). A move to a genuine transition (low
-        #     microhomology, a real non-canonical site) is untouched. Default 0.0 → off.
-        if moves and microhom_drift_margin > 0.0:
-            if _move_microhomology(genome_seq, ns, ne, new_js, new_je) >= microhom_threshold:
-                eff_margin += microhom_drift_margin
-                if profile is not None:
-                    profile.inc('microhom_drift_flagged')
-        #   * drift_near_tie_cap — a READ-EVIDENCE ceiling on the read-BLIND drift
-        #     margins (hp_drift + microhom_drift are decided from GENOMIC context only,
-        #     so on their own they can veto a move the READ strongly supports). When
-        #     > 0.0, cap the drift-added portion of eff_margin so the drift veto fires
-        #     only within a near-tie band: veto_margin = max(hold_margin,
-        #     min(eff_margin, drift_near_tie_cap)). hold_margin (read-agnostic blunt
-        #     prior) is NEVER capped. NOTE (honest framing — see MICROHOM_AUDIT_SYNTHESIS):
-        #     delta_improve, eff_margin and the cap all live on the SAME scalar (score)
-        #     axis, so the cap BOUNDS the read-blind discovery-loss (a move with
-        #     delta_improve >= cap is never drift-vetoed) but does NOT add a new
-        #     discriminating signal inside the (0, cap) band. Its value is STRUCTURAL:
-        #     it decouples hold_margin from the drift margins and makes the discovery-loss
-        #     ceiling explicit + tunable. Default 0.0 → cap disabled → byte-identical.
-        #   * drift_positional_gate — the read-evidence signal that CLOSES the read-blind
-        #     fault (the cap only BOUNDS it — same score axis).  When a drift-context move
-        #     would be vetoed, SPARE it if the read carries indel-robust POSITIONAL evidence
-        #     for the moved acceptor: `_positional_signal` (hard-anchored edit distance,
-        #     removing the scorer's free-k soft-clip escape) >= the gate.  This separates a
-        #     real cryptic (read matches the moved exon2) from an error-driven drift (read
-        #     matches the incumbent) INSIDE the delta near-tie band the cap cannot.  Default
-        #     0.0 → gate off → byte-identical.  (Acceptor moves only; donor/both-boundary
-        #     moves fall through to the margin/cap decision — conservative.)
-        if moves and eff_margin > 0.0 and incumbent_score is not None:
-            veto_margin = _effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)
-            if profile is not None and veto_margin < eff_margin:
-                profile.inc('near_tie_cap_applied')
-            if best_score_cmp > incumbent_score - veto_margin:
-                spared = False
-                if drift_positional_gate > 0.0:
-                    psig = _positional_signal(genome_seq, q, q_split, ne, new_je)
-                    if psig is not None and psig >= drift_positional_gate:
-                        spared = True
+        def _vetoed(cand_score: float, new_js: int, new_je: int) -> bool:
+            """The move gates for ONE candidate: the blunt/targeted margins with
+            the near-tie cap and the positional spare, then the annotated-canonical
+            evidence gate (the R1 class).  Profile counters are per candidate."""
+            if incumbent_score is None:
+                return False
+            # Move gate.  Two priors against a marginally-better-scoring displacement:
+            #   * hold_margin      — a BLUNT prior: any move must beat the incumbent by it.
+            #   * hp_drift_margin   — a TARGETED prior: only a move that slides a boundary
+            #                         INTO a homopolymer run (the ubiquitous-undercall
+            #                         drift that fabricates false non-canonical junctions)
+            #                         must clear the extra margin; a move to a genuine
+            #                         sequence transition (a real non-canonical acceptor)
+            #                         is untouched, preserving motif-blind discovery.
+            #   * microhom_drift_margin — the GENERAL analog of hp_drift_margin: a move
+            #     whose boundary shift sits in a local MICROHOMOLOGY context (a near-tandem
+            #     repeat at the drift distance, microhomology fraction >= microhom_threshold)
+            #     is the non-homopolymer drift that fabricates false non-canonical junctions
+            #     (spike-in-confirmed, HP-guard-blind).  Default 0.0 → off.
+            #   * drift_near_tie_cap — a READ-EVIDENCE ceiling on the read-BLIND drift
+            #     margins: veto_margin = max(hold_margin, min(eff_margin, cap)); hold_margin
+            #     is never capped.  The cap BOUNDS the read-blind discovery loss on the
+            #     same score axis; it adds no signal inside the (0, cap) band.
+            #   * drift_positional_gate — the read-evidence signal that CLOSES the
+            #     read-blind fault: a drift-context move that would be vetoed is SPARED
+            #     when `_positional_signal` (hard-anchored edit distance, no free-k
+            #     soft-clip escape) >= the gate.  Acceptor moves only; donor/both-boundary
+            #     moves fall through to the margin/cap decision — conservative.
+            # All default to 0.0 → byte-identical incumbent behaviour.
+            eff_margin = hold_margin
+            if hp_drift_margin > 0.0:
+                into_hp = (_hp_run_across(genome_seq, new_js, hp_drift_min_run) > 0 or
+                           _hp_run_across(genome_seq, new_je, hp_drift_min_run) > 0)
+                if into_hp:
+                    eff_margin += hp_drift_margin
+                    if profile is not None:
+                        profile.inc('hp_drift_flagged')
+            if microhom_drift_margin > 0.0:
+                if _move_microhomology(genome_seq, ns, ne, new_js, new_je) >= microhom_threshold:
+                    eff_margin += microhom_drift_margin
+                    if profile is not None:
+                        profile.inc('microhom_drift_flagged')
+            if eff_margin > 0.0:
+                veto_margin = _effective_veto_margin(hold_margin, eff_margin, drift_near_tie_cap)
+                if profile is not None and veto_margin < eff_margin:
+                    profile.inc('near_tie_cap_applied')
+                if cand_score > incumbent_score - veto_margin:
+                    spared = False
+                    if drift_positional_gate > 0.0:
+                        psig = _positional_signal(genome_seq, q, q_split, ne, new_je)
+                        if psig is not None and psig >= drift_positional_gate:
+                            spared = True
+                            if profile is not None:
+                                profile.inc('positional_gate_spared')
+                    if not spared:
                         if profile is not None:
-                            profile.inc('positional_gate_spared')
-                if not spared:
-                    moves = False
-                    if profile is not None:
-                        profile.inc('move_margin_vetoes')
+                            profile.inc('move_margin_vetoes')
+                        return True
 
-        # --- Annotated-canonical evidence gate (the R1 class) -----------------
-        # The policy stated at the top of this loop — "within the sub-integer HP
-        # noise floor (|ed_A - ed_B| < 1.0) canonical annotated junctions are
-        # preferred" — was only ever implemented for the tier_beats_alt branch
-        # (where _CANONICAL_HP_PRIOR discounts canonical candidates).  In the
-        # other branch, where the incumbent IS canonical, candidates are ranked
-        # on the RAW score, so a 0.03 edit-distance win could take an annotated
-        # GT-AG junction onto a novel non-canonical one.  Measured on the Sumner
-        # human panel: three such moves at margins 0.031 / 0.434 / 0.463, all far
-        # inside the noise floor, each turning an annotated GT-AG into GT-GT /
-        # GT-GA / CT-TC.
-        #
-        # So: when the incumbent is BOTH annotated and canonical, a candidate
-        # that is not both must beat it by a full edit-distance unit.  Moves to
-        # another annotated canonical junction (isoform swaps) and moves whose
-        # incumbent is novel or non-canonical (the corrections 2H exists for) are
-        # untouched.  Disabled under motif_blind, which decides on read evidence
-        # alone by construction.
-        if (
-            moves
-            and _ANNOTATED_CANONICAL_HOLD > 0.0
-            and not motif_blind
-            and incumbent_score is not None
-            and current_tier < 4
-            and (chrom, ns, ne) in annotated_set
-        ):
-            _win_tier = _canonical_tier(new_js, new_je, genome_seq, strand)
-            _win_annot = (chrom, new_js, new_je) in annotated_set
-            if not (_win_annot and _win_tier < 4):
-                if best_score_cmp > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
-                    moves = False
-                    if profile is not None:
-                        profile.inc('annotated_canonical_holds')
+            # --- Annotated-canonical evidence gate (the R1 class) -----------------
+            # When the incumbent is BOTH annotated and canonical, a candidate that is
+            # not both must beat it by a full edit-distance unit (measured on the
+            # Sumner human panel: three sub-noise-floor moves at 0.031 / 0.434 / 0.463
+            # each turned an annotated GT-AG into GT-GT / GT-GA / CT-TC).  Moves to
+            # another annotated canonical junction (isoform swaps) and moves whose
+            # incumbent is novel or non-canonical (the corrections 2H exists for) are
+            # untouched.  Disabled under motif_blind, which decides on read evidence
+            # alone by construction.
+            if (
+                _ANNOTATED_CANONICAL_HOLD > 0.0
+                and not motif_blind
+                and current_tier < 4
+                and (chrom, ns, ne) in annotated_set
+            ):
+                _win_tier = _canonical_tier(new_js, new_je, genome_seq, strand)
+                _win_annot = (chrom, new_js, new_je) in annotated_set
+                if not (_win_annot and _win_tier < 4):
+                    if cand_score > incumbent_score - _ANNOTATED_CANONICAL_HOLD:
+                        if profile is not None:
+                            profile.inc('annotated_canonical_holds')
+                        return True
+            return False
 
-        # Only emit a replacement if the junction actually changes.
-        if moves:
-            replacements.append((cigar_idx, ns, ne, new_js, new_je))
+        # The probe runs on the trial when one exists and its N-op is where the
+        # original read had it (a rightward surgery cannot shift a leftward
+        # index, so this holds; the check is a belt for the braces).
+        probe_read = read
+        if trial is not None:
+            _t_ops = trial.cigartuples
+            if (cigar_idx < len(_t_ops) and _t_ops[cigar_idx][0] == _N
+                    and _t_ops[cigar_idx][1] == ne - ns):
+                probe_read = trial
+
+        best_tuple = None
+        for _tup in ranked:
+            _cjs, _cje = _tup[5], _tup[6]
+            if (_cjs, _cje) == (ns, ne):
+                break                       # the incumbent: stay
+            if _vetoed(_tup[0], _cjs, _cje):
+                if profile is not None:
+                    profile.inc('gate_vetoed_candidate_skipped')
+                if counters is not None:
+                    counters['gate_vetoed_candidate_skipped'] += 1
+                continue
+            _t_dry = time.perf_counter() if profile is not None else 0.0
+            _ok = _realizable(probe_read, cigar_idx, ns, ne, _cjs, _cje,
+                              genome_seq, strand, hp_pen, W)
+            _profile_time(profile, 'realizability_dry_run', _t_dry)
             if profile is not None:
-                profile.inc('replacements_emitted')
+                profile.inc('realizability_dry_runs')
+            if _ok:
+                best_tuple = _tup
+                break
+            if profile is not None:
+                profile.inc('unrealizable_winner_skipped')
+            if counters is not None:
+                counters['unrealizable_winner_skipped'] += 1
+        if best_tuple is None:
+            continue    # the incumbent, or nothing permitted and writable: stay
 
+        # best_tuple = (score, pri2, pri3, is_novel, move_dist, js, je, delta)
+        new_js, new_je = best_tuple[5], best_tuple[6]
+        replacements.append((cigar_idx, ns, ne, new_js, new_je))
+        if profile is not None:
+            profile.inc('replacements_emitted')
+
+        # Evolve the trial so the next N-op to the left is judged on the read the
+        # writer will hand its surgery.  The probe just vouched for this exact
+        # move on this exact state, so the write succeeds; a failure here can only
+        # come from a stubbed probe (policy-only tests) and is ignored.
+        if trial is None:
+            try:
+                trial = read.__copy__()
+            except Exception:
+                trial = None
+        if trial is not None:
+            try:
+                _apply_junction_replacement(
+                    trial, cigar_idx, ns, ne, new_js, new_je, genome_seq, strand, hp_pen, W)
+            except Exception:
+                pass
+
+    # Ascending cigar_idx, the order the walk emitted before it was reversed;
+    # the writer sorts descending itself.
+    replacements.sort(key=lambda r: r[0])
     return replacements
 
 
@@ -1522,11 +1615,10 @@ def _apply_junction_replacement(
     # 6–48 bp "drift".  Refinement corrects ONE splice site at a time; a simultaneous
     # donor+acceptor relocation via compensating indels is the fabrication signature.
     #
-    # Single-boundary corrections (donor-only or acceptor-only) are NOT touched — they
-    # move one splice site and the indel they add represents a real intron-length change
-    # at that site (e.g. 10M100N10M → 10M3D97N10M).  A move that REDUCES indel burden
-    # (cleaning a boundary error) is always applied.  Refused reads keep their incumbent
-    # (raw) placement — the conservative, correct outcome.
+    # Refused reads keep their incumbent (raw) placement — the conservative outcome.
+    # (Two older statements used to sit here and are now FALSE: single-boundary moves
+    # are not exempt, and a burden-reducing move is not automatically applied — both
+    # go through the adjacency rule below.)
     #
     # ISSUE-031 (Kevin, 2026-09-06, read-review cards 238d21ab/ede71fa4/3ceddb4b/8d1fe5ee/
     # 8ef6e9c0/b3a48de3/dbcdfdd1 + control 0af7072a): "never put a D next to an N".  The
@@ -1537,7 +1629,7 @@ def _apply_junction_replacement(
     # now enforced for EVERY move, and in addition no move may leave an I/D adjacent to the
     # N on either side unless that exact op was already adjacent before the move (a stock
     # alignment's own indel is the aligner's record and is left alone, not "fixed").  The
-    # realizability probe (_move_realizable) dry-runs this function, so a refused move is
+    # realizability probe (`_realizable`) dry-runs this function, so a refused move is
     # skipped in the ranking and counted as unrealizable_winner_skipped.
     old_indel = sum(l for op, l in cigar     if op in (_I, _D))
     new_indel = sum(l for op, l in new_cigar if op in (_I, _D))
@@ -1675,6 +1767,7 @@ def _run_sequential(
     with pysam.AlignmentFile(input_bam, 'rb') as bam_in, \
          pysam.AlignmentFile(output_bam, 'wb', header=bam_in.header) as bam_out:
 
+        _seq_counters: Counter = Counter()   # decision-level events (see refine_read_junctions)
         for read in bam_in:
             stats['total'] += 1
             if read.is_unmapped or not read.cigartuples:
@@ -1713,6 +1806,7 @@ def _run_sequential(
                     max_junction_size=max_junction_size,
                     max_candidates_per_nop=max_candidates_per_nop,
                     profile=read_profile,
+                    counters=_seq_counters,
                     penalty_table=eff_table,
                     motif_blind=motif_blind,
                     hold_margin=hold_margin,
@@ -1742,6 +1836,8 @@ def _run_sequential(
                 stats['refined'] += 1
             else:
                 stats['unchanged'] += 1
+    for _k, _n in _seq_counters.items():
+        stats[_k] = stats.get(_k, 0) + _n
 
 
 def _run_parallel(
@@ -1846,8 +1942,10 @@ def _run_parallel(
         for batch_results in pool.imap_unordered(_refine_read_batch, batches):
             if isinstance(batch_results, dict):
                 all_results.extend(batch_results.get('results', []))
-                if profile is not None:
+                if profile is not None and batch_results.get('profile') is not None:
                     profile.merge(batch_results.get('profile'))
+                for _k, _n in (batch_results.get('counters') or {}).items():
+                    stats[_k] = stats.get(_k, 0) + _n
             else:
                 all_results.extend(batch_results)
     _profile_time(profile, 'parallel_worker_scoring', _t_workers)
@@ -1936,6 +2034,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
     profile = JunctionRefineProfile(profile_sample_rate) if profile_enabled else None
 
     results: List[Tuple[str, List]] = []
+    counters: Counter = Counter()
     for i, sam_str in enumerate(sam_strings):
         try:
             _t_parse = time.perf_counter() if profile is not None else 0.0
@@ -1953,6 +2052,7 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
                 eff_kw = kw
             if profile is not None and (i % profile_sample_rate == 0):
                 eff_kw = {**eff_kw, 'profile': profile}
+            eff_kw = {**eff_kw, 'counters': counters}
             replacements = refine_read_junctions(
                 read, junctions_idx, annotated_set, genome_seq, strand, **eff_kw
             )
@@ -1961,9 +2061,8 @@ def _refine_read_batch(sam_strings: List[str]) -> List[Tuple[str, List]]:
             results.append((sam_str, []))
             if profile is not None:
                 profile.inc('worker_errors')
-    if profile is not None:
-        return {'results': results, 'profile': profile.to_raw_dict()}
-    return results
+    return {'results': results, 'counters': dict(counters),
+            'profile': profile.to_raw_dict() if profile is not None else None}
 
 
 # ---------------------------------------------------------------------------
