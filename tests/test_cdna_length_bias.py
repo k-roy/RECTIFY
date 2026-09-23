@@ -250,6 +250,7 @@ def test_count_keeps_both_read_types_drops_xf0_and_counts_rows_not_reads():
         ("chrI", "fwd", 2100, 1), ("chrI", "fwd", 2100, 2), ("chrI", "fwd", 2100, 0),
         ("chrI", "rev", 4900, 1), ("chrI", "rev", 4900, 3), ("chrI", "fwd", 9000, 1),
     ])
+    d["xt"] = [1, 2, 1, 2, 1, 1]        # read type: Type 2 (no UMI) must be counted like Type 1
     d["n_reads"] = [50, 1, 7, 9, 2, 1]  # cluster sizes must NOT weight the count
     counts, st = lb.count_cdna_clusters(d, idx, min_assigned_share=None)
     assert counts.to_dict() == {"PLUS": 2, "MINUS": 2}

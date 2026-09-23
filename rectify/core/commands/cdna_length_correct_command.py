@@ -546,7 +546,7 @@ def create_cdna_length_correct_parser(subparsers):
                    help="Spline knots at panel length quantiles (default 4)")
     f.add_argument("--covariates", default=None,
                    help="OPTIONAL per-gene covariates TSV (gene + numeric columns), added to the curve; off by "
-                        "default (sequence features added < 0.3%% held-out error in the calibration cohort)")
+                        "default (in the calibration cohort, GC and UpA/CpA content changed held-out error by < 0.5%%)")
     f.add_argument("--covariate-columns", default=None, help="Columns of --covariates to use (default: all)")
     f.add_argument("--no-deseq2", action="store_true", help="Do not write DESeq2 normalization factors")
     _add_gene_args(f)

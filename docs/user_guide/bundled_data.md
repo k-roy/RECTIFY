@@ -26,6 +26,7 @@ Both flags are recognized by every reference-aware subcommand: `align`, `analyze
 | **GO annotations** | SGD | Tab-separated, gzipped — used by `rectify analyze --go-annotations` for enrichment |
 | **NET-seq tables** | Churchman & Weissman 2011 (Nature) and Harlen et al. 2016 (Cell) | Three pre-aggregated TSV.GZ tables (`netseq_pan` = 6 reps WT + DST1D; `netseq_wt` = 3 reps WT; `atract_netseq` = A-tract preview) used for A-tract ambiguity resolution |
 | **Motif database** | Curated yeast CPA factors + NNS pathway + general TFs | MEME-format file used by `rectify analyze --run-motif` |
+| **cDNA length-bias calibration** | 33 direct RNA (RNA004) + 51 PCR-cDNA libraries of W303 anchor-away strains | Gene table, 405-gene stable panel and direct RNA reference used by `rectify cdna-length-correct --Scer`; certified scope and checksums in `genomes/saccharomyces_cerevisiae/cdna_length_bias/PROVENANCE.json` |
 | **Validation reads** | 33 hand-curated reads (DRS + cDNA + QuantSeq REV) | BAM + FASTQ in `rectify/data/validation/` — used by `rectify test` smoke check |
 | **deSALT binary** | v1.5.6 Linux/x86_64, vendored | Used automatically when `deSALT` is not on `PATH` (Linux/x86_64 only) |
 

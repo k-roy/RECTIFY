@@ -29,6 +29,7 @@ rectify <command> [options]
 |:--------|:------------|
 | [`rectify correct-cdna`](correct_cdna.md) | Stage 1 — UMI extraction, directional clustering, abPOA consensus, pre-trim -> per-cluster FASTQ |
 | [`rectify cdna-analyze`](cdna_analyze.md) | Stage 3 — post-align walkback, gene assignment, isoform clustering, T1/T2 pairing |
+| [`rectify cdna-length-correct`](cdna_length_correct.md) | Per-library gene-length bias correction of cDNA gene counts (stable-gene panel against direct RNA) |
 
 See the [ONT PCR-cDNA pipeline overview](correct_cdna_overview.md) for the three-stage workflow.
 

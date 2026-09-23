@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rectify cdna-length-correct`: per-library gene-length bias correction of ONT PCR-cDNA gene counts.**
+  Replicate PCR-cDNA libraries count long genes differently, following each library's read length. The command
+  counts UMI-deduplicated molecules per gene with one rule (`count`), fits each library's natural-spline curve in
+  log10 gene length on a stable-gene panel against a direct RNA reference, held flat outside the panel's range
+  (`fit`), and writes corrected CPM, bias factors and DESeq2 `normalizationFactors`. Stored curves apply to other
+  tables of the same libraries (`apply`) and refuse another gene-length definition. Isoform and short-molecule
+  ratios need an explicit scale (`ratio --scale`). `--Scer` uses a bundled calibration (405-gene panel, 33-library
+  direct RNA reference, gene table) certified only for W303 anchor-away strains in YPD with rapamycin; other
+  libraries are flagged. On held-out genes the replicate length slope falls from 1.20 to 0.10 and Rrp6-AA / WT-AA
+  fold changes against direct RNA go from r -0.16 to 0.47. See `docs/user_guide/commands/cdna_length_correct.md`.
+
 - `scripts/recount_junction_support.py` recounts exact proposed destinations on
   original BAMs, unions primary read names across aligner arms, excludes the
   moving read, and reports a separate contiguous-anchor support count.
