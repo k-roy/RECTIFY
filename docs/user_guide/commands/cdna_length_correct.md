@@ -70,6 +70,8 @@ rectify cdna-length-correct apply --Scer --params fit/params.tsv --counts full_d
 | `apply` | `params.tsv` and counts of the same libraries | the same corrected tables |
 | `ratio` | `params.tsv`, two lengths and `--scale` | the per-library correction of a two-class ratio |
 
+To build your own reference from direct RNA, count each library's RNA 3′ ends with `count --input-format three-prime` after keeping only primary alignments with MAPQ ≥ 20 (the rule the bundled reference used); the three-prime mode itself applies no alignment filter.
+
 ### `fit` outputs
 
 - **`params.tsv`**: one row per library with the model, the coefficients and knots at full precision, the clamp

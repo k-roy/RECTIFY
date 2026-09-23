@@ -490,7 +490,8 @@ def create_cdna_length_correct_parser(subparsers):
     c.add_argument("--input-format", choices=("clusters", "three-prime"), default="clusters",
                    help="clusters: cdna-analyze clusters.tsv (one row = one molecule; XF filter). three-prime: a "
                         "table with chrom, strand (RNA strand), a 3'-end column and optional weight, e.g. a direct "
-                        "RNA corrected_reads.tsv")
+                        "RNA corrected_reads.tsv; it applies no alignment filter, so keep primary MAPQ >= 20 "
+                        "alignments first to match the bundled reference")
     c.add_argument("--position-column", default="corrected_3prime",
                    help="three-prime input: the 0-based 3'-end column (default: corrected_3prime)")
     c.add_argument("--min-xf", type=int, default=lb.DEFAULT_MIN_XF,
