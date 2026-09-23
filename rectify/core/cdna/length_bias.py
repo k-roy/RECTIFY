@@ -95,10 +95,10 @@ __all__ = [
     "read_cdna_clusters", "count_cdna_clusters", "count_three_prime_ends",
     "cpm", "reference_from_counts", "build_panel",
     "ns_basis", "library_log2_deviation", "fit_length_curve", "fit_length_bias",
-    "bias_factors", "corrected_cpm", "apply_length_curves",
+    "bias_factors", "corrected_cpm", "apply_length_curves", "cohort_curve_summary",
     "deseq2_normalization_factors", "ratio_log2_correction", "ratio_corrections",
     "certify_libraries", "replicate_slopes", "replicate_spread",
-    "params_to_frame", "curves_from_params",
+    "params_to_frame", "read_params", "curves_from_params",
 ]
 
 
@@ -760,6 +760,29 @@ def fit_length_bias(counts: pd.DataFrame, reference_cpm: pd.Series, panel: Itera
                      lengths_nt=L, y=Y)
 
 
+def cohort_curve_summary(counts: pd.DataFrame, reference_cpm: pd.Series, panel: Iterable[str],
+                         lengths_nt: pd.Series, *, model: str = DEFAULT_MODEL,
+                         n_knots: int = DEFAULT_N_KNOTS) -> dict:
+    """The cohort-mean library's curve against the reference (report only).
+
+    A reference shared by every library shifts every fitted curve by this same
+    function h(L), which cancels in fold changes between the libraries and in
+    DESeq2 factors. Its size says how much of each correction is the cohort's
+    shared tilt against the reference (the absolute scale) rather than the
+    differences between libraries.
+    """
+    genes = counts.index.intersection(lengths_nt.dropna().index)
+    mean_cpm = cpm(counts.loc[genes].astype(float)).mean(axis=1)
+    y = np.log2(mean_cpm + PSEUDO_CPM) - np.log2(reference_cpm.reindex(genes) + PSEUDO_CPM)
+    pan = [g for g in dict.fromkeys(map(str, panel)) if g in set(genes) and np.isfinite(y[g])]
+    curve, diag = fit_length_curve(np.log10(lengths_nt.loc[pan].to_numpy(float)), y.loc[pan].to_numpy(),
+                                   model=model, n_knots=n_knots)
+    grid = np.linspace(curve.x_lo, curve.x_hi, 200)
+    f = curve.length_design(grid) @ curve.coef
+    return {"slope_equiv_log2_per_tenfold": diag["slope_equiv"], "range_log2": float(f.max() - f.min()),
+            "panel_resid_sd": diag["panel_resid_sd"], "n_panel_used": diag["n_panel_used"]}
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # Stored parameters
 # ═════════════════════════════════════════════════════════════════════════════
@@ -799,6 +822,13 @@ def params_to_frame(curves: Mapping[str, LengthCurve], **constant_columns) -> pd
     for k, v in constant_columns.items():
         df[k] = v
     return df
+
+
+def read_params(path) -> pd.DataFrame:
+    """Read a params table as TEXT, so ``curves_from_params`` parses every number with
+    ``float()`` (an exact round trip of ``repr``). pandas' default float parser can
+    move ``x_lo``/``x_hi`` by one ulp, which shifts the clamp boundary."""
+    return pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
 
 
 def curves_from_params(params: pd.DataFrame) -> Dict[str, LengthCurve]:
@@ -848,8 +878,8 @@ def apply_length_curves(counts: pd.DataFrame, params: pd.DataFrame, lengths_nt: 
     were fitted with (``params['lengths_sha256']``), because a curve is a
     function of THAT length definition. Returns (factors, corrected CPM, qc).
     """
-    if "lengths_sha256" in params.columns and params["lengths_sha256"].notna().any():
-        want = set(params["lengths_sha256"].dropna().astype(str))
+    if "lengths_sha256" in params.columns and (params["lengths_sha256"].astype(str).str.len() > 0).any():
+        want = {v for v in params["lengths_sha256"].astype(str) if v and v != "nan"}
         have = lengths_sha256 or lengths_fingerprint(lengths_nt)
         if want != {have}:
             raise ValueError(

@@ -206,6 +206,10 @@ Citation:
     from .core.commands.cdna_analyze_command import create_cdna_analyze_parser
     create_cdna_analyze_parser(subparsers)
 
+    # cdna-length-correct command (parser wired in rectify.core.commands.cdna_length_correct_command)
+    from .core.commands.cdna_length_correct_command import create_cdna_length_correct_parser
+    create_cdna_length_correct_parser(subparsers)
+
     # restore-softclip command (parser wired in rectify.core.commands.restore_polya_command)
     from .core.commands.restore_polya_command import create_restore_softclip_parser
     create_restore_softclip_parser(subparsers)
@@ -362,6 +366,9 @@ def _dispatch(args, parser):
     elif args.command == 'cdna-analyze':
         from .core.commands import cdna_analyze_command
         sys.exit(cdna_analyze_command.run(args))
+    elif args.command == 'cdna-length-correct':
+        from .core.commands import cdna_length_correct_command
+        sys.exit(cdna_length_correct_command.run(args))
     elif args.command == 'restore-softclip':
         from .core.commands import restore_polya_command
         sys.exit(restore_polya_command.run(args))
