@@ -38,6 +38,8 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / 'scripts' / 'calibration'))
 
+import pytest  # noqa: E402
+pytest.importorskip("empirical_cigar_error_profiler", reason="scripts/calibration is not shipped with the repository (gitignored)")
 import empirical_cigar_error_profiler as profiler  # noqa: E402
 
 

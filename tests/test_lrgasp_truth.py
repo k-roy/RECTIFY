@@ -13,6 +13,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pytest  # noqa: E402
+pytest.importorskip("scripts.benchmark.sim.lrgasp_truth", reason="scripts/benchmark is not shipped with the repository (gitignored)")
 from scripts.benchmark.sim.lrgasp_truth import (  # noqa: E402
     parse_read_to_isoform, build_truth_catalogue, spanned_anchored_junctions,
     cpa_for_span, read_truth_for_span, MIN_JUNCTION_ANCHOR,

@@ -17,6 +17,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pytest  # noqa: E402
+pytest.importorskip("scripts.benchmark.sim.gff_panel", reason="scripts/benchmark is not shipped with the repository (gitignored)")
 from scripts.benchmark.sim.gff_panel import (  # noqa: E402
     _gtf_attrs, parse_gtf_exons, build_panel_from_gtf,
 )

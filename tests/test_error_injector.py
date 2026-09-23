@@ -11,6 +11,8 @@ import random
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import pytest  # noqa: E402
+pytest.importorskip("scripts.benchmark.sim.error_injector", reason="scripts/benchmark is not shipped with the repository (gitignored)")
 from scripts.benchmark.sim.error_injector import (  # noqa: E402
     InjectorParams, ErrorEvent, inject, simulate_and_measure,
     measure_error_structure, events_from_alignment, _indel_pmf_for_frac_ge2,
