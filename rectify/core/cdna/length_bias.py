@@ -946,7 +946,7 @@ def ratio_log2_correction(curve: LengthCurve, numerator_length_nt, denominator_l
     For two molecule classes of lengths L1 and L2 the library over-counts the
     ratio by 2^(c (f(L1) - f(L2))), so the correction is -c (f(L1) - f(L2)).
     ``c`` has NO default: within a gene the between-gene curve over-states the
-    length effect (c near 0.5 on one reporter's isoforms), and below the
+    length effect (c near 0.6 on one reporter's isoforms), and below the
     panel's shortest gene the curve is held at its edge value.
     """
     c = _require_scale(c)

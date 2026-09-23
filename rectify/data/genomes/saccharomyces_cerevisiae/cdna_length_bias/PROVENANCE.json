@@ -114,7 +114,7 @@
     "overshoot": "-7% of the bias; above about 4 kb the most biased libraries over-correct (few panel genes that long)"
   },
   "limits": [
-    "Gene counts use the curve at full strength (c = 1). Within-gene ratios (isoforms) and molecules shorter than the panel's 314-nt floor need a scale c that is not calibrated; `ratio` requires it explicitly. One reporter's isoform ratio gave c of about 0.5.",
+    "Gene counts use the curve at full strength (c = 1). Within-gene ratios (isoforms) and molecules shorter than the panel's 314-nt floor need a scale c that is not calibrated; `ratio` requires it explicitly. One reporter's isoform ratio gave c of about 0.6 (0.54 to 0.60, leave-one-out).",
     "Corrected values are on the direct RNA scale; a length bias common to every direct RNA library is invisible.",
     "Certified only inside certified_scope; every other strain, medium or condition is flagged.",
     "Counts and curves must share this gene table; stored curves refuse another gene-length definition."

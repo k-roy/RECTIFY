@@ -103,12 +103,12 @@ Do not feed corrected CPM or corrected counts to DESeq2.
 Gene counts use the curve at full strength (scale `c = 1`), because it is fitted and applied between genes. A
 readout that compares two molecule classes within a gene, such as an isoform ratio, is corrected by
 `-c (f(L1) - f(L2))` in log2. There, the between-gene curve over-states the length effect: on one reporter's
-2.6-kb and 0.44-kb isoforms the fitted `c` was about 0.5. Molecules shorter than the panel's shortest gene receive
+2.6-kb and 0.44-kb isoforms the fitted `c` was about 0.6 (0.54 to 0.60, leave-one-out). Molecules shorter than the panel's shortest gene receive
 the curve's edge value, so their correction is an extrapolation whose size depends on `c`. `c` is therefore
 required:
 
 ```bash
-rectify cdna-length-correct ratio --params fit/params.tsv --numerator-length 2604 --denominator-length 443 --scale 0.5
+rectify cdna-length-correct ratio --params fit/params.tsv --numerator-length 2604 --denominator-length 443 --scale 0.6
 ```
 
 Every output row records the `c` used and flags a length outside the fitted range.

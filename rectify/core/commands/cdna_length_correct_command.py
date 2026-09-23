@@ -570,7 +570,7 @@ def create_cdna_length_correct_parser(subparsers):
     rt.add_argument("--denominator-length", type=float, required=True, help="Length (nt) of the denominator class")
     rt.add_argument("--scale", type=float, required=True, metavar="C",
                     help="REQUIRED scale c: correction = -c (f(L1) - f(L2)). Gene counts use c = 1; within a "
-                         "gene the calibrated value is uncertain (about 0.5 on one reporter's isoforms)")
+                         "gene the calibrated value is uncertain (about 0.6 on one reporter's isoforms, 0.54-0.60 leave-one-out)")
     rt.add_argument("--libraries", default=None, help="Comma list of libraries (default: all in params)")
     rt.add_argument("-o", "--out", default=None, help="Output TSV (default: stdout)")
     return p
