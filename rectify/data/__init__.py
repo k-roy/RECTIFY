@@ -567,6 +567,21 @@ BUNDLED_GENOMES = {
             'version': 'R64-5-1',
             'source': 'SGD',
         },
+        # ONT PCR-cDNA length-bias calibration for `rectify cdna-length-correct`
+        # (--Scer): the CDS-defined gene table with transcript lengths, the
+        # 405-gene stable panel and the direct RNA cohort-mean reference. See
+        # PROVENANCE.json / README.md alongside the files; the panel is certified
+        # only for the scope recorded there.
+        'cdna_length_bias': {
+            'dir': 'genomes/saccharomyces_cerevisiae/cdna_length_bias',
+            'gene_table': 'gene_lengths.tsv',
+            'panel': 'panel.tsv',
+            'reference': 'drs_reference_cpm.tsv',
+            'provenance': 'PROVENANCE.json',
+            'version': 'drs33_panel405_20260923',
+            'source': '33 RNA004 direct RNA libraries (11 anchor-away genotype sets, W303, YPD) '
+                      'and 51 PCR-cDNA libraries; ns4 curve in transcript length',
+        },
         # Empirical penalty + overhang tables — see PENALTY_TABLE.md alongside the
         # bundled files for derivation. The flat keys (junction_penalty_table /
         # str_penalty_table / junction_overhang_table) point to the DRS-calibrated
@@ -752,6 +767,25 @@ def get_bundled_go_annotations_path(organism: str) -> Optional[Path]:
     if go_path.exists():
         return go_path
     return None
+
+
+def get_bundled_cdna_length_bias(organism: str) -> Optional[Dict[str, Path]]:
+    """
+    Paths of the bundled ONT PCR-cDNA length-bias calibration for an organism.
+
+    Returns a dict with keys ``gene_table``, ``panel``, ``reference`` and
+    ``provenance`` (all existing files), or None when the organism has no
+    bundled calibration or a file is missing.
+    """
+    org = normalize_organism(organism)
+    info = BUNDLED_GENOMES.get(org, {}).get('cdna_length_bias')
+    if info is None:
+        return None
+    base = BUNDLED_DATA_DIR / info['dir']
+    paths = {k: base / info[k] for k in ('gene_table', 'panel', 'reference', 'provenance')}
+    if not all(p.exists() for p in paths.values()):
+        return None
+    return paths
 
 
 def _resolve_bundled_table(

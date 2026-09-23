@@ -1,0 +1,122 @@
+{
+  "table": "S. cerevisiae ONT PCR-cDNA length-bias calibration for `rectify cdna-length-correct --Scer`",
+  "version": "drs33_panel405_20260923",
+  "date": "2026-09-23",
+  "organism": "saccharomyces_cerevisiae",
+  "reference_genome": "S288C R64-5-1 (the bundled FASTA and GFF)",
+  "files": {
+    "gene_lengths.tsv": {
+      "sha256": "ca14fc056fc6ba2a0369ca116e367451aa670c98e2705dca11c329a1cbbaced0",
+      "rows": 5899,
+      "columns": "gene, chrom, strand, cds_start0 (0-based), cds_end (half-open), cds_span, cds_len (spliced CDS), tx_len (spliced transcript)",
+      "role": "the stop codons the counting rule assigns 3' ends to, and the lengths the curve is fitted in"
+    },
+    "panel.tsv": {
+      "sha256": "69e5003a80d40556a93d5c05dfc22baca8032dd14fc3202a8648e66131d56883",
+      "rows": 405,
+      "columns": "gene, name, cds_len, tx_len, sd_sets (SD of log2 CPM across the 11 direct RNA genotype-set means), strict (sd_sets <= 0.35; 127 genes)",
+      "role": "the stable-gene panel on which each library's curve is fitted"
+    },
+    "drs_reference_cpm.tsv": {
+      "sha256": "0aed8b4f9c617891ed80b2271d19152a92897bfadbce04c448457ec988e612e4",
+      "rows": 5875,
+      "columns": "gene, cpm",
+      "role": "reference abundance: mean over the 33 direct RNA libraries of each library's CPM, computed over the 5,875 genes with at least one molecule in the calibration libraries"
+    }
+  },
+  "certified_scope": {
+    "background": [
+      "W303-AA"
+    ],
+    "medium": [
+      "YPD"
+    ],
+    "condition": [
+      "rapamycin"
+    ]
+  },
+  "certified_scope_note": "The panel's stability was measured by direct RNA only in W303 anchor-away strains grown in YPD and treated with rapamycin (anchor-away depletion). `fit --library-meta` certifies a library only when its declared background, medium and condition are these tokens (case-insensitive). Any other strain background (for example BY4742), medium (for example SD), condition (for example a stress) or undeclared library is flagged as not certified: the correction still runs, but it is an extrapolation.",
+  "counting_rule": {
+    "unit": "one UMI-deduplicated cDNA molecule (a row of cdna-analyze clusters.tsv); one read for direct RNA",
+    "cdna_filter": "XF >= 1, both read types (Type 1 and the UMI-less Type 2)",
+    "three_prime_end": "cDNA: the walk-back anchor; direct RNA: the alignment's RNA 3' end",
+    "assignment": "the gene whose stop codon (3'-most CDS base) is the nearest upstream one on the RNA strand, with the 3' end at most 30 nt upstream and at most 500 nt downstream of it",
+    "genes": "CDS-defined; an isoform-union gene feature would move the stop into the 3' UTR"
+  },
+  "gene_lengths": {
+    "cds_len": "union of the unique CDS intervals of all isoforms of the ORF in the bundled GFF",
+    "tx_len": "spliced length of the transcript model of an ONT PCR-cDNA transcript atlas of BY4742 wild type: from the distal reproducible 5' end to the distal reproducible 3' end, ignoring ends more than 1 kb from the CDS, minus every annotated intron inside it. Where the atlas had no reproducible end, the CDS end is used.",
+    "tx_len_sources": {
+      "atlas 5' and 3' ends": 4692,
+      "CDS ends at both sides": 985,
+      "CDS 5' end, atlas 3' end": 114,
+      "atlas 5' end, CDS 3' end": 108
+    },
+    "universe": "ORFs with a CDS in the bundled GFF and an atlas transcript model, minus the exclusions below",
+    "excluded": {
+      "mitochondrial genes": "all",
+      "rDNA locus": "genes whose CDS overlaps chrXII:450,000-470,000",
+      "reporter-host loci": "YML017W (PSP2), YFL016C (MDJ1), YOL086C (ADH1), YLR044C (PDC1), YEL021W (URA3), YJR048W (CYC1), YBR020W (GAL1), YBR019C (GAL10): the calibration cohort includes strains whose reporter plasmids carry sequences of these genes, so their loci collect plasmid transcripts. They are absent from the gene table and therefore from counts made with it; exclusion removes them from the candidate stops, so their 3' ends are not counted for another gene."
+    }
+  },
+  "reference": {
+    "assay": "Oxford Nanopore direct RNA, SQK-RNA004",
+    "libraries": 33,
+    "design": "11 anchor-away genotype sets x 3 replicate cultures: WT-AA, Rrp6-AA, Snp1-AA, Snp1-AA/Rrp6-AA, Sen1-AA, Sen1-AA/Rrp6-AA, Dis3-AA/Rrp6-AA, Prp28-AA, and a separate deposit of WT-AA, Rna15-AA and Ysh1-AA",
+    "strains_and_growth": "W303 anchor-away strains, YPD, rapamycin depletion (duration differs between sets)",
+    "runs": "separate runs and deposits from 2024 to 2026, basecalled with different Dorado models; one deposit is public (NCBI BioProject PRJNA1229592: WT-AA, Rna15-AA, Ysh1-AA); the rest are unpublished",
+    "reads": "a 1,000,000-read slice per library; primary alignments with MAPQ >= 20",
+    "why_direct_rna": "direct RNA is unamplified and shows no library-to-library length slope (replicate median |slope| 0.05 log2 per tenfold length against 1.20 for PCR-cDNA)"
+  },
+  "panel": {
+    "criteria": "mean >= 100 molecules per library in BOTH the 51 cDNA and the 33 direct RNA libraries, and SD <= 0.5 log2 of log2 CPM across the 11 direct RNA genotype-set means",
+    "considered_genes": "3,376 genes with mean >= 20 molecules in both assays",
+    "size": 405,
+    "strict_subset": 127,
+    "length_range_tx_nt": [
+      314,
+      7346
+    ],
+    "rebuild": "rectify cdna-length-correct panel --cdna-counts CDNA.tsv --reference-counts DRS.tsv --reference-groups GROUPS.tsv --gene-table gene_lengths.tsv -o OUT"
+  },
+  "cdna_calibration_cohort": {
+    "assay": "Oxford Nanopore PCR-cDNA, SQK-PCB114.24, UMI-deduplicated (correct-cdna -> align -> cdna-analyze)",
+    "libraries": 51,
+    "design": "three sets of anchor-away strains in YPD (15, 9 and 9 libraries) and one reporter strain in SD medium (18 libraries)",
+    "reads": "a 1,000,000-read slice per library",
+    "software": "cdna-analyze at rectify af2f788. That version predates two later fixes: non-primary alignment records counted as molecules (fixed in b3a8902) and the poly(A) side taken from the pre-alignment frame (fixed in ba856b5, about 0.2% of molecules in a check). The cDNA counts enter only the panel's count floor and the validation; the reference is direct RNA."
+  },
+  "curve": {
+    "model": "natural cubic spline, 4 knots at the 0, 1/3, 2/3 and 1 quantiles of the panel's log10 transcript lengths, fixed at fit time; flat outside the panel's range (never extrapolated)",
+    "chosen_by": "lowest error on a random half of the genes outside both panels, among 12 candidates (linear and 3- or 4-knot splines; strict or relaxed panel; CDS or transcript length): 0.847 against 1.431 uncorrected and 1.05 for the best linear model",
+    "gene_counts_use_scale_c": 1.0
+  },
+  "validation": {
+    "genes": "1,488 genes outside both panels, never used to fit or choose the model",
+    "replicate_gene_length_slope_median_abs_log2_per_tenfold": {
+      "before": 1.2,
+      "after": 0.1,
+      "direct_rna": 0.05
+    },
+    "replicate_sd_log2_cpm_genes_over_2kb_median": {
+      "before": 0.75,
+      "after": 0.26,
+      "direct_rna": 0.18
+    },
+    "slope_against_genotype_matched_direct_rna_median_abs": {
+      "before": 2.28,
+      "after": 0.32
+    },
+    "rrp6aa_over_wtaa_fold_changes_vs_direct_rna_pearson_r": {
+      "before": -0.16,
+      "after": 0.47
+    },
+    "overshoot": "-7% of the bias; above about 4 kb the most biased libraries over-correct (few panel genes that long)"
+  },
+  "limits": [
+    "Gene counts use the curve at full strength (c = 1). Within-gene ratios (isoforms) and molecules shorter than the panel's 314-nt floor need a scale c that is not calibrated; `ratio` requires it explicitly. One reporter's isoform ratio gave c of about 0.5.",
+    "Corrected values are on the direct RNA scale; a length bias common to every direct RNA library is invisible.",
+    "Certified only inside certified_scope; every other strain, medium or condition is flagged.",
+    "Counts and curves must share this gene table; stored curves refuse another gene-length definition."
+  ]
+}
