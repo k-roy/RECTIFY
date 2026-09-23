@@ -107,8 +107,10 @@ def test_curve_is_flat_outside_the_panel_range_and_clamped_genes_are_counted(coh
         edge_lo, edge_hi = curve.log2_bias([lo, hi])
         below, above = L[L < lo], L[L > hi]
         assert len(below) and len(above)
-        assert np.all(curve.log2_bias(below) == edge_lo)
-        assert np.all(curve.log2_bias(above) == edge_hi)
+        # flat outside the range: every clamped gene gets the edge value (to the last few ulps, which differ
+        # between BLAS/SIMD code paths for different array sizes; an extrapolated curve differs by ~0.4 log2)
+        np.testing.assert_allclose(curve.log2_bias(below), edge_lo, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(curve.log2_bias(above), edge_hi, rtol=0, atol=1e-12)
         # factors of out-of-range genes are exactly the edge factors
         B = fr.factors[lib]
         np.testing.assert_allclose(np.log2(B[below.index].values), edge_lo, rtol=0, atol=1e-12)
@@ -177,7 +179,8 @@ def test_knots_and_range_are_fixed_at_fit_time(cohort):
     params = lb.params_to_frame(fr.curves, lengths_sha256=lb.lengths_fingerprint(L))
     long_genes = L.index[L > 2000]
     B, _, _ = lb.apply_length_curves(C.loc[long_genes], params, L)
-    np.testing.assert_array_equal(B.values, fr.factors.loc[B.index, B.columns].values)
+    # a subset table goes through a different matmul shape, so compare to ulp level, not bit for bit
+    np.testing.assert_allclose(B.values, fr.factors.loc[B.index, B.columns].values, rtol=1e-13, atol=0)
 
 
 def test_apply_refuses_a_different_gene_length_definition(cohort):
