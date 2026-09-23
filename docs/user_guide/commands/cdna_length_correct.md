@@ -20,6 +20,10 @@ Because the bias differs from library to library, it does not cancel in a fold c
 libraries happen to differ in read length. A median-of-ratios size factor cannot remove it either, because it is a
 function of gene length rather than a single number per library.
 
+<p align="center">
+  <img src="../../figures/cdna_length_correct_fig.png" alt="Per-library gene-length bias curves of 51 PCR-cDNA libraries, fitted on a stable-gene panel against direct RNA, and the correction's effect on replicate agreement and on fold changes" width="760">
+</p>
+
 ## How the correction works
 
 1. **Count** molecules per gene with one rule for every library: one UMI-deduplicated molecule per row of

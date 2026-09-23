@@ -177,6 +177,13 @@ Per-read splice classifications from step (c) are aggregated into per-junction t
   <img src="docs/figures/cdna_isoform_clustering_dark.png#gh-dark-mode-only" alt="cDNA isoform clustering" width="720">
 </p>
 
+### Gene-length bias correction (ONT PCR-cDNA only)
+PCR-cDNA libraries count long genes differently from one another, and the difference follows each library's read length: across 51 replicate libraries, a 3-kb gene was counted 0.16 to 12 times as often as a 0.5-kb gene, against 0.82 to 1.14 in direct RNA. `rectify cdna-length-correct` fits each library's bias as a smooth curve of gene length on a panel of stably expressed genes, measured against a direct RNA reference, and divides it out. It writes corrected CPM and DESeq2 normalization factors, and `--Scer` uses a bundled yeast panel and reference. Fold changes do not depend on which reference is used, so a cohort without direct RNA can fit against its own mean. See the [command guide](docs/user_guide/commands/cdna_length_correct.md) for the limits.
+
+<p align="center">
+  <img src="docs/figures/cdna_length_correct_fig.png" alt="Per-library gene-length bias curves of 51 PCR-cDNA libraries, fitted on a stable-gene panel against direct RNA, and the correction's effect on replicate agreement and on fold changes" width="760">
+</p>
+
 ---
 
 ## Differential analysis (DESeq2)
