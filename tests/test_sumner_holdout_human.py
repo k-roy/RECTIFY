@@ -32,12 +32,15 @@ with a 1,000-read junction pool rather than the full-library pool. Only
 before/after within a column means anything.
 """
 
+import os
 from pathlib import Path
 
 import pysam
 import pytest
 
-_PANEL_DIR = Path('/Users/kevinroy/work/rectify/dev/sumner_misplaced_panel_20260904')
+# Same override as test_sumner_human_panel.py, so a cluster run with the bundle shipped can run it.
+_PANEL_DIR = Path(os.environ.get(
+    'RECTIFY_SUMNER_PANEL_DIR', '/Users/kevinroy/work/rectify/dev/sumner_misplaced_panel_20260904'))
 HOLDOUT_BAM = _PANEL_DIR / 'holdout' / 'chr5_holdout1k.bam'
 REF_FA = _PANEL_DIR / 'ref' / 'chr5.fa'
 REF_GTF = _PANEL_DIR / 'ref' / 'gencode.v48.basic.chr5.gtf'
