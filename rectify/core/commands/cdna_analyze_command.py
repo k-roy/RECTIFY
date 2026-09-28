@@ -190,6 +190,8 @@ def run(args) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
     log = logging.getLogger("cdna-analyze")
+    from ..cdna.deps import warn_if_edlib_missing
+    warn_if_edlib_missing(log, "cdna-analyze")
     t0 = time.time()
     from datetime import datetime as _dt, timezone as _tz
     _stage_started_at = _dt.now(_tz.utc).isoformat()

@@ -148,6 +148,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A default `pip install` ran the cDNA pipeline with exact-match SSP and adapter anchoring.**
+  `edlib`, which the fuzzy anchoring in `cdna/read_info.py` and `cdna/walkback.py` needs, was only
+  in the optional `[cdna-correct]` extra, and without it both modules fell back to exact matching
+  without a word: a molecule with one basecall error in its SSP became Type 2 (no UMI, no
+  deduplication, adapter left as a 5′ clip), the reverse-frame pretrim missed its adapter, and the
+  walkback misread poly(A) tails (56 nt for a 36-nt tail on a bundled validation read). GitHub CI
+  showed it as 13 red cDNA tests. `edlib` is now a core dependency, and `correct-cdna` and
+  `cdna-analyze` log a WARNING naming the consequence if it is missing
+  (`tests/test_cdna_edlib_dependency.py`).
+- `calibrate_junction_overhang` used `Series.fillna(method=)`, which pandas 3 removed (a TypeError).
+- The per-read junction renderer's fallback floor check (used when the house figure package is not
+  installed) exempts `fig.texts` from the type floor as the house package does, and falls back to
+  Liberation Sans (Arial-metric) before DejaVu Sans; CI installs `fonts-liberation`.
+- `test_correct_no_bam_warning` reads the bundled genome from the shipped `.fsa.gz` when the
+  gitignored `.fsa` is absent.
+
 - **2H decides every candidate inside the walk, in the writer's order** (Codex
   audit 2026-09-13/14). The move gates and the CIGAR surgery were consulted about
   the HEAD of the ranking only, so a head the gates vetoed, or one the surgery

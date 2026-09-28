@@ -58,10 +58,9 @@ possible input for splice-junction calling.
 
 ## Installation
 
-UMI clustering (`rapidfuzz`) and per-cluster re-alignment (`mappy`) ship with
-the core `rectify-rna` package. For the best consensus quality, install the
-`[cdna-correct]` extra, which adds fuzzy adapter anchoring (`edlib`) and
-abPOA consensus (`pyabpoa`):
+UMI clustering (`rapidfuzz`), per-cluster re-alignment (`mappy`) and fuzzy SSP/adapter
+anchoring (`edlib`) ship with the core `rectify-rna` package. For the best consensus quality,
+install the `[cdna-correct]` extra, which adds abPOA consensus (`pyabpoa`):
 
 ```bash
 pip install "rectify-rna[cdna-correct]"
@@ -71,11 +70,13 @@ pip install "rectify-rna[cdna-correct]"
 |---------|------|------|
 | `rapidfuzz` | Fast Levenshtein distance for UMI clustering | core |
 | `mappy` | In-process minimap2 for per-cluster consensus re-alignment | core |
-| `edlib` | Fuzzy (Lev≤2) adapter-anchor alignment | `[cdna-correct]` |
+| `edlib` | Fuzzy (Lev≤2) SSP and adapter-anchor alignment | core |
 | `pyabpoa` | Partial-order-alignment (POA) consensus across PCR siblings | `[cdna-correct]` |
 
-Without the `[cdna-correct]` extras, `correct-cdna` falls back to exact-match
-adapter anchors and pileup-style consensus — still functional, just less robust.
+Without `pyabpoa`, `correct-cdna` uses a pileup-style consensus. `edlib` is required: without it
+SSP and adapter anchoring fall back to exact matching, so a molecule with one basecall error in its
+SSP is classified Type 2 (no UMI, no deduplication) and poly(A) tail lengths are misread.
+`correct-cdna` and `cdna-analyze` log a WARNING if it is missing.
 
 ---
 

@@ -413,6 +413,8 @@ def run(args) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s")
+    from ..cdna.deps import warn_if_edlib_missing
+    warn_if_edlib_missing(log, "correct-cdna")
 
     if not args.bam.exists():
         log.error("BAM not found: %s", args.bam)

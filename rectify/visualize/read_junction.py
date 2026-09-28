@@ -144,7 +144,10 @@ def apply_style(matplotlib_module) -> None:
         return
     t = tokens()
     T, S = _type(), _stroke()
-    fam = t["typography"]["family"]
+    # Without Arial (a Linux runner, a cluster node) the generic family would land on DejaVu Sans,
+    # which is wide enough to push the header off the page. Liberation Sans is metric-compatible
+    # with Arial, so it keeps the house layout wherever it is installed.
+    fam = [f for f in t["typography"]["family"] if f != "sans-serif"] + ["Liberation Sans", "DejaVu Sans"]
     matplotlib_module.rcParams.update({
         "font.family": "sans-serif", "font.sans-serif": fam, "font.size": T["in_figure"],
         "axes.labelsize": T["axis_label"], "xtick.labelsize": T["tick_label"], "ytick.labelsize": T["tick_label"],
@@ -156,7 +159,9 @@ def apply_style(matplotlib_module) -> None:
 
 def check_floors(fig, **kw) -> bool:
     """Type / stroke / on-page floors. Delegates to the skill's ``panels.check_floors``; without the
-    skill, a local check of the same three rules against the tokens."""
+    skill, a local check of the same three rules against the tokens. As in the house package,
+    ``fig.texts`` (provenance footer, stamp, concise legend, whose sizes the figure standard fixes)
+    are exempt from the type floor but not from the on-page check."""
     P = _skill_panels()
     if P is not None:
         return P.check_floors(fig, **kw)
@@ -169,6 +174,7 @@ def check_floors(fig, **kw) -> bool:
     r = fig.canvas.get_renderer()
     W, H = fig.bbox.width, fig.bbox.height
     texts = list(fig.texts)
+    type_exempt = {id(tx) for tx in fig.texts}
     for ax in fig.axes:
         texts += list(ax.texts)
         for a in list(ax.patches) + list(ax.lines):
@@ -178,7 +184,7 @@ def check_floors(fig, **kw) -> bool:
     for tx in texts:
         if not tx.get_text().strip() or not tx.get_visible():
             continue
-        if tx.get_fontsize() * ratio * 25.4 / 72.0 < cap_min - 1e-3:
+        if id(tx) not in type_exempt and tx.get_fontsize() * ratio * 25.4 / 72.0 < cap_min - 1e-3:
             bad.append(("type", tx.get_text()[:30], tx.get_fontsize()))
         bb = tx.get_window_extent(r)
         if bb.x0 < -0.5 or bb.y0 < -0.5 or bb.x1 > W + 0.5 or bb.y1 > H + 0.5:
