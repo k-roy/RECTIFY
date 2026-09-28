@@ -129,6 +129,9 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple
 import pysam
 
 from ...utils.genome import standardize_chrom_name
+from .block_shift import (
+    AtomicReadPlan, apply_atomic_plan, decoded_copy, plan_block_shifts,
+)
 
 # CIGAR-op constants and the Junction type alias live in junction_scoring so
 # scoring kernels and this orchestrator share a single source of truth.
@@ -746,7 +749,7 @@ def refine_read_junctions(
     microhom_threshold: float = 0.5,
     drift_near_tie_cap: float = 0.0,
     drift_positional_gate: float = 0.0,
-) -> List[Tuple[int, int, int, int, int]]:
+) -> list:
     """Find improved junctions for all N-ops in a read.
 
     Args:
@@ -772,10 +775,10 @@ def refine_read_junctions(
         boundary_error_window: Only refine N-ops that have at least one
                               mismatch (X) or indel (I/D) op within this many
                               reference bases of either junction boundary.
-                              Reads with clean M-op alignments at the boundary
-                              are already correctly placed and don't need
-                              refinement.  Set to 0 to disable this filter and
-                              score every N-op.
+                              This filters the legacy boundary scorer only;
+                              M can contain mismatches, so the whole-block
+                              fallback checks actual sequence even for M. Set
+                              to 0 to score every N-op in the legacy path.
         max_junction_size:    Optional maximum candidate intron/junction length.
                               For yeast, 10000 keeps organism-plausible
                               junctions while removing long noisy N-op calls.
@@ -786,8 +789,9 @@ def refine_read_junctions(
         profile:              Optional aggregate profiler.
 
     Returns:
-        List of (cigar_idx, old_start, old_end, new_start, new_end) for each
-        N-op that should be updated.  Empty if no changes needed.
+        Legacy (cigar_idx, old_start, old_end, new_start, new_end) tuples,
+        or one AtomicReadPlan containing all legacy and whole-block changes.
+        Empty if no changes are needed. Never a mixed list.
     """
     if not read.cigartuples or read.is_unmapped:
         return []
@@ -796,6 +800,13 @@ def refine_read_junctions(
     q = read.query_sequence
     if not q:
         return []
+    # Decode against the original coordinates BEFORE scoring. A later block
+    # shift must never reinterpret reference-compressed SEQ at its destination.
+    if "=" in q:
+        read = decoded_copy(read, genome_seq)
+        q = read.query_sequence
+        if "=" in q:
+            return []  # unresolved compression cannot support placement
     # ISSUE-021: ``_iter_n_ops`` counts ``q_split`` from the first ALIGNED query
     # base — a LEADING soft clip is excluded by design — but ``q`` is pysam's
     # ``query_sequence``, which INCLUDES the soft-clipped bases.  Indexing ``q``
@@ -1195,6 +1206,29 @@ def refine_read_junctions(
     # Ascending cigar_idx, the order the walk emitted before it was reversed;
     # the writer sorts descending itself.
     replacements.sort(key=lambda r: r[0])
+    # Conservative whole-block fallback runs AFTER all legacy decisions. It
+    # sees exactly the successfully written legacy state, and reserves any N
+    # changed there. Returning a single whole-read plan avoids interleaving
+    # edits whose CIGAR indices or adjacent-boundary expectations conflict.
+    # Research policies remain entirely on the existing legacy path.
+    if not (motif_blind or hold_margin or hp_drift_margin or microhom_drift_margin
+            or drift_near_tie_cap or drift_positional_gate
+            or _ANNOTATED_CANONICAL_HOLD != 1.0):
+        evolved, _ = _apply_replacements_to_read(
+            read, replacements, genome_seq, strand, hp_pen, W,
+        ) if replacements else (read, False)
+        plan = plan_block_shifts(
+            read, evolved, all_junctions_idx, annotated_set, genome_seq, strand,
+            max_boundary_shift=max_boundary_shift, search_radius=search_radius,
+            max_junction_size=max_junction_size,
+            max_candidates_per_nop=max_candidates_per_nop,
+        )
+        if plan is not None:
+            if profile is not None:
+                profile.inc('whole_block_shifts', len(plan.evidence))
+            if counters is not None:
+                counters['whole_block_shifts'] += len(plan.evidence)
+            return [plan]
     return replacements
 
 
@@ -1698,8 +1732,12 @@ def _apply_replacements_to_read(
     Returns the original *read* unchanged if no replacements apply or if the
     copy fails.
     """
+    if any(isinstance(r, AtomicReadPlan) for r in replacements):
+        if len(replacements) != 1 or not isinstance(replacements[0], AtomicReadPlan):
+            return read, False  # never partially apply an invalid mixed plan
+        return apply_atomic_plan(read, replacements[0], genome_seq)
     try:
-        modified_read = read.__copy__()
+        modified_read = decoded_copy(read, genome_seq)
     except Exception:
         return read, False
 
@@ -2381,8 +2419,13 @@ def evaluate_hp_pen_values(
                     search_radius=search_radius,
                 )
 
-                rep_map = {(old_ns, old_ne): (new_ns, new_ne)
-                           for _, old_ns, old_ne, new_ns, new_ne in replacements}
+                if replacements and isinstance(replacements[0], AtomicReadPlan):
+                    rep_map = {(a, b): (c, d)
+                               for a, b, c, d in replacements[0].junction_map
+                               if (a, b) != (c, d)}
+                else:
+                    rep_map = {(old_ns, old_ne): (new_ns, new_ne)
+                               for _, old_ns, old_ne, new_ns, new_ne in replacements}
 
                 for ns, ne in n_ops:
                     currently_gt = (chrom, ns, ne) in gt_set

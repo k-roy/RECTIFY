@@ -98,8 +98,12 @@ import pytest
 # the previous result set exactly: 36/36 reads byte-identical against a clean 5205d97
 # worktree. Prior goldens a767f6b1… and cd06c38a…
 GOLDEN_HASH_VALIDATION_MINIMAP2_NT2 = (
-    "534840270ec7934358228ec192a46b79b18a2ec5778816aea13b0f3d20b36e86"
+    "09f05981492bd3c11aea4cabb52eb834d5a06dcdb33fb975f387c3f686d7003b"
 )
+# 2026-09-20 ISSUE-050: tail_correction_enabled=True is the only added field
+# on this DRS fixture. Removing it reproduces the previous53484027... hash;
+# all36 rows agree through serial and a real reused-one-child production pool.
+# Evidence: dev/audits/ultracode_20260919/implementation/remaining_fixes/worker_review/.
 # Re-recorded 2026-09-05 (ISSUE-026 invariant D): the result dict gained the
 # `five_prime_exon2_prefix` key (schema change only — the bundled validation
 # reads' corrections are unchanged: test_validation_reads{,_upf1d}.py 184 passed
@@ -173,6 +177,27 @@ def validation_genome():
     return str(genome)
 
 
+def _process_with_worker_limit(**kwargs):
+    """Optional M1 test limit: keep the real pool driver with only one child.
+
+    RECTIFY_TEST_MAX_WORKERS=1 uses the supported pre-created pool container;
+    default runs still exercise two workers. No scoring or result substitution.
+    """
+    from inspect import signature
+    from rectify.core.bam import parallel as p
+
+    if kwargs.get('n_threads') != 2 or os.environ.get('RECTIFY_TEST_MAX_WORKERS') != '1':
+        return p.process_bam_file_parallel(**kwargs)
+    shared = {k: v for k, v in kwargs.items()
+              if k in signature(p._process_region_worker).parameters
+              and k not in ('region', 'bam_path', 'genome', 'polya_model')}
+    with p._get_bam_worker_context().Pool(
+        1, initializer=p._init_region_worker_state,
+        initargs=(kwargs['genome_path'], kwargs.get('polya_model_path'), shared),
+    ) as pool:
+        return p.process_bam_file_parallel(reuse_pool_container=[pool], **kwargs)
+
+
 def test_process_bam_file_parallel_deterministic(validation_bam, validation_genome):
     """process_bam_file_parallel must produce a deterministic result set.
 
@@ -183,7 +208,7 @@ def test_process_bam_file_parallel_deterministic(validation_bam, validation_geno
     """
     from rectify.core.bam.parallel import process_bam_file_parallel
 
-    results = process_bam_file_parallel(
+    results = _process_with_worker_limit(
         bam_path=validation_bam,
         genome_path=validation_genome,
         n_threads=2,  # forces the mp.Pool path
@@ -255,8 +280,8 @@ def test_process_bam_file_parallel_single_threaded_matches_parallel(
         min_aligned_length=0,
     )
 
-    serial = process_bam_file_parallel(n_threads=1, **common_kwargs)
-    parallel = process_bam_file_parallel(n_threads=2, **common_kwargs)
+    serial = _process_with_worker_limit(n_threads=1, **common_kwargs)
+    parallel = _process_with_worker_limit(n_threads=2, **common_kwargs)
 
     assert _stable_hash_results(serial) == _stable_hash_results(parallel), (
         "n_threads=1 and n_threads=2 produced different hashes — worker "

@@ -358,6 +358,9 @@ def _run_deseq2(
             stat_res = DeseqStats(
                 dds,
                 contrast=["condition", orig_to_dds[treatment], orig_to_dds[reference_condition]],
+                # Stats otherwise creates a new inference object using every
+                # host CPU, independently of the requested dataset limit.
+                inference=dds.inference,
             )
             stat_res.summary()
 

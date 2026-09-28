@@ -82,6 +82,13 @@ def _run_alignment(
     Tuple of (per_aligner_bams, multialigned_bam) where per_aligner_bams maps
     aligner name → BAM path for each per-aligner BAM found on disk.
     """
+    # Bind terminal-placement rediscovery to this invocation's references and
+    # protocol settings, including resume paths that never call run_align.
+    _terminal_context = None
+    if not short_read and not dt_primed_cdna and annotation_path:
+        from ...splice.terminal_tail_placement import terminal_tail_context
+        _terminal_context = terminal_tail_context(genome_path, annotation_path)
+
     multialigned_bam = _multialigned_bam_path(sample_id, sample_output_dir)
 
     # Backward compatibility: accept the older ``.consensus.bam`` name from prior
@@ -105,12 +112,18 @@ def _run_alignment(
     )
     _run_provenance = compute_run_provenance(command=_sys.argv)
 
-    if _validate_bam_integrity(multialigned_bam):
+    from ...splice.terminal_tail_placement import terminal_selection_matches
+    _terminal_selection_ok = terminal_selection_matches(multialigned_bam, _terminal_context)
+    if not _terminal_selection_ok and multialigned_bam.exists():
+        print("    Cached alignment selection has stale or missing terminal-placement "
+              "context; rebuilding selection (raw aligner reuse remains allowed).")
+    if _validate_bam_integrity(multialigned_bam) and _terminal_selection_ok:
         if trust_existing_bams:
             print(f"    Skipping alignment — multialigned.bam exists (--trust-existing-bams): {multialigned_bam}")
             per_aligner_bams = _collect_per_aligner_bams(
                 sample_id, sample_output_dir,
                 run_provenance=None, trust_existing_bams=True,
+                terminal_tail_context=_terminal_context,
             )
             return per_aligner_bams, multialigned_bam
         _expected = expected_provenance_for_aligner(_run_provenance, "consensus")
@@ -121,6 +134,7 @@ def _run_alignment(
             per_aligner_bams = _collect_per_aligner_bams(
                 sample_id, sample_output_dir,
                 run_provenance=_run_provenance, trust_existing_bams=False,
+                terminal_tail_context=_terminal_context,
             )
             return per_aligner_bams, multialigned_bam
         print(
@@ -281,6 +295,7 @@ def _run_alignment(
     per_aligner_bams = _collect_per_aligner_bams(
         sample_id, sample_output_dir,
         run_provenance=_run_provenance, trust_existing_bams=trust_existing_bams,
+        terminal_tail_context=_terminal_context,
     )
 
     try:
@@ -326,6 +341,8 @@ def _run_correction(
     args,
     aligner_bams: Optional[List[Path]] = None,
     reuse_pool_container: Optional[list] = None,
+    retain_writer_input: bool = False,
+    writer_input_origin: Optional[Path] = None,
 ) -> Path:
     """
     Run rectify correct on a BAM, writing corrected_reads.tsv into output_dir.
@@ -335,6 +352,10 @@ def _run_correction(
         (junction refinement). Required to match the CLAUDE.md "validated"
         correct-first pipeline order. When provided, every per-aligner
         correction gets the full cross-aligner junction candidate pool.
+    retain_writer_input: keep the post-2H BAM the rows are decided against, bound to the TSV
+        by a receipt (ISSUE-079). The per-aligner route sets it: its merge and final writer
+        replay the TSV onto a BAM and must get that alignment state, not the raw arm.
+    writer_input_origin: the durable arm BAM when ``bam_path`` is a temporary sorted copy.
     """
     from .. import correct_command
 
@@ -431,6 +452,8 @@ def _run_correction(
         verbose=False,
         # Pool reuse: injected by _run_correction_per_aligner for ac>1; None otherwise.
         reuse_pool_container=reuse_pool_container,
+        retain_writer_input=retain_writer_input,
+        writer_input_origin=str(writer_input_origin) if writer_input_origin else None,
     )
 
     correct_command.run(correct_args)
@@ -465,6 +488,67 @@ def _per_aligner_canonical_output(aligner_output_dir: Path) -> Optional[Path]:
     tsv_path = aligner_output_dir / 'corrected_reads.tsv'
     if tsv_path.exists():
         return tsv_path
+    return None
+
+
+def _verified_per_aligner_output(
+    aligner_output_dir: Path,
+    arm_bam: Path,
+    pool_bams: List[Path],
+    aligner_name: str,
+) -> Optional[Path]:
+    """The arm's canonical corrected output, only when its writer-input receipt vouches for it.
+
+    ISSUE-079. A parseable TSV used to be enough, which let three things through: a legacy TSV
+    with no paired post-2H BAM (the final writer then undid every 2H placement), the previous
+    run's TSV after THIS run's correction failed, and a TSV decided against a candidate pool
+    that has since changed. All three now return None, and the caller corrects the arm again.
+    """
+    from ...bam import writer_input
+
+    canonical = _per_aligner_canonical_output(aligner_output_dir)
+    if canonical is None:
+        return None
+    try:
+        import pandas as pd
+        if not len(pd.read_csv(canonical, sep='\t', nrows=1).columns):
+            return None
+    except Exception:
+        return None
+    try:
+        writer_input.load(canonical, origin_bam=arm_bam, pool_bams=pool_bams)
+    except writer_input.WriterInputError as exc:
+        print(f"    [{aligner_name}] Prior output not reusable — {exc}")
+        return None
+    return canonical
+
+
+def _per_aligner_corrected_bam(
+    aligner_output_dir: Path, bam_path: Path, sorted_bam: Optional[Path] = None,
+) -> Optional[Path]:
+    """The ``rectified_corrected_3end.bam`` ``_run_correction`` emits for this arm, if any.
+
+    Naming convention: ``{input_bam.stem stripped of .rectified/.consensus}``. Absent when
+    ``--write-corrected-bam`` was off upstream; ``merge_corrected_tsvs`` then scores lazily.
+    """
+    # ISSUE-084: ``_run_correction`` names the file from the BAM it was GIVEN and strips only
+    # .rectified/.consensus, so an arm that had to be coordinate-sorted first is written as
+    # ``<arm>.coord_sorted.rectified_corrected_3end.bam``. This collector used to strip
+    # .coord_sorted as well and never found it — and an arm with no corrected BAM scores
+    # hp_edit_distance = inf in the merge, i.e. it can never win. Look for the name actually
+    # written first, then the historical one.
+    _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
+    for _sfx in ('.rectified', '.consensus'):
+        if _stem.endswith(_sfx):
+            _stem = _stem[:-len(_sfx)]
+            break
+    _stems = [_stem]
+    if _stem.endswith('.coord_sorted'):
+        _stems.append(_stem[:-len('.coord_sorted')])
+    for _candidate in _stems:
+        _corr_bam = aligner_output_dir / f"{_candidate}.rectified_corrected_3end.bam"
+        if _corr_bam.exists():
+            return _corr_bam
     return None
 
 
@@ -525,7 +609,10 @@ def _run_correction_per_aligner(
 
     Writes per-aligner outputs to ``output_dir/per_aligner_corrected/{aligner}/``.
     Skips any aligner whose canonical output (``corrected_reads.manifest.tsv``
-    or ``corrected_reads.tsv``) already exists and parses (safe to resume).
+    or ``corrected_reads.tsv``) already exists, parses, and is vouched for by its
+    writer-input receipt (ISSUE-079; see :func:`_verified_per_aligner_output`).
+    Callers resolve the BAM to replay each TSV onto with
+    :func:`rectify.core.bam.writer_input.resolve_writer_inputs` — never the raw arm.
 
     Reads ``args.aligner_concurrency`` (default ``'auto'``) and resolves it via
     :func:`rectify.core.utils.resources.resolve_aligner_concurrency`. The
@@ -598,6 +685,11 @@ def _run_correction_per_aligner(
 
     per_aligner_tsvs: Dict[str, Path] = {}
     per_aligner_corrected_bams: Dict[str, Path] = {}
+    # Pass ALL per-aligner BAMs so Module 2H (junction refinement) can build the
+    # cross-aligner candidate junction pool — the documented "correct-first" pipeline
+    # order in CLAUDE.md. Without this every per-aligner correction would run with
+    # Module 2H silently disabled.
+    _all_aligner_bams = list(per_aligner_bams.values())
 
     if not _use_shared_pool:
         # Sequential path: one pool per aligner, or no pool (n_threads=1).
@@ -610,19 +702,19 @@ def _run_correction_per_aligner(
             # (--emit-merged-tsv legacy). The previous tsv-only check meant
             # manifest-only runs never skipped on resume and silently re-ran the
             # whole correction stage on every attempt.
-            _canonical = _per_aligner_canonical_output(aligner_output_dir)
-            _output_valid = False
+            _canonical = _verified_per_aligner_output(
+                aligner_output_dir, bam_path, _all_aligner_bams, aligner_name)
             if _canonical is not None:
-                try:
-                    import pandas as pd
-                    _df = pd.read_csv(_canonical, sep='\t', nrows=1)
-                    _output_valid = len(_df.columns) > 0
-                except Exception:
-                    _output_valid = False
-
-            if _output_valid:
                 print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
                 per_aligner_tsvs[aligner_name] = _canonical
+                # The skip used to drop the arm's corrected BAM, so a resumed run merged under
+                # a different scoring input than the run it resumed.
+                _corr_bam = (_per_aligner_corrected_bam(aligner_output_dir, bam_path)
+                             or _per_aligner_corrected_bam(
+                                 aligner_output_dir, bam_path,
+                                 bam_path.with_suffix('.coord_sorted.bam')))
+                if _corr_bam is not None:
+                    per_aligner_corrected_bams[aligner_name] = _corr_bam
                 continue
 
             print(f"    [{aligner_name}] Correcting {bam_path.name}...")
@@ -652,11 +744,6 @@ def _run_correction_per_aligner(
                         sorted_bam.unlink(missing_ok=True)
                     continue
             try:
-                # Pass ALL per-aligner BAMs so Module 2H (junction refinement) can
-                # build the cross-aligner candidate junction pool — the documented
-                # "correct-first" pipeline order in CLAUDE.md. Without this every
-                # per-aligner correction would run with Module 2H silently disabled.
-                _all_aligner_bams = list(per_aligner_bams.values())
                 _run_correction(
                     bam_path=correction_bam,
                     output_dir=aligner_output_dir,
@@ -664,6 +751,8 @@ def _run_correction_per_aligner(
                     annotation_path=annotation_path,
                     args=args,
                     aligner_bams=_all_aligner_bams,
+                    retain_writer_input=True,
+                    writer_input_origin=bam_path,
                 )
             except Exception as exc:
                 print(
@@ -676,21 +765,14 @@ def _run_correction_per_aligner(
                     sorted_bai = Path(str(sorted_bam) + '.bai')
                     sorted_bai.unlink(missing_ok=True)
 
-            _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
+            # Verified, not merely present: a failed run leaves no receipt, so the previous
+            # run's TSV cannot stand in for this one.
+            _canonical_after = _verified_per_aligner_output(
+                aligner_output_dir, bam_path, _all_aligner_bams, aligner_name)
             if _canonical_after is not None:
                 per_aligner_tsvs[aligner_name] = _canonical_after
-                # Find the corrected BAM emitted by _run_correction.  Naming
-                # convention: ``{input_bam.stem stripped of .rectified/.consensus}
-                # .rectified_corrected_3end.bam``.  When ``--write-corrected-bam``
-                # was disabled upstream this file won't exist; that's fine —
-                # absence triggers legacy 5-key sort in merge_corrected_tsvs.
-                _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
-                for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
-                    if _stem.endswith(_sfx):
-                        _stem = _stem[:-len(_sfx)]
-                        break
-                _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
-                if _corr_bam.exists():
+                _corr_bam = _per_aligner_corrected_bam(aligner_output_dir, bam_path, sorted_bam)
+                if _corr_bam is not None:
                     per_aligner_corrected_bams[aligner_name] = _corr_bam
             else:
                 print(
@@ -709,19 +791,19 @@ def _run_correction_per_aligner(
             aligner_output_dir = per_aligner_dir / aligner_name
             aligner_output_dir.mkdir(exist_ok=True)
 
-            _canonical = _per_aligner_canonical_output(aligner_output_dir)
-            _output_valid = False
+            _canonical = _verified_per_aligner_output(
+                aligner_output_dir, bam_path, _all_aligner_bams, aligner_name)
             if _canonical is not None:
-                try:
-                    import pandas as pd
-                    _df = pd.read_csv(_canonical, sep='\t', nrows=1)
-                    _output_valid = len(_df.columns) > 0
-                except Exception:
-                    _output_valid = False
-
-            if _output_valid:
                 print(f"    [{aligner_name}] Skipping — output exists: {_canonical}")
                 per_aligner_tsvs[aligner_name] = _canonical
+                # The skip used to drop the arm's corrected BAM, so a resumed run merged under
+                # a different scoring input than the run it resumed.
+                _corr_bam = (_per_aligner_corrected_bam(aligner_output_dir, bam_path)
+                             or _per_aligner_corrected_bam(
+                                 aligner_output_dir, bam_path,
+                                 bam_path.with_suffix('.coord_sorted.bam')))
+                if _corr_bam is not None:
+                    per_aligner_corrected_bams[aligner_name] = _corr_bam
                 continue
 
             print(f"    [{aligner_name}] Correcting {bam_path.name} (shared pool)...")
@@ -746,7 +828,6 @@ def _run_correction_per_aligner(
                         sorted_bam.unlink(missing_ok=True)
                     continue
             try:
-                _all_aligner_bams = list(per_aligner_bams.values())
                 _run_correction(
                     bam_path=correction_bam,
                     output_dir=aligner_output_dir,
@@ -755,6 +836,8 @@ def _run_correction_per_aligner(
                     args=args,
                     aligner_bams=_all_aligner_bams,
                     reuse_pool_container=_pool_container,
+                    retain_writer_input=True,
+                    writer_input_origin=bam_path,
                 )
             except Exception as exc:
                 print(
@@ -767,16 +850,12 @@ def _run_correction_per_aligner(
                     sorted_bai = Path(str(sorted_bam) + '.bai')
                     sorted_bai.unlink(missing_ok=True)
 
-            _canonical_after = _per_aligner_canonical_output(aligner_output_dir)
+            _canonical_after = _verified_per_aligner_output(
+                aligner_output_dir, bam_path, _all_aligner_bams, aligner_name)
             if _canonical_after is not None:
                 per_aligner_tsvs[aligner_name] = _canonical_after
-                _stem = (sorted_bam.stem if sorted_bam is not None else bam_path.stem)
-                for _sfx in ('.rectified', '.consensus', '.coord_sorted'):
-                    if _stem.endswith(_sfx):
-                        _stem = _stem[:-len(_sfx)]
-                        break
-                _corr_bam = aligner_output_dir / f"{_stem}.rectified_corrected_3end.bam"
-                if _corr_bam.exists():
+                _corr_bam = _per_aligner_corrected_bam(aligner_output_dir, bam_path, sorted_bam)
+                if _corr_bam is not None:
                     per_aligner_corrected_bams[aligner_name] = _corr_bam
             else:
                 print(

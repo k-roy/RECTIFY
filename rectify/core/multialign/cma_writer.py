@@ -17,6 +17,8 @@ stream-group them without a global sort (planning/254 §2.1).
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from array import array
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
@@ -118,7 +120,20 @@ def _emit_read_records(aligner_records, panel, header, genome=None) -> List[pysa
             # Store fully-explicit nucleotides (resolve any '=' match-encoding),
             # so variants at OTHER placements reconstruct real bases (no-op on
             # explicit-SEQ production BAMs). Setting SEQ clears QUAL → save/restore.
-            decoded = decode_eq_seq(payload_rec, genome)
+            try:
+                decoded = decode_eq_seq(payload_rec, genome)
+            except IndexError as exc:
+                raise ValueError(
+                    f"CMA payload for read {canonical!r} exceeds reference "
+                    f"{payload_rec.reference_name!r}; supply the matching --genome."
+                ) from exc
+            if decoded is not None and "=" in decoded:
+                raise ValueError(
+                    f"CMA payload for read {canonical!r} contains unresolved '=' bases "
+                    f"at {payload_rec.reference_name}:{payload_rec.reference_start}. "
+                    "Supply the matching --genome (or --Scer); '=' in an insertion "
+                    "or soft clip requires the original explicit read sequence."
+                )
             if decoded is not None and decoded != rec.query_sequence:
                 q = rec.query_qualities
                 rec.query_sequence = decoded
@@ -161,17 +176,30 @@ def build_cma(read_stream, template_header, out_path: str, panel: Iterable[str],
 
     ``genome`` ({reference_name: str}) is only consulted to decode SAM ``=``
     match-encoded SEQ (calmd -e / the DRS fixture); pass it whenever inputs may
-    be ``=``-encoded. Returns ``{'reads': n, 'records': m}``.
+    be ``=``-encoded. Unresolved payload bases raise ValueError. Publish the BAM
+    only after the complete stream succeeds, preserving any existing output on
+    failure. Returns ``{'reads': n, 'records': m}``.
     """
     panel = list(panel)
     header = _augment_header(template_header, panel)
     n_reads = n_records = 0
-    with pysam.AlignmentFile(out_path, "wb", header=header) as out:
-        for _read_key, aligner_records in read_stream:
-            for rec in _emit_read_records(aligner_records, panel, header, genome):
-                out.write(rec)
-                n_records += 1
-            n_reads += 1
+    out_path = os.fspath(out_path)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(out_path)}.", suffix=".tmp.bam",
+        dir=os.path.dirname(os.path.abspath(out_path)),
+    )
+    os.close(fd)
+    try:
+        with pysam.AlignmentFile(temporary, "wb", header=header) as out:
+            for _read_key, aligner_records in read_stream:
+                for rec in _emit_read_records(aligner_records, panel, header, genome):
+                    out.write(rec)
+                    n_records += 1
+                n_reads += 1
+        os.replace(temporary, out_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     logger.info("CMA written: %s (%d reads, %d records)", out_path, n_reads, n_records)
     return {"reads": n_reads, "records": n_records}
 

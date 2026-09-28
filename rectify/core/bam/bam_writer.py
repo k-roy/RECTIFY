@@ -22,11 +22,16 @@ Date: 2026-03-09
 
 from typing import Dict, Optional, Tuple
 import copy
+from contextlib import contextmanager, ExitStack
 import logging
 import os
+import tempfile
 import pysam
 
 from ...utils.genome import get_chrom_sequence
+from .alignment_tags import (
+    decode_original_sequence, finalize_alignment_tags, placement_state,
+)
 from ..splice.overhang_informativeness import is_canonical_junction
 from .read_edits import (
     clip_read_to_corrected_3prime,
@@ -49,60 +54,38 @@ def _decode_eq_seq_inplace(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
 ) -> bool:
-    """Replace ``=`` characters in ``read.query_sequence`` with the genome
-    base at the corresponding reference position.
+    """Decode reference-relative SEQ before editing; refuse unresolved input."""
+    return decode_original_sequence(read, genome)
 
-    BAM/SAM spec allows ``SEQ`` to contain ``=`` as a shorthand for "matches
-    reference at this position". Aligners that emit this compressed form
-    (minimap2, gapmm2, deSALT, uLTRA on long ``=``-CIGAR runs) propagate
-    the ``=`` chars through to downstream BAMs unless explicitly decoded.
-    Downstream consumers that read ``query_sequence`` and compare to the
-    reference (notably ``_cigar_hp_edit_distance`` in winner-selection)
-    misinterpret ``=`` as a literal mismatch and score every M-block base
-    as wrong — silently biasing winner-selection against any aligner that
-    used the compressed form.
 
-    Decoding at BAM-write time produces explicit-SEQ BAMs that all consumers
-    can read uniformly. Bloat is typically +20–40 % on minimap2-family BAMs
-    (perfect-match runs compress poorly once expanded) and zero on aligners
-    that already emit explicit bases. Returns True if any ``=`` was decoded.
+@contextmanager
+def _atomic_bam_outputs(paths, header):
+    """Publish closed, validated BAMs; processing failure preserves old outputs.
 
-    Only M/=/X CIGAR ops can carry ``=`` in SEQ per spec (those positions
-    have a defined ref base); I, S positions are passed through untouched.
+    Each destination rename is atomic. A dual-output pair has two renames and
+    is not a filesystem transaction across both names.
     """
-    if read.is_unmapped:
-        return False
-    seq = read.query_sequence
-    if seq is None or '=' not in seq:
-        return False
-    chrom_seq, _chrom_key = get_chrom_sequence(genome, read.reference_name) if genome else (None, None)
-    if chrom_seq is None:
-        return False
-    new_chars = list(seq)
-    ref_pos = read.reference_start
-    q_pos = 0
-    decoded_any = False
-    for op, length in read.cigartuples or []:
-        if op in (0, 7, 8):                # M, =, X — consume ref + query
-            for i in range(length):
-                if new_chars[q_pos + i] == '=' and ref_pos + i < len(chrom_seq):
-                    new_chars[q_pos + i] = chrom_seq[ref_pos + i].upper()
-                    decoded_any = True
-            ref_pos += length
-            q_pos += length
-        elif op in (1, 4):                 # I, S — consume query only
-            q_pos += length
-        elif op in (2, 3):                 # D, N — consume ref only
-            ref_pos += length
-        # H (5), P (6) — consume neither
-    if not decoded_any:
-        return False
-    # Re-assigning query_sequence clobbers query_qualities; save and restore.
-    saved_qual = read.query_qualities
-    read.query_sequence = ''.join(new_chars)
-    if saved_qual is not None:
-        read.query_qualities = saved_qual
-    return True
+    if len({os.path.abspath(path) for path in paths}) != len(paths):
+        raise ValueError('Corrected BAM output paths must be distinct')
+    temporary = []
+    try:
+        with ExitStack() as stack:
+            outputs = []
+            for path in paths:
+                directory = os.path.dirname(os.path.abspath(path))
+                fd, temp = tempfile.mkstemp(
+                    prefix='.' + os.path.basename(path) + '.', suffix='.tmp.bam', dir=directory
+                )
+                os.close(fd)
+                temporary.append((temp, path))
+                outputs.append(stack.enter_context(pysam.AlignmentFile(temp, 'wb', header=header)))
+            yield tuple(outputs)
+        for temp, path in temporary:
+            os.replace(temp, path)
+    finally:
+        for temp, _ in temporary:
+            if os.path.exists(temp):
+                os.unlink(temp)
 
 
 def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict]:
@@ -132,14 +115,16 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_5p_trim = hdr.index('five_prime_upstream_trim')    if 'five_prime_upstream_trim'    in hdr else -1
             i_5p_reanc = hdr.index('reanchor_clip_len')          if 'reanchor_clip_len'           in hdr else -1
             i_5p_e2    = hdr.index('five_prime_exon2_prefix')    if 'five_prime_exon2_prefix'     in hdr else -1
+            i_5p_e2c   = hdr.index('five_prime_exon2_cigar')     if 'five_prime_exon2_cigar'      in hdr else -1
             # Cat2 soft-clip rescue columns (v2.9.1)
             i_sc_ext   = hdr.index('sc_homopolymer_extension')  if 'sc_homopolymer_extension'  in hdr else -1
             i_sc_seq   = hdr.index('sc_rescued_seq')             if 'sc_rescued_seq'             in hdr else -1
             i_sc_sclen = hdr.index('sc_original_softclip_len')  if 'sc_original_softclip_len'  in hdr else -1
             # Case 4 intronic-snap BAM hard-clip column (v2.9.8)
             i_5p_icp   = hdr.index('five_prime_intron_clip_pos') if 'five_prime_intron_clip_pos' in hdr else -1
-            # ISSUE-034: most-parsimonious origin of an unplaced 5' clip (BAM tag XO)
+            # ISSUE-034/056: unplaced 5' clip origin (Xo; XO remains cDNA orientation).
             i_5p_orig  = hdr.index('five_prime_clip_origin')     if 'five_prime_clip_origin'     in hdr else -1
+            i_tail = hdr.index('tail_correction_enabled') if 'tail_correction_enabled' in hdr else -1
             # Over-call rescue columns
             i_oc_ext   = hdr.index('oc_homopolymer_extension')   if 'oc_homopolymer_extension'   in hdr else -1
             i_oc_cnt   = hdr.index('oc_overcall_count')          if 'oc_overcall_count'          in hdr else -1
@@ -172,6 +157,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 five_prime_trim    = int(parts[i_5p_trim])   if i_5p_trim >= 0 and len(parts) > i_5p_trim and parts[i_5p_trim] else 0
                 five_prime_reanc   = int(parts[i_5p_reanc])  if i_5p_reanc >= 0 and len(parts) > i_5p_reanc and parts[i_5p_reanc] else 0
                 five_prime_e2      = int(parts[i_5p_e2])     if i_5p_e2 >= 0 and len(parts) > i_5p_e2 and parts[i_5p_e2] else 0
+                five_prime_e2c     = parts[i_5p_e2c]         if i_5p_e2c >= 0 and len(parts) > i_5p_e2c else ''
                 five_prime_orig    = parts[i_5p_orig]        if i_5p_orig >= 0 and len(parts) > i_5p_orig else ''
                 # Cat2 fields
                 sc_ext   = int(parts[i_sc_ext])   if i_sc_ext   >= 0 and len(parts) > i_sc_ext   and parts[i_sc_ext]   else 0
@@ -191,6 +177,12 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 sb_ie   = parts[i_sb_ie] if i_sb_ie >= 0 and len(parts) > i_sb_ie else ''
 
                 corrections[rid] = {
+                    # Old TSVs keep the legacy tail behavior. New fragmented
+                    # short-read rows explicitly disable it across all writers.
+                    'tail_correction_enabled': not (
+                        i_tail >= 0 and len(parts) > i_tail
+                        and parts[i_tail].strip().lower() in ('0', 'false')
+                    ),
                     'corrected_3prime':           corr_pos,
                     'strand':                     strand,
                     'five_prime_position':        five_prime_pos,
@@ -200,6 +192,7 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'five_prime_upstream_trim':   five_prime_trim,
                     'reanchor_clip_len':          five_prime_reanc,
                     'five_prime_exon2_prefix':    five_prime_e2,
+                    'five_prime_exon2_cigar':     five_prime_e2c,
                     'five_prime_intron_clip_pos': five_prime_icp,
                     'five_prime_clip_origin':     five_prime_orig,
                     'sc_homopolymer_extension':   sc_ext,
@@ -535,6 +528,8 @@ def apply_5prime_rescue_surgery(
     # ISSUE-026 invariant D: junction-side clip bases over exon-2 positions,
     # drawn as M after the N-op so it ends at the reported acceptor.
     _e2 = int(correction.get('five_prime_exon2_prefix', 0) or 0)
+    # ISSUE-083 re-split: the exon-2 head's CIGAR ('' = the flat kM prefix).
+    _e2c = correction.get('five_prime_exon2_cigar', '') or ''
     _extend_ok = True
     if _rescued and _icp >= 0:
         _edge = projected_5prime_rescue_intron_edge(
@@ -543,6 +538,8 @@ def apply_5prime_rescue_surgery(
             correction['strand'],
             correction.get('five_prime_upstream_trim', 0),
             exon2_prefix=_e2,
+            exon_cigar_str=_exon_cig,
+            exon2_cigar_str=_e2c,
         )
         _extend_ok = (_edge is not None and _edge == _icp)
 
@@ -557,6 +554,7 @@ def apply_5prime_rescue_surgery(
             exon_cigar_str=_exon_cig,
             upstream_trim=correction.get('five_prime_upstream_trim', 0),
             exon2_prefix=_e2,
+            exon2_cigar_str=_e2c,
         )
         if not modified:
             refusal = REFUSAL_EXTEND
@@ -640,17 +638,21 @@ def predict_5prime_rescue_refusal(
     if correction is None or not correction.get('five_prime_rescued'):
         return ''
     probe = copy.deepcopy(read)
-    # Mirror apply_corrected_edits_to_read's pre-passes exactly (order matters:
-    # both mutate the CIGAR the surgery then measures).
-    if genome is not None:
-        _decode_eq_seq_inplace(probe, genome)
-    _rcl = correction.get('reanchor_clip_len', 0)
-    if _rcl > 0:
-        _apply_reanchor_from_clip_len(probe, _rcl)
-    if genome is not None:
-        realign_exon_blocks(probe, genome)
-    _, refusal = apply_5prime_rescue_surgery(probe, correction, genome)
+    _, refusal = _apply_5prime_edits(probe, correction, genome)
     return refusal
+
+
+def _apply_5prime_edits(read, correction, genome):
+    """Shared geometry through 2F, before Station B or either 3' output mode."""
+    _decode_eq_seq_inplace(read, genome)
+    modified = False
+    reanchor = correction.get('reanchor_clip_len', 0)
+    if reanchor > 0:
+        modified |= _apply_reanchor_from_clip_len(read, reanchor)
+    if genome is not None:
+        modified |= realign_exon_blocks(read, genome)
+    changed, refusal = apply_5prime_rescue_surgery(read, correction, genome)
+    return modified or changed, refusal
 
 
 def _parse_segment_list(text: str):
@@ -669,7 +671,8 @@ def _parse_segment_list(text: str):
     return out
 
 
-def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> bool:
+def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict,
+                              *, drawn_call_indices: Optional[list] = None) -> bool:
     """Draw the row's micro-exon configurations into *read*'s CIGAR (ISSUE-040/043). True when it
     changed. Applies EVERY call the row carries, not only the first.
 
@@ -713,6 +716,8 @@ def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> 
                         try:
                             read.cigartuples = rewrite_with_microexons(cigar, j, idx, segs, i_start)
                             changed = True
+                            if drawn_call_indices is not None:
+                                drawn_call_indices.append(call_idx)
                             drawn_calls.append({'intron': [i_start, i_end],
                                                 'exons': [list(s) for s in segs],
                                                 'alternatives': alternatives[call_idx]})
@@ -725,7 +730,42 @@ def apply_station_b_microexons(read: pysam.AlignedSegment, correction: Dict) -> 
     # Record only calls whose live surgery succeeded. This is also the path used
     # by direct callers; final tags must never be inferred from a planned TSV row.
     record_microexon_draws(read, drawn_calls)
+    if changed:
+        # Inserted query bases now align inside recovered exons. Old mismatch
+        # counts, alignment scores and edit strings describe a different CIGAR.
+        # Delete individually to retain typed arrays and duplicate source tags.
+        for tag in ('MD', 'NM', 'AS', 'ms', 'cs', 'de', 'dv', 'UQ'):
+            while read.has_tag(tag):
+                read.set_tag(tag, None)
     return changed
+
+
+def project_station_b_placement(read, correction, genome=None):
+    """Run the writer on a copy through 2F and B; return live geometry and draws.
+
+    The TSV must describe successful surgery, including reanchor-only changes.
+    An overlapping proposed 2F junction is insufficient evidence to cancel B:
+    its writer can refuse, or the reanchor can remove the original B substrate.
+    """
+    probe = copy.deepcopy(read)
+    _apply_5prime_edits(probe, correction, genome)
+    drawn = []
+    apply_station_b_microexons(probe, correction, drawn_call_indices=drawn)
+    return probe, drawn
+
+
+def _apply_shared_corrected_edits(read, correction, genome):
+    """The same 5' and body edits for single/dual, hard/soft output."""
+    modified, _ = _apply_5prime_edits(read, correction, genome)
+    # Search used the original aligner record. Re-derive the N/I coordinates
+    # here after 2F; successful draws alone receive Xb provenance.
+    modified |= apply_station_b_microexons(read, correction)
+    # Lowercase Xo is placement-specific clip origin; uppercase XO is the
+    # pre-existing cDNA orientation contract. Apply to every writer mode.
+    origin = correction.get('five_prime_clip_origin') or ''
+    if origin:
+        read.set_tag('Xo', origin)
+    return modified
 
 
 def apply_corrected_edits_to_read(
@@ -746,39 +786,14 @@ def apply_corrected_edits_to_read(
     if read.is_unmapped or read.is_secondary or read.is_supplementary:
         return False
 
-    # Decode '='-compressed SEQ so every downstream scorer/writer sees explicit
-    # bases.  This mirrors the legacy write_corrected_bam pre-pass.
-    if genome is not None:
-        _decode_eq_seq_inplace(read, genome)
-
     if correction is None:
+        if genome is not None:
+            _decode_eq_seq_inplace(read, genome)
         return False
 
-    modified = False
-
-    # 5'-edge reanchor pre-pass: when bam_processor's 3'SS rescue used a
-    # reanchored copy of the read (TSV reanchor_clip_len > 0), apply the same
-    # deterministic reanchor here BEFORE realign_exon_blocks so the live CIGAR
-    # matches the geometry that exon_cigar was sized for.
-    _rcl = correction.get('reanchor_clip_len', 0)
-    if _rcl > 0:
-        modified |= _apply_reanchor_from_clip_len(read, _rcl)
-
-    # Homopolymer CIGAR surgery: re-align exon blocks with X ops at homopolymer
-    # positions so under-called DRS homopolymers are represented as indels.
-    if genome is not None:
-        modified |= realign_exon_blocks(read, genome)
-
-    _5p_modified, _ = apply_5prime_rescue_surgery(read, correction, genome)
-    modified |= _5p_modified
-
-    # STATION B (ISSUE-040): draw annotated micro-exons the aligner orphaned as an insertion beside
-    # a junction. Applied HERE, after the 5' surgery, deliberately: the search reads the ALIGNER's
-    # record in bam_processor, and drawing it in the writer means station B's new N-ops are never
-    # candidates for this read's own 2F rescue — a micro-exon must not become a 5' landing that
-    # skipped the evidence floor. The row carries the intron and the segments; the op indices are
-    # re-derived from the LIVE record here, so a 2F edit elsewhere in the CIGAR cannot misplace it.
-    modified |= apply_station_b_microexons(read, correction)
+    _decode_eq_seq_inplace(read, genome)
+    before = placement_state(read)
+    modified = _apply_shared_corrected_edits(read, correction, genome)
 
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):
@@ -807,14 +822,12 @@ def apply_corrected_edits_to_read(
     )
 
     # Additional hard-clip: remove any trailing genomic A-run at the 3' end.
-    modified |= _hardclip_trailing_a_run(read, correction['strand'])
+    if correction.get('tail_correction_enabled', True):
+        modified |= _hardclip_trailing_a_run(read, correction['strand'])
 
     # Tag the final corrected 3' end so it is visible in IGV / samtools view.
     read.set_tag('cp', correction['corrected_3prime'])
-    # ISSUE-034: the 5' clip's most-parsimonious origin (quantitation; never a junction).
-    _xo = correction.get('five_prime_clip_origin') or ''
-    if _xo:
-        read.set_tag('XO', _xo)
+    finalize_alignment_tags(read, before, genome)
     return modified
 
 
@@ -860,7 +873,8 @@ def write_corrected_bam(
     stats: Dict[str, int] = {'total': 0, 'clipped': 0, 'unchanged': 0}
 
     with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header) as bam_out:
+         _atomic_bam_outputs((output_bam_path,), bam_in.header) as outputs:
+        bam_out, = outputs
 
         for read in bam_in:
             stats['total'] += 1
@@ -903,7 +917,8 @@ def write_softclipped_bam(
     stats: Dict[str, int] = {'total': 0, 'clipped': 0, 'unchanged': 0}
 
     with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_bam_path, 'wb', header=bam_in.header) as bam_out:
+         _atomic_bam_outputs((output_bam_path,), bam_in.header) as outputs:
+        bam_out, = outputs
 
         for read in bam_in:
             stats['total'] += 1
@@ -913,33 +928,17 @@ def write_softclipped_bam(
                 stats['unchanged'] += 1
                 continue
 
-            # Decode '='-compressed SEQ so every emitted read has explicit
-            # bases (see _decode_eq_seq_inplace docstring).
-            if genome is not None:
-                _decode_eq_seq_inplace(read, genome)
-
             correction = corrections.get(read.query_name)
             if correction is None:
+                if genome is not None:
+                    _decode_eq_seq_inplace(read, genome)
                 bam_out.write(read)
                 stats['unchanged'] += 1
                 continue
 
-            modified = False
-
-            # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
-            _rcl = correction.get('reanchor_clip_len', 0)
-            if _rcl > 0:
-                modified |= _apply_reanchor_from_clip_len(read, _rcl)
-
-            # Homopolymer CIGAR surgery: re-align exon blocks.
-            if genome is not None:
-                modified |= realign_exon_blocks(read, genome)
-
-            # 5' junction rescue (Cat3 / Cases 1/2/2b/4) — the SAME routing and
-            # canonical-destination guard the hard-clip writer uses. This block
-            # used to be a copy of it and silently missed the ISSUE-002 fix.
-            _5p_mod, _ = apply_5prime_rescue_surgery(read, correction, genome)
-            modified |= _5p_mod
+            _decode_eq_seq_inplace(read, genome)
+            before = placement_state(read)
+            modified = _apply_shared_corrected_edits(read, correction, genome)
 
             # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
             if correction.get('sc_rescued_seq'):
@@ -971,6 +970,7 @@ def write_softclipped_bam(
             )
 
             read.set_tag('cp', correction['corrected_3prime'])
+            finalize_alignment_tags(read, before, genome)
 
             bam_out.write(read)
             if modified:
@@ -1031,8 +1031,8 @@ def write_dual_bam(
     sc_stats: Dict[str, int] = {'total': 0, 'clipped': 0, 'unchanged': 0}
 
     with pysam.AlignmentFile(input_bam_path, 'rb') as bam_in, \
-         pysam.AlignmentFile(output_hardclip_path, 'wb', header=bam_in.header) as bam_hc, \
-         pysam.AlignmentFile(output_softclip_path, 'wb', header=bam_in.header) as bam_sc:
+         _atomic_bam_outputs((output_hardclip_path, output_softclip_path), bam_in.header) as outputs:
+        bam_hc, bam_sc = outputs
 
         for read in bam_in:
             hc_stats['total'] += 1
@@ -1045,44 +1045,24 @@ def write_dual_bam(
                 sc_stats['unchanged'] += 1
                 continue
 
-            # Decode '='-compressed SEQ so both emitted BAMs carry explicit
-            # bases (see _decode_eq_seq_inplace docstring).
-            if genome is not None:
-                _decode_eq_seq_inplace(read, genome)
-
             correction = corrections.get(read.query_name)
             if correction is None:
+                if genome is not None:
+                    _decode_eq_seq_inplace(read, genome)
                 bam_hc.write(read)
                 bam_sc.write(read)
                 hc_stats['unchanged'] += 1
                 sc_stats['unchanged'] += 1
                 continue
 
-            # Apply shared pre-pass — identical for both BAMs.
-            shared_modified = False
+            _decode_eq_seq_inplace(read, genome)
+            before = placement_state(read)
+            shared_modified = _apply_shared_corrected_edits(read, correction, genome)
 
-            # 5'-edge reanchor pre-pass (see write_corrected_bam for rationale).
-            _rcl = correction.get('reanchor_clip_len', 0)
-            if _rcl > 0:
-                shared_modified |= _apply_reanchor_from_clip_len(read, _rcl)
-
-            # Homopolymer CIGAR surgery: re-align exon blocks.
-            if genome is not None:
-                shared_modified |= realign_exon_blocks(read, genome)
-
-            # 5' rescue (Cat3 / Cases 1/2/2b/4) — identical for both BAMs, and
-            # the SAME routing + canonical-destination guard the hard-clip writer
-            # uses. This block used to be a copy of it and silently missed the
-            # ISSUE-002 fix.
-            _5p_mod, _ = apply_5prime_rescue_surgery(read, correction, genome)
-            shared_modified |= _5p_mod
-
-            # Save state at the divergence point (after shared ops, before 3' ops).
-            # Only cigar, seq, quals, and reference_start are mutated by any path.
-            saved_cigar     = list(read.cigartuples or [])
-            saved_seq       = read.query_sequence
-            saved_quals_arr = read.query_qualities          # numpy array or None
-            saved_refstart  = read.reference_start
+            # Snapshot every SAM field, including typed array tags, before the
+            # 3' modes diverge. Restoring tags through explicit B type tuples is
+            # not supported by pysam.set_tags; a read copy preserves their type.
+            soft_read = copy.deepcopy(read)
 
             # ── Hardclip path ────────────────────────────────────────────────
             hc_modified = shared_modified
@@ -1110,19 +1090,19 @@ def write_dual_bam(
             # Genomic A-rich 3' UTR regions are indistinguishable from poly(A) tail
             # in the read sequence; hard-clip removes them for an unambiguous view.
             # The soft-clip path below does NOT apply this — it retains them as aligned.
-            hc_modified |= _hardclip_trailing_a_run(read, correction['strand'])
+            if correction.get('tail_correction_enabled', True):
+                hc_modified |= _hardclip_trailing_a_run(read, correction['strand'])
             read.set_tag('cp', correction['corrected_3prime'])
+            finalize_alignment_tags(read, before, genome)
             bam_hc.write(read)
             if hc_modified:
                 hc_stats['clipped'] += 1
             else:
                 hc_stats['unchanged'] += 1
 
-            # ── Restore state before softclip path ───────────────────────────
-            read.cigartuples     = saved_cigar
-            read.query_sequence  = saved_seq
-            read.query_qualities = saved_quals_arr
-            read.reference_start = saved_refstart
+            # Restore the complete shared placement, including Xb and all
+            # original tags, without leaking hard-branch changes into soft.
+            read = soft_read
 
             # ── Softclip path ────────────────────────────────────────────────
             sc_modified = shared_modified
@@ -1147,6 +1127,7 @@ def write_dual_bam(
                 read, correction['corrected_3prime'], correction['strand']
             )
             read.set_tag('cp', correction['corrected_3prime'])
+            finalize_alignment_tags(read, before, genome)
             bam_sc.write(read)
             if sc_modified:
                 sc_stats['clipped'] += 1

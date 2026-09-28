@@ -1,7 +1,10 @@
 """Smoke test: write_corrected_bam_parallel produces output equivalent to
 the existing single-threaded write_corrected_bam on a small fixture.
 
-Uses the bundled 36-read validation BAM + corrected_reads.tsv.
+Uses the immutable bundled raw minimap2 36-read BAM + supplied corrected_reads.tsv
+edit instructions. The older post-consensus validation_reads.bam has lost the
+placement context of six SEQ '=' cells in five insertions; it is retained below
+as a refusal fixture, not silently decoded or repaired from another basecall.
 
 Run with:
     pytest tests/test_bam_writer_parallel_smoke.py -v
@@ -34,7 +37,8 @@ from tests.utils.bam_compare import assert_bams_equivalent
 # ---------------------------------------------------------------------------
 
 _DATA_DIR = Path(__file__).parent.parent / "rectify" / "data" / "validation"
-_FIXTURE_BAM = _DATA_DIR / "validation_reads.bam"
+_HISTORICAL_BAM = _DATA_DIR / "validation_reads.bam"
+_FIXTURE_BAM = _DATA_DIR / "aligners" / "validation_reads.minimap2.bam"
 _FIXTURE_TSV = _DATA_DIR / "corrected_reads.tsv"
 
 
@@ -72,6 +76,50 @@ def legacy_bam(fixture_bam, fixture_tsv, genome, tmp_path_factory):
     out_path = str(tmp / "legacy.bam")
     write_corrected_bam(fixture_bam, fixture_tsv, out_path, genome=genome)
     return out_path
+
+
+def test_historical_unplaced_equals_refuse_without_inventing_sequence(genome):
+    """All five historical malformed records remain explicit refusal controls."""
+    from rectify.core.bam import bam_writer as writer
+    corrections = writer._load_corrections_from_tsv(str(_FIXTURE_TSV))
+    bad = []
+    with pysam.AlignmentFile(str(_HISTORICAL_BAM)) as bam:
+        for read in bam:
+            q = 0
+            unplaced = []
+            for op, length in read.cigartuples:
+                if op in (1, 4):
+                    unplaced.extend(q+i for i in range(length)
+                                    if read.query_sequence[q+i] == '=')
+                if op in (0, 1, 4, 7, 8):
+                    q += length
+            if unplaced:
+                bad.append((read.query_name, unplaced))
+                before = read.to_string()
+                with pytest.raises(ValueError, match='equals in insertion or soft clip'):
+                    writer.apply_corrected_edits_to_read(
+                        read, corrections[read.query_name], genome
+                    )
+                assert read.to_string() == before
+    assert len(bad) == 5 and sum(len(cells) for _, cells in bad) == 6
+
+
+def test_historical_unplaced_equals_preserve_previous_output_files(genome, tmp_path):
+    """A later bad historical record cannot publish a partial replacement BAM."""
+    from rectify.core.bam import bam_writer as writer
+    paths = [tmp_path / name for name in ('hard.bam', 'soft.bam', 'dual_hard.bam', 'dual_soft.bam')]
+    for i, path in enumerate(paths):
+        path.write_bytes(f'previous-{i}'.encode())
+    calls = [
+        lambda: writer.write_corrected_bam(str(_HISTORICAL_BAM), str(_FIXTURE_TSV), str(paths[0]), genome),
+        lambda: writer.write_softclipped_bam(str(_HISTORICAL_BAM), str(_FIXTURE_TSV), str(paths[1]), genome),
+        lambda: writer.write_dual_bam(str(_HISTORICAL_BAM), str(_FIXTURE_TSV), str(paths[2]), str(paths[3]), genome),
+    ]
+    for call in calls:
+        with pytest.raises(ValueError, match='equals in insertion or soft clip'):
+            call()
+    assert [p.read_bytes() for p in paths] == [f'previous-{i}'.encode() for i in range(4)]
+    assert not list(tmp_path.glob('.*.tmp.bam'))
 
 
 # ---------------------------------------------------------------------------
@@ -197,21 +245,23 @@ def test_write_corrected_consensus_bam_from_raw_matches_legacy_single_aligner(
 # Helpers shared by the two new strengthened tests
 # ---------------------------------------------------------------------------
 
-def _build_perturbed_tsv(fixture_tsv_path: str, out_tsv: Path) -> None:
-    """Write a perturbed copy of the fixture corrected_reads.tsv.
+def _build_perturbed_tsv(
+    fixture_tsv_path: str, out_tsv: Path, *, first_half: bool
+) -> None:
+    """Apply inward 50-bp clipping to one of two complementary read cohorts.
 
-    For the first 18 reads (half of 36), shift ``corrected_3prime`` toward the
-    transcript interior by 50 bp.  The resulting per-aligner corrected BAM will
-    have a different hard-clip position on those reads, producing different
-    HP-edit-distance values and (crucially) different per-read winner decisions
-    when compared to the unperturbed fixture.
+    The two labelled arms are controlled edits of the same immutable raw
+    minimap2 input, not claims about actual uLTRA output. Each arm retains the
+    unperturbed placement for the cohort clipped in the other arm. This tests
+    real, nondegenerate winner routing without assuming that discarding matches
+    can improve the production HP score (hard clips cost 1/base).
 
-    The fixture carries a stale ``winning_aligner`` column from a prior 5-aligner
-    run, but merge_corrected_tsvs now drops that column on load (the fix for the
-    rename-collision bug), so no stripping is needed here.
+    Keep the old winning_aligner column: production merge must replace it.
     """
     tsv = pd.read_csv(fixture_tsv_path, sep="\t")
-    for i in range(18):
+    split = len(tsv) // 2
+    cohort = range(split) if first_half else range(split, len(tsv))
+    for i in cohort:
         row = tsv.iloc[i]
         if row["strand"] == "+":
             tsv.loc[tsv.index[i], "corrected_3prime"] = int(row["corrected_3prime"]) - 50
@@ -233,14 +283,10 @@ def test_lazy_merge_distinct_aligners_select_same_winners(
     every read a perfect tie — winner selection is degenerate and cannot catch
     a materialise-vs-lazy divergence where only one aligner's CIGAR was mutated.
 
-    This test uses TWO DISTINCT (BAM, TSV) pairs:
-    - minimap2: the unmodified fixture (original corrected BAM)
-    - uLTRA: a perturbed fixture with corrected_3prime shifted -50/+50 bp for
-      the first 18 reads (direction inward toward the transcript body)
-
-    The perturbation produces different HP-edit-distances on those 18 reads,
-    forcing real per-read winner selection where minimap2 and uLTRA each win
-    some reads.
+    This test uses two controlled correction arms on the raw minimap2 input.
+    The minimap2-labelled arm clips inward by 50 bp for the first half; the
+    uLTRA-labelled arm clips the complementary half. Each arm retains the
+    original placement for the opposite cohort. Both must win actual reads.
 
     Assert:
     1. At least one read has each aligner as the winner (non-trivial selection).
@@ -249,18 +295,20 @@ def test_lazy_merge_distinct_aligners_select_same_winners(
     """
     # Build perturbed TSV and corresponding corrected BAMs.
     perturbed_tsv = tmp_path / "perturbed.tsv"
+    original_tsv = tmp_path / "original.tsv"
     original_bam = tmp_path / "original.bam"
     perturbed_bam = tmp_path / "perturbed.bam"
 
-    _build_perturbed_tsv(fixture_tsv, perturbed_tsv)
+    _build_perturbed_tsv(fixture_tsv, original_tsv, first_half=True)
+    _build_perturbed_tsv(fixture_tsv, perturbed_tsv, first_half=False)
 
     # Pass the fixture TSV directly — merge_corrected_tsvs drops the stale
     # winning_aligner column on load, so no pre-stripping is needed.
-    write_corrected_bam(fixture_bam, fixture_tsv, str(original_bam), genome=genome)
+    write_corrected_bam(fixture_bam, str(original_tsv), str(original_bam), genome=genome)
     write_corrected_bam(fixture_bam, str(perturbed_tsv), str(perturbed_bam), genome=genome)
 
     per_aligner_tsvs = {
-        "minimap2": Path(fixture_tsv),
+        "minimap2": original_tsv,
         "uLTRA": perturbed_tsv,
     }
 
@@ -320,9 +368,8 @@ def test_consensus_bam_per_aligner_writes_correctly(
 ):
     """Extend test_write_corrected_consensus_bam_from_raw_matches_legacy_single_aligner.
 
-    Using the same perturbation strategy (minimap2 = original fixture, uLTRA =
-    corrected_3prime-shifted fixture), this test verifies that the final consensus
-    BAM produced by write_corrected_consensus_bam contains:
+    Using complementary inward-clipping cohorts for two controlled correction
+    arms, this test verifies that the final consensus BAM contains:
 
     1. Exactly N=36 written reads (all reads accounted for).
     2. For every minimap2-winning read: the consensus CIGAR matches the
@@ -336,18 +383,20 @@ def test_consensus_bam_per_aligner_writes_correctly(
     winning aligner.
     """
     perturbed_tsv = tmp_path / "perturbed.tsv"
+    original_tsv = tmp_path / "original.tsv"
     original_bam = tmp_path / "original.bam"
     perturbed_bam = tmp_path / "perturbed.bam"
 
-    _build_perturbed_tsv(fixture_tsv, perturbed_tsv)
+    _build_perturbed_tsv(fixture_tsv, original_tsv, first_half=True)
+    _build_perturbed_tsv(fixture_tsv, perturbed_tsv, first_half=False)
 
     # Pass the fixture TSV directly — merge_corrected_tsvs drops the stale
     # winning_aligner column on load, so no pre-stripping is needed.
-    write_corrected_bam(fixture_bam, fixture_tsv, str(original_bam), genome=genome)
+    write_corrected_bam(fixture_bam, str(original_tsv), str(original_bam), genome=genome)
     write_corrected_bam(fixture_bam, str(perturbed_tsv), str(perturbed_bam), genome=genome)
 
     per_aligner_tsvs: Dict[str, Path] = {
-        "minimap2": Path(fixture_tsv),
+        "minimap2": original_tsv,
         "uLTRA": perturbed_tsv,
     }
 
@@ -455,9 +504,9 @@ def test_merge_corrected_tsvs_ignores_stale_winning_aligner_column(
     )
     stale_values = set(raw_fixture["winning_aligner"].dropna().unique())
 
-    # Build a perturbed second TSV so winner selection is non-degenerate.
+    # Use a genuinely different second correction arm for stale-column parity.
     perturbed_tsv = tmp_path / "perturbed.tsv"
-    _build_perturbed_tsv(fixture_tsv, perturbed_tsv)
+    _build_perturbed_tsv(fixture_tsv, perturbed_tsv, first_half=True)
 
     # Build reference (clean) output using the pre-stripped path that already
     # works, to establish the expected winners.

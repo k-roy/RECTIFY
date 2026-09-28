@@ -8,7 +8,7 @@ TSS bridge walk-forward, full-length classification).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pysam
 
@@ -19,6 +19,7 @@ from ._constants import (
     ANCHOR_RC,
     ANCHOR_SEARCH_WIN,
     ANCHOR_UPSTREAM_WIN,
+    BRIDGE_LEN,
     COMPLEMENT_TABLE,
     END_WINDOW_BP,
     POLY_A_ANCH_RE,
@@ -78,15 +79,30 @@ def _find_anchor_fuzzy(window: str, anchor: str, rightmost: bool) -> int:
 
 
 def find_ssp_span(seq: str, frame: str) -> Tuple[int, int]:
+    """Return the uniquely supported SSP span, or ``(-1, -1)``.
+
+    Both classification and trimming use this same boundary decision. An
+    unresolved primer boundary supplies no UMI or 5' trimming coordinate.
+    """
+    start, end, _ambiguous = _find_ssp_match(seq, frame)
+    return start, end
+
+
+def _find_ssp_match(seq: str, frame: str) -> Tuple[int, int, bool]:
     """``(start, end_exclusive)`` of the strand-switching primer in ``seq`` for
     ``frame`` (``fwd`` → ``SSP_FWD`` near the LEFT, ``rev`` → ``SSP_RC`` near the
-    RIGHT), or ``(-1, -1)``.
+    RIGHT), with an ambiguity flag; or ``(-1, -1, ambiguous)``.
 
     Exact search first, unwindowed — the historical behaviour, byte-identical
     for every read it already classified. The fuzzy fallback (edlib HW,
     ≤ ``SSP_MAX_EDIT`` edits) is WINDOW-GATED to the end where the SSP belongs
     (``SSP_SEARCH_WIN``), the same discipline as the stage-1 trimmer's finder
     (planning/681: an unwindowed ≤3-edit 23-mer is found in ordinary mRNA).
+
+    Tied fuzzy RNA-side endpoints require one uniquely bridge-supported
+    SSP + 27-nt UMI + GGG layout. An unresolved tie returns the no-hit sentinel;
+    callers can retain the molecule as Type 2 without an asserted UMI or 5' cut.
+    The ambiguity flag carries orientation evidence only, never a boundary.
 
     Why fuzzy at all (rbrowse r120_4585 / WT-AA_WT_rep2, 2026-09-11): ONT
     R10.4.1 miscalls a base of the 23-nt SSP on a real fraction of full-length
@@ -99,33 +115,49 @@ def find_ssp_span(seq: str, frame: str) -> Tuple[int, int]:
     pattern = SSP_FWD if frame == "fwd" else SSP_RC
     p = seq.find(pattern) if frame == "fwd" else seq.rfind(pattern)
     if p >= 0:
-        return p, p + len(pattern)
+        return p, p + len(pattern), False
     if not HAS_EDLIB:
-        return -1, -1
-    if frame == "fwd":
-        off, window = 0, seq[:SSP_SEARCH_WIN]
-    else:
-        off = max(0, len(seq) - SSP_SEARCH_WIN)
-        window = seq[off:]
-    r = edlib.align(pattern, window, mode="HW", task="locations", k=SSP_MAX_EDIT)
+        return -1, -1, False
+    # Search in RNA orientation in both frames. HW reports every co-optimal
+    # END but only one START for each end. Searching SSP_RC directly can hide
+    # a tied RNA-side endpoint, exactly the boundary used to slice the UMI.
+    window = (seq[:SSP_SEARCH_WIN] if frame == "fwd"
+              else revcomp(seq[-SSP_SEARCH_WIN:]))
+    r = edlib.align(SSP_FWD, window, mode="HW", task="locations", k=SSP_MAX_EDIT)
     if r["editDistance"] == -1 or not r["locations"]:
-        return -1, -1
+        return -1, -1, False
     locs = [l for l in r["locations"] if l[0] is not None and l[1] is not None]
     if not locs:                          # edlib: end found, start not localizable
-        return -1, -1
-    # Co-optimal locations differ by a few bases when the SSP's END bases are
-    # the miscalled ones: a trailing mismatch ties with trailing deletions of
-    # the pattern (shorter span) and with an insertion before the last base
-    # (longer span). The UMI is sliced at the span boundary, so the choice must
-    # be one rule applied to every read: take the occurrence at the adapter
-    # end (fwd = leftmost start, rev = rightmost end), then the span whose
-    # length equals the pattern's (the substitution reading), then the longer.
-    L = len(pattern)
-    if frame == "fwd":
-        start, end = sorted(locs, key=lambda l: (l[0], abs(l[1] - l[0] + 1 - L), -l[1]))[0]
+        return -1, -1, False
+    # Equal edit distance is not evidence for a substitution rather than an
+    # indel. A span-length tie breaker can retain bridge bases or remove real
+    # RNA. The established SSP + 27-nt UMI + GGG layout can resolve a tied
+    # boundary without looking at the unknown UMI or genomic body sequence.
+    # Only ties need the intact bridge; a uniquely placed primer still works
+    # when the bridge itself contains a basecall error.
+    ends = {end + 1 for _, end in locs}
+    if len(ends) > 1:
+        supported = set()
+        for end in ends:
+            layout_end = end + UMI_LEN + BRIDGE_LEN
+            if layout_end > len(seq):
+                continue
+            if frame == "fwd":
+                bridge = seq[end + UMI_LEN:layout_end]
+            else:
+                bridge = revcomp(seq[len(seq) - layout_end:
+                                     len(seq) - end - UMI_LEN])
+            if bridge == "G" * BRIDGE_LEN:
+                supported.add(end)
+        if len(supported) != 1:
+            return -1, -1, True
+        end = supported.pop()
     else:
-        start, end = sorted(locs, key=lambda l: (-l[1], abs(l[1] - l[0] + 1 - L), l[0]))[0]
-    return off + start, off + end + 1
+        end = ends.pop()
+    start = min(start for start, stop in locs if stop + 1 == end)
+    if frame == "fwd":
+        return start, end, False
+    return len(seq) - end, len(seq) - start, False
 
 
 def detect_full_length_tier(seq: str, orient: str) -> int:
@@ -196,7 +228,7 @@ class ReadInfo:
     aln_end: int         # v1.14: aligned region end (exclusive) in ref coords
     read_type: int       # v1.15: 1 = SSP+UMI captured, 2 = SSP-less (5'-truncated, e.g. decay intermediate)
     pos5_corrected: int  # v1.19: TSS-side position corrected for SSP-bridge G-tract ambiguity (analog of 3' polyA walk-back)
-    read_subtype: str    # "umi_captured_fwd" (Type-1, SSP+UMI at 5') / "umi_captured_rev" (Type-1, SSP+UMI at 3' via pA-first traversal) / "umi_not_captured" (Type-2, pA-first truncated before UMI)
+    read_subtype: str    # umi_captured_fwd/rev (Type1); umi_not_captured or umi_boundary_ambiguous (Type2)
     # dorado's signal-level poly(A) estimate (``pt:i``) when the pre-aligned record
     # carries it (uBAM -> ``samtools fastq -T pt`` -> ``minimap2 -y``); None when absent or
     # negative (dorado writes -1 for "not estimated"). Independent of ``tail_len``, which is
@@ -244,7 +276,8 @@ def extract_read_info(read: pysam.AlignedSegment,
     read_type = 1
     umi_basecalled: Optional[str] = None
     orient: Optional[str] = None
-    p, e = find_ssp_span(seq, "fwd")
+    ambiguous_rev = False
+    p, e, ambiguous_fwd = _find_ssp_match(seq, "fwd")
     if p >= 0:
         umi_basecalled = seq[e: e + UMI_LEN]
         if len(umi_basecalled) == UMI_LEN:
@@ -252,7 +285,7 @@ def extract_read_info(read: pysam.AlignedSegment,
         else:
             umi_basecalled = None
     if orient is None:
-        p, _e = find_ssp_span(seq, "rev")
+        p, _e, ambiguous_rev = _find_ssp_match(seq, "rev")
         if p >= UMI_LEN:
             umi_rc = seq[p - UMI_LEN: p]
             umi_basecalled = revcomp(umi_rc)
@@ -261,7 +294,7 @@ def extract_read_info(read: pysam.AlignedSegment,
             else:
                 umi_basecalled = None
 
-    # ---- Type 2 fallback (SSP truncated; infer orient from polyA/adapter) ----
+    # ---- Type 2 fallback (SSP absent/ambiguous; infer orient from polyA/adapter) ----
     if orient is None:
         # Test both BAM-SEQ ends for adapter+polyA pattern. detect_full_length_tier
         # returns 2 (anchored) or 1 (unanchored polyA only) when the pattern is
@@ -270,8 +303,13 @@ def extract_read_info(read: pysam.AlignedSegment,
         tier_fwd = detect_full_length_tier(seq, "fwd")
         tier_rev = detect_full_length_tier(seq, "rev")
         if tier_fwd == 0 and tier_rev == 0:
-            return None
-        if tier_fwd >= tier_rev:
+            # A detected but boundary-ambiguous primer still supplies its
+            # frame when it occurs on only one end. Retain this observation
+            # without claiming a UMI, full-length evidence, or a 5' trim.
+            if ambiguous_fwd == ambiguous_rev:
+                return None
+            orient = "fwd" if ambiguous_fwd else "rev"
+        elif tier_fwd >= tier_rev:
             orient = "fwd"
         else:
             orient = "rev"
@@ -306,6 +344,8 @@ def extract_read_info(read: pysam.AlignedSegment,
 
     if read_type == 1:
         read_subtype = "umi_captured_fwd" if orient == "fwd" else "umi_captured_rev"
+    elif (ambiguous_fwd if orient == "fwd" else ambiguous_rev):
+        read_subtype = "umi_boundary_ambiguous"
     else:
         read_subtype = "umi_not_captured"
 

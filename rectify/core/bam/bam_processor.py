@@ -291,6 +291,7 @@ def correct_read_3prime(
     ont_cDNA: bool = False,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
     use_dorado_polya: bool = False,
+    short_read: bool = False,
 ) -> List[Dict]:
     """
     Apply all corrections to a single read.
@@ -309,6 +310,10 @@ def correct_read_3prime(
     Returns:
         Dict with correction results
     """
+    # Fragmented TruSeq ends are not cleavage/poly(A) ends. QuantSeq REV and
+    # explicitly labeled cDNA retain their existing tail-bearing chemistry.
+    tail_correction_enabled = not short_read or dt_primed_cDNA or ont_cDNA
+
     # Decode SAM-spec ``=`` shorthand in SEQ before any module reads
     # query_sequence. Aligners with ``=``-CIGAR emission (minimap2, gapmm2,
     # deSALT, uLTRA) propagate ``=`` chars into SEQ at match positions; any
@@ -394,6 +399,7 @@ def correct_read_3prime(
                 'junctions_str': _chimeric_junctions_str,
                 'n_junctions': len(_chimeric_junctions),
                 'strand_evidence': _strand_evidence,
+                'tail_correction_enabled': tail_correction_enabled,
                 **_consensus_tags,
             }]
     except KeyError:
@@ -455,6 +461,7 @@ def correct_read_3prime(
     _five_prime_upstream_trim = 0    # set by 3'SS rescue equivalence-extension (cat3 - strand)
     _reanchor_clip_len = 0           # set by 3'SS rescue reanchor pre-pass (mpb 5'-edge cluster)
     _five_prime_exon2_prefix = 0     # ISSUE-026 invariant D: clip bases over exon 2, drawn as M after the N
+    _five_prime_exon2_cigar = ''     # ISSUE-083 re-split: the exon-2 head's CIGAR ('' = flat kM)
     _landing_annotated = None        # ISSUE-017: provenance of the rescue's landing site (None = no rescue)
     _novel_evidence = ''             # ISSUE-017: novel-site evidence token for this rescue ('' = passed / annotated)
     _exon_identity = None            # ISSUE-028: identity of the placed 5' block (None = no block placed)
@@ -578,6 +585,7 @@ def correct_read_3prime(
                 _five_prime_upstream_trim = int(_3ss_result.get('five_prime_upstream_trim', 0) or 0)
                 _reanchor_clip_len = int(_3ss_result.get('reanchor_clip_len', 0) or 0)
                 _five_prime_exon2_prefix = int(_3ss_result.get('five_prime_exon2_prefix', 0) or 0)
+                _five_prime_exon2_cigar = _3ss_result.get('five_prime_exon2_cigar', '') or ''
                 # five_prime_intron_clip_pos ("icp") = the exon-2-side intron
                 # boundary, recorded whenever the alignment's 5' end sits inside
                 # the rescued intron — Case 4 (intronic_snap) and Cases 1/2 alike,
@@ -633,37 +641,6 @@ def correct_read_3prime(
             _junc_tuple = (_r_start, _r_end)
             if _junc_tuple not in junctions:
                 junctions = list(junctions) + [_junc_tuple]
-    # ISSUE-040 + ISSUE-024: when station B will draw micro-exons, the TSV's `junctions` must equal
-    # the N-ops the writer ends up writing — the writer asserts it and the tester's scorer reads this
-    # column. Replace the one drawn intron with the introns the split creates, in genomic order.
-    #
-    # First, the one interaction that could make the two disagree: the writer applies the 5' rescue
-    # surgery BEFORE station B, so a rescue that rewrites the same intron moves the geometry out from
-    # under the row's coordinates and the writer then (correctly) skips the draw — leaving the TSV
-    # claiming two introns where the BAM has one. Rather than let the writer's skip be silent, the
-    # row stands down here: a read whose 5' rescue touches the station-B intron is not applied at all.
-    # Same rule as `predict_5prime_rescue_refusal` — predict the writer's refusal, never out-run it.
-    if _station_b_applied and _station_b_calls and '_3ss_result' in locals():
-        _rj_sb = _3ss_result.get('rescued_junction') if _3ss_result.get('rescued') else None
-        if _rj_sb is not None and len(_rj_sb) >= 3:
-            _lo, _hi = int(_rj_sb[1]), int(_rj_sb[2])
-            _keep = [c for c in _station_b_calls
-                     if (_hi <= c.intron[0] or _lo >= c.intron[1])]
-            if len(_keep) != len(_station_b_calls):
-                _OI_COUNTERS['station_b_stood_down_for_5prime_rescue'] = (
-                    _OI_COUNTERS.get('station_b_stood_down_for_5prime_rescue', 0) + 1)
-                _station_b_calls = _keep
-                (_station_b_microexons, _station_b_alternatives,
-                 _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(
-                     chrom_std, _station_b_calls)
-                if not _keep:
-                    _station_b_applied = 0
-    if _station_b_applied and _station_b_calls:
-        _j = set(tuple(x) for x in junctions)
-        for _c in _station_b_calls:
-            _j.discard(tuple(_c.intron))
-            _j |= set(_microexon.split_introns(_c.segments, _c.intron[0], _c.intron[1]))
-        junctions = sorted(_j)
     junctions_str = format_junctions_string(junctions)
 
     # Extract soft clips (returns list of dicts with 'side' and 'length' keys)
@@ -683,6 +660,11 @@ def correct_read_3prime(
     else:
         five_prime_soft_clip_len = right_clip_length
         three_prime_soft_clip_len = left_clip_length
+
+    # The 2F discovery/writer contract reads S inside terminal H. The generic
+    # clip extractor above reports only literal edge ops and can otherwise
+    # replace a legitimate H+S rescue's length with zero. H is not stored query.
+    five_prime_soft_clip_len = _get_5prime_softclip_len(read, strand)
 
     # Reanchor pre-pass: when rescue_3ss_truncation's reanchor materially
     # modified the CIGAR (e.g. mapPacBio's `1X 2= 7I` 5' edge collapsed into
@@ -738,6 +720,7 @@ def correct_read_3prime(
                 'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
                 'reanchor_clip_len': _reanchor_clip_len,
                 'five_prime_exon2_prefix': _five_prime_exon2_prefix,
+                'five_prime_exon2_cigar': _five_prime_exon2_cigar,
                 'strand': strand,
             },
             genome,
@@ -761,10 +744,53 @@ def correct_read_3prime(
                 five_prime_rescued = False
                 _five_prime_intron_clip_pos = -1
                 _five_prime_exon2_prefix = 0
+                _five_prime_exon2_cigar = ''
             # For softclipped_no_junction the intronic bases ARE hidden at the
             # true acceptor, so five_prime_rescued and the icp must survive or the
             # writer would skip that surgery and leave the bases mapped inside the
             # intron — a worse BAM than the one this verdict describes.
+
+    # ISSUE-049/058: decide Station B only after the final 2F writer verdict.
+    # Execute the shared writer geometry on a copy, including a reanchor that
+    # survives a refused 2F proposal. Keep exactly the calls that still draw;
+    # infer neither success nor cancellation from overlap with a proposed N.
+    if _station_b_calls or _reanchor_clip_len:
+        from .bam_writer import project_station_b_placement
+        _projected, _drawn_indices = project_station_b_placement(
+            read,
+            {
+                'five_prime_rescued': five_prime_rescued,
+                'five_prime_position': five_prime_position,
+                'five_prime_soft_clip': five_prime_soft_clip_len,
+                'five_prime_exon_cigar': _five_prime_exon_cigar,
+                'five_prime_upstream_trim': _five_prime_upstream_trim,
+                'five_prime_intron_clip_pos': _five_prime_intron_clip_pos,
+                'reanchor_clip_len': _reanchor_clip_len,
+                'five_prime_exon2_prefix': _five_prime_exon2_prefix,
+                'five_prime_exon2_cigar': _five_prime_exon2_cigar,
+                'strand': strand,
+                'station_b_applied': _station_b_applied,
+                'station_b_microexons': _station_b_microexons,
+                'station_b_alternatives': _station_b_alternatives,
+                'station_b_intron_start': _sb_starts,
+                'station_b_intron_end': _sb_ends,
+            },
+            genome,
+        )
+        if _station_b_applied:
+            _keep = [_station_b_calls[i] for i in _drawn_indices]
+            if len(_keep) != len(_station_b_calls):
+                _OI_COUNTERS['station_b_stood_down_for_5prime_rescue'] = (
+                    _OI_COUNTERS.get('station_b_stood_down_for_5prime_rescue', 0) + 1)
+            _station_b_calls = _keep
+            (_station_b_microexons, _station_b_alternatives,
+             _sb_starts, _sb_ends, _station_b_n_tied) = _microexon.format_calls(
+                 chrom_std, _station_b_calls)
+            if not _keep:
+                _station_b_applied = 0
+                _OI_COUNTERS['station_b_microexon_applied'] -= 1
+        junctions = extract_junctions_simple(_projected)
+        junctions_str = format_junctions_string(junctions)
 
     # Extract 3' soft-clip sequence for poly(A) model scoring.
     # Iterate the clip list rather than recomputing — seq is already present.
@@ -806,6 +832,7 @@ def correct_read_3prime(
         # default so the row is still emitted, but it must be filtered out of
         # any strand-sensitive analysis.
         'strand_evidence': strand_evidence,
+        'tail_correction_enabled': tail_correction_enabled,
         'original_3prime': original_position,
         'corrected_3prime': original_position,
         'five_prime_position': five_prime_position,  # TSS end of the read
@@ -888,6 +915,10 @@ def correct_read_3prime(
         # consensus_aligner / consensus_confidence / consensus_n_agree /
         # consensus_tied — '' when the input BAM carried no Xa/Xc/Xn/Xt.
         **_consensus_tags,
+        # ISSUE-083 re-split (RECTIFY_2F_RESPLIT): the exon-2 head's CIGAR the
+        # writer draws after the N instead of the flat kM prefix ('' = none).
+        # Appended LAST: the TSV header is append-only (readers index by name).
+        'five_prime_exon2_cigar': _five_prime_exon2_cigar,
     }
 
     # Per-read gene attribution via read body overlap
@@ -910,7 +941,7 @@ def correct_read_3prime(
     current_position = original_position
 
     # Module 1: A-tract ambiguity (always applied by default)
-    if apply_atract:
+    if apply_atract and tail_correction_enabled:
         atract_result = atract_detector.calculate_atract_ambiguity(
             genome, chrom_std, current_position, strand, downstream_bp=10
         )
@@ -942,7 +973,7 @@ def correct_read_3prime(
     # NOTE: This does NOT correct positions - it only measures poly(A) tail length.
     # Position correction for A-tract ambiguity is already handled above.
     polya_shift = 0
-    if apply_polya_trim:
+    if apply_polya_trim and tail_correction_enabled:
         # Pass atract_result so polya_trimmer can include aligned A's in the count
         atract_for_polya = {
             'tract_length': result.get('ambiguity_range', 0),  # Approximate aligned A's
@@ -1051,7 +1082,7 @@ def correct_read_3prime(
             _3prime_sc_len = read.cigartuples[0][1]
 
     softclip_rescue_applied = False
-    if genome and not _has_3prime_hardclip and _3prime_sc_len >= 3:
+    if tail_correction_enabled and genome and not _has_3prime_hardclip and _3prime_sc_len >= 3:
         _sc_result = indel_corrector.rescue_softclip_at_homopolymer(
             read, strand, genome, end='3prime'
         )
@@ -1083,7 +1114,7 @@ def correct_read_3prime(
     # when softclip_rescue did not already claim the soft-clip.
     overcall_rescue_applied = False
     if (
-        genome
+        tail_correction_enabled and genome
         and not _has_3prime_hardclip
         and not softclip_rescue_applied
         and _3prime_sc_len >= 1
@@ -1127,7 +1158,7 @@ def correct_read_3prime(
     # handles the V-primer tip artifact (terminal G over a genomic A-run).
     polya_walkback_applied = False
     if (
-        genome
+        tail_correction_enabled and genome
         and not _has_3prime_hardclip
         and not softclip_rescue_applied
         and not overcall_rescue_applied
@@ -1300,7 +1331,7 @@ def correct_read_3prime(
     # the raw 3' end when IT is non-A. This is the single chokepoint that
     # drives the corrected-on-stop-base rate to ~0 (see TestCorrectedEndsAreNonA
     # and the Sumner human-DRS verification).
-    if genome:
+    if genome and tail_correction_enabled:
         _cs_enf, _ = get_chrom_sequence(genome, chrom)
         _stop_enf = 'A' if strand == '+' else 'T'
         if (
@@ -1484,6 +1515,7 @@ def process_bam_file(
     dt_primed_cDNA: bool = False,
     ont_cDNA: bool = False,
     use_dorado_polya: bool = False,
+    short_read: bool = False,
 ) -> List[Dict]:
     """
     Process BAM file and apply all corrections.
@@ -1543,6 +1575,7 @@ def process_bam_file(
                 dt_primed_cDNA=dt_primed_cDNA,
                 ont_cDNA=ont_cDNA,
                 use_dorado_polya=use_dorado_polya,
+                short_read=short_read,
             )
 
             results.extend(read_results)

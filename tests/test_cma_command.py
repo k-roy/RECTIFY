@@ -82,7 +82,12 @@ def test_build_cma_from_bams_helper(tmp_path):
 
     aligner_bams = {a: str(FIXTURE / f"validation_reads.{a}.bam") for a in ALIGNERS}
     cma = str(tmp_path / "h.cma.bam")
-    stats = build_cma_from_bams(aligner_bams, cma, panel=ALIGNERS, genome=None)
+    # The bundled fixture uses placement-relative '=' SEQ and requires its reference.
+    genome = cma_command._LazyGenome(_genome())
+    try:
+        stats = build_cma_from_bams(aligner_bams, cma, panel=ALIGNERS, genome=genome)
+    finally:
+        genome.close()
     assert stats["reads"] == 36
     assert validate_cma(cma) == []
 

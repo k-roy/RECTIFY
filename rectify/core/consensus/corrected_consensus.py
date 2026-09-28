@@ -1028,6 +1028,10 @@ def _stage_raw_bams(
     subsequent BAM write hit cold Lustre. Staging to local NVMe ($L_SCRATCH / $SCRATCH)
     once in the main process eliminates this for all readers.
 
+    The BAMs staged here are the correction INPUTS the TSVs are replayed onto — on the native
+    run-all route the receipt-resolved writer inputs (``bam.writer_input``), not the raw arms;
+    the keyword keeps its historical name.
+
     Yields a {aligner: staged_path_str} dict. Cleans up the staging directory on exit.
     """
     if not per_aligner_raw_bams:
@@ -1038,8 +1042,13 @@ def _stage_raw_bams(
     stage_dir = Path(tempfile.mkdtemp(prefix='rectify_bam_stage_', dir=scratch_root))
     try:
         staged: Dict[str, str] = {}
-        for aligner, bam_path in per_aligner_raw_bams.items():
-            dest = stage_dir / Path(str(bam_path)).name
+        for index, (aligner, bam_path) in enumerate(per_aligner_raw_bams.items()):
+            # One directory per arm: every retained writer input is named
+            # corrected_reads.writer_input.bam (ISSUE-079), and a flat stage_dir / basename
+            # let the last arm overwrite the rest while all keys pointed at it.
+            arm_dir = stage_dir / f'{index:02d}'
+            arm_dir.mkdir()
+            dest = arm_dir / Path(str(bam_path)).name
             shutil.copy2(str(bam_path), str(dest))
             staged[aligner] = str(dest)
             logger.info(

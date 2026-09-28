@@ -108,6 +108,9 @@ def test_correct_array_command_survives_line_continuation(jpt, spt, wcb):
         '--threads "$CORRECT_CPUS"',
         '--streaming',
         '--checkpoint-dir "$CHECKPOINT_DIR"',
+        '--emit-merged-tsv',                   # ISSUE-081: the scripts read the flat TSV
+        '--retain-writer-input',               # ISSUE-079: the merge replays onto the post-2H BAM
+        '--writer-input-origin "$IN_BAM"',
     ]
     if jpt:
         required.append('--junction-penalty-table "/pen/junc.tsv"')

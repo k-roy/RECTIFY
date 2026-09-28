@@ -1413,6 +1413,15 @@ def _correct_array_body(
         '--threads "$CORRECT_CPUS"',
         '--streaming',
         '--checkpoint-dir "$CHECKPOINT_DIR"',
+        # ISSUE-081: every script below reads the flat corrected_reads.tsv, which `correct`
+        # renames to corrected_reads.region_000.tsv unless asked (manifest-only default). Without
+        # this the skip-check never fired and run_array_chunk_merge.sh found no TSVs at all.
+        '--emit-merged-tsv',
+        # ISSUE-079: the chunk merge replays this TSV onto a BAM; it must be the post-2H BAM the
+        # rows were decided against, kept beside the TSV under a receipt. $IN_BAM names the
+        # durable arm BAM ($LOCAL_BAM is a scratch copy that dies with the task).
+        '--retain-writer-input',
+        '--writer-input-origin "$IN_BAM"',
         '-o "$CHUNK_OUTDIR/corrected_reads.tsv"',
     ])
     correct_cmd = ' \\\n    '.join(correct_arg_lines)
@@ -1467,12 +1476,19 @@ echo "Start:   $(date)"
 [ -f "$POOL_PKL" ] || {{ echo "ERROR: pool pickle not found: $POOL_PKL" >&2; exit 1; }}
 [ -f "$SCAN_PKL" ] || {{ echo "WARNING: rescue_scan.pkl not found — variant-aware rescue will re-scan" >&2; }}
 
-# Skip if already complete. Per-aligner corrected BAMs are now debug artifacts;
-# corrected TSVs are enough for lazy HP scoring and final consensus BAM writing.
-if [ -f "$CHUNK_OUTDIR/corrected_reads.tsv" ]; then
-    echo "Chunk $CHUNK_PAD already corrected — skipping: $(date)"
-    ls -lh "$CHUNK_OUTDIR/corrected_reads.tsv"
-    exit 0
+# Skip if already complete. Per-aligner corrected BAMs are now debug artifacts; the
+# corrected TSV plus its receipt-bound writer input (ISSUE-079) feed lazy HP scoring and the
+# final consensus BAM. A TSV with no receipt is a legacy or failed output and is rebuilt; an
+# evicted pair counts as complete only while the chunk merge that consumed it still stands.
+RECEIPT="$CHUNK_OUTDIR/corrected_reads.writer_input.json"
+CHUNK_MERGED_BAI="$OUTDIR/chunks/chunk_$CHUNK_PAD/corrected_consensus.bam.bai"
+if [ -f "$CHUNK_OUTDIR/corrected_reads.tsv" ] && [ -f "$RECEIPT" ]; then
+    if grep -q '"state": "ready"' "$RECEIPT" \
+        || {{ grep -q '"state": "evicted_after_final"' "$RECEIPT" && [ -f "$CHUNK_MERGED_BAI" ]; }}; then
+        echo "Chunk $CHUNK_PAD already corrected — skipping: $(date)"
+        ls -lh "$CHUNK_OUTDIR/corrected_reads.tsv"
+        exit 0
+    fi
 fi
 
 # Checkpoint state must live on the persistent output directory (not $SCRATCH,
@@ -1539,6 +1555,14 @@ mkdir -p "$CHUNK_OUT"
 # Leave empty to skip poly-A restore.
 PARQUET_PATH="${{RECTIFY_PARQUET_PATH:-}}"
 
+# Skip if already complete: the merge EVICTS each arm's retained writer input once its
+# products stand, so a second pass has nothing to replay and must not be attempted.
+if [ -f "$CHUNK_OUT/corrected_reads.tsv" ] && [ -f "$CHUNK_OUT/corrected_consensus.bam.bai" ] \
+    && {{ [ -z "$PARQUET_PATH" ] || [ ! -f "$PARQUET_PATH" ] || [ -f "$CHUNK_OUT/corrected_polya.bam.bai" ]; }}; then
+    echo "Chunk $CHUNK_PAD already merged — skipping: $(date)"
+    exit 0
+fi
+
 echo "Host:  $(hostname)"
 echo "Chunk: $CHUNK_PAD  CPUs: $CHUNK_MERGE_CPUS"
 echo "Start: $(date)"
@@ -1558,6 +1582,7 @@ from rectify.core.consensus.corrected_consensus import (
     write_corrected_consensus_bam,
     _stage_raw_bams,
 )
+from rectify.core.bam import writer_input
 from rectify.core.splice.calibrate_junction_overhang import OverhangTable
 from rectify.utils.genome import load_genome
 import pandas as pd
@@ -1588,7 +1613,8 @@ if OVERHANG_TABLE_PATH and Path(OVERHANG_TABLE_PATH).exists():
 # ── Step 1: merge corrected TSVs ──────────────────────────────────────────
 valid_tsvs = {{}}
 corrected_bams = {{}}
-raw_bams = {{}}
+raw_bams = {{}}   # the BAM each TSV is REPLAYED onto: its receipt-bound post-2H state (ISSUE-079)
+arm_bams = {{}}   # each arm's own alignment BAM (poly-A restore shows the read as aligned)
 for a in ALIGNERS:
     chunk_dir = OUTDIR / 'aligner_chunks' / a / f'chunk_{{CHUNK}}'
     tsv = chunk_dir / 'corrected_reads.tsv'
@@ -1596,14 +1622,20 @@ for a in ALIGNERS:
     rbam = next(chunk_dir.glob(f'*.{{a}}.bam'), None)
     if tsv.exists(): valid_tsvs[a] = tsv
     if bam.exists(): corrected_bams[a] = bam
-    if rbam: raw_bams[a] = rbam
+    if rbam and tsv.exists():
+        arm_bams[a] = rbam
+        # Raises WriterInputError (task fails) rather than replaying onto the raw arm, whose
+        # junction placements 2H has since moved.
+        raw_bams[a] = writer_input.resolve_writer_input(tsv, rbam)
 
 if not valid_tsvs:
     log.error('No corrected TSVs found for chunk %s', CHUNK); sys.exit(1)
 log.info('Merging %d TSVs: %s', len(valid_tsvs), list(valid_tsvs.keys()))
 genome = load_genome(GENOME_PATH)
 
-# Stage raw BAMs to local NVMe ($L_SCRATCH / $SCRATCH) before HP scoring and BAM
+# Stage the replay BAMs to local NVMe (L_SCRATCH, else SCRATCH) before HP scoring and BAM
+# (no dollar signs in this heredoc's comments: it is unquoted, so bash expands them, and
+# under set -u an unset L_SCRATCH killed every task off Sherlock — ISSUE-082)
 # write to avoid OAK Lustre per-process client cache cold-read overhead.  Workers
 # spawned by ProcessPoolExecutor each maintain their own Lustre cache, so without
 # staging both HP scoring and write_corrected_consensus_bam hit cold Lustre.
@@ -1674,7 +1706,7 @@ elif corrected_bams:
 if PARQUET and Path(PARQUET).exists() and raw_bams:
     try:
         from rectify.core.commands.restore_polya_command import restore_polya_softclips
-        raw_paths = _staged
+        raw_paths = {{a: str(p) for a, p in arm_bams.items()}}
         tmp_p = str(CHUNK_OUT / 'corrected_polya.unsorted.bam')
         stats = restore_polya_softclips(
             str(CHUNK_OUT/'corrected_reads.tsv'), raw_paths, PARQUET, tmp_p, threads=THREADS
@@ -1691,6 +1723,12 @@ else:
     log.info('RECTIFY_PARQUET_PATH not set — skipping poly-A restore')
 
 _bam_stage_ctx.close()
+# Every product that replays the TSVs now stands: release the retained writer inputs (one BAM
+# per arm per chunk on durable storage). The receipt is marked evicted BEFORE the delete.
+if (CHUNK_OUT / 'corrected_consensus.bam.bai').exists():
+    for a, tsv in valid_tsvs.items():
+        if writer_input.evict(tsv):
+            log.info('Evicted %s writer input for chunk %s', a, CHUNK)
 log.info('Chunk %s complete.', CHUNK)
 PYEOF
 

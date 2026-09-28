@@ -205,6 +205,7 @@ def _collect_per_aligner_bams(
     sample_output_dir: Path,
     run_provenance: Optional[Dict[str, Any]] = None,
     trust_existing_bams: bool = False,
+    terminal_tail_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Path]:
     """Return per-aligner BAM paths that exist on disk (keyed by aligner name).
 
@@ -264,6 +265,16 @@ def _collect_per_aligner_bams(
                 "per-aligner collection: substituting the minimap2 arm with "
                 "the overhang-resolver output (%s).", _resolver_bam)
             bams['minimap2'] = _resolver_bam
+    # Keep disk-discovered correction arms identical to run_align's terminal
+    # placement outputs. A receipt binds each completed post-pass to the exact
+    # input (including the resolver substitution above); stale files stand down.
+    from ...splice.terminal_tail_placement import terminal_tail_output_for
+    for aligner, bam in list(bams.items()) if terminal_tail_context is not None else ():
+        terminal = terminal_tail_output_for(
+            bam, sample_output_dir / f"{sample_id}.{aligner}.terminal_tail.bam",
+            context=terminal_tail_context)
+        if terminal is not None:
+            bams[aligner] = terminal
     return bams
 
 

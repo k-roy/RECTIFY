@@ -116,6 +116,11 @@ CORRECTION_TSV_HEADER = [
     'station_b_applied',
     'station_b_intron_start',
     'station_b_intron_end',
+    # False for fragmented short-read chemistry; append to preserve all prior
+    # column indices while carrying the chemistry policy to every BAM writer.
+    'tail_correction_enabled',    # ISSUE-083 re-split (RECTIFY_2F_RESPLIT): the exon-2 head's CIGAR the writer draws
+    # after the N instead of the flat kM prefix ('' = none). Appended last: readers index by name.
+    'five_prime_exon2_cigar',
 ]
 
 
@@ -252,6 +257,8 @@ def correction_result_to_tsv_row(result: Dict) -> List[str]:
         str(result.get('station_b_applied', 0) or 0),
         _consensus_cell(result, 'station_b_intron_start'),
         _consensus_cell(result, 'station_b_intron_end'),
+        '1' if result.get('tail_correction_enabled', True) else '0',
+        str(result.get('five_prime_exon2_cigar', '') or ''),
     ]
 
 

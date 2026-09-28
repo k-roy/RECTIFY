@@ -20,6 +20,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   direct RNA reference, gene table) certified only for W303 anchor-away strains in YPD with rapamycin; other
   libraries are flagged. On held-out genes the replicate length slope falls from 1.20 to 0.10 and Rrp6-AA / WT-AA
   fold changes against direct RNA go from r -0.16 to 0.47. See `docs/user_guide/commands/cdna_length_correct.md`.
+- **The ISSUE-083 re-split, behind `RECTIFY_2F_RESPLIT=1` (default off).** A 5′ sequence rescue is
+  aligned ACROSS the candidate junction with the production anchored aligner
+  (`local_aligner.resplit_across_junction`) instead of at 2F's fixed split, on the sequence path and
+  the Case-3 proximity fallback alike; the evidence floor then judges the re-split exon-1 block, and
+  the writer draws the exon-2 head from the new, appended TSV column `five_prime_exon2_cigar` in
+  place of the flat `kM` prefix (replacing the body head up to the re-split's anchor, query
+  conserved, the N still from the reported donor to the reported acceptor). On the Sumner review
+  bundles the fixed split had put an exon-1 base on exon 2 and closed the block with a deletion beside
+  the N; the re-split removes it and returns exon 2 to the aligner's own alignment (cards 083-2/3/4).
+  Pinned by `tests/test_2f_resplit.py` and `tests/test_2f_replay_f53d770_31.py`; default-on waits on
+  the census of every read it changes and Kevin's verdicts on them.
+
+### Fixed
+
+- **A minus-strand 3′ clip that stripped a dangling D/N left the record shifted by that op
+  (ISSUE-085).** `clip_read_to_corrected_3prime` / `softclip_read_to_corrected_3prime` walk the
+  3′ bases off the left end of a minus-strand record and strip any D/N left at the new start, but a
+  stripped D/N added nothing to the reference count, so every surviving base was written `length`
+  bp upstream of where the aligner placed it (a read whose walkback crossed a 2,046-bp intron was
+  written 2,046 bp off, with a TSV `junctions` column that no longer matched the BAM). The
+  poly(A)-side A-run clip goes through the same function. Pinned by
+  `tests/test_issue085_minus_clip_dangling_n_shift.py`; outputs written before this fix carry the
+  shift on any minus-strand read whose 3′ clip removed a whole exon.
+- **The final rectified BAM kept none of Module 2H's junction placements (ISSUE-079).** `correct`
+  decides every row against the 2H-refined BAM, but the per-aligner merge and the final
+  `write_corrected_consensus_bam` replayed the rows onto the ORIGINAL arm BAM, in `run-all` and in
+  the generated `run_array_chunk_merge.sh` alike. The merged TSV reported the 2H junction while the
+  BAM returned the read to its raw placement. `correct --retain-writer-input` now keeps the refined
+  BAM beside the TSV under a `<output>.writer_input.json` receipt; every deferred consumer resolves
+  its replay BAM through the receipt and refuses raw geometry. **Outputs written before this fix
+  carry pre-2H placements in `<sample>.rectified.bam` and must be reprocessed**; a per-aligner TSV
+  with no receipt is corrected again on resume. Retained inputs are released before the scratch
+  sync and after each chunk merge.
+- **The generated long-read chunk scripts could not complete (ISSUE-081, ISSUE-082).** They read
+  `corrected_reads.tsv`, which the manifest-only default renames, so every correct task exited 1
+  and never skipped; and a `$L_SCRATCH` inside an unquoted heredoc comment killed the chunk merge
+  under `set -u` off Sherlock. The scripts are now executed by
+  `tests/test_chunk_scripts_native_route.py`.
+- **The junction-pool scan started one process per aligner arm regardless of `--threads` or the
+  scheduler allocation (ISSUE-080).** `build_junction_pool(n_workers=)`; the default is the
+  allocation, never the node's core count.
+- **An arm that had to be coordinate-sorted lost its corrected BAM (ISSUE-084)**, so a merge that
+  scored arms from their BAMs gave it `hp_edit_distance = inf`; the collector now finds the written
+  name on the fresh and resume paths. A failed final rectified-BAM write is now fatal in `run-all`.
+- **Exon-placement audit (2026-09-19/20), writer and consensus repairs:**
+  - Micro-exon (station B) edits reach every writer mode (hard, soft, dual), are decided on the final
+    2F geometry (a refused 2F proposal no longer cancels a writable micro-exon), and drop the stale
+    NM/MD/alignment tags of the pre-surgery record. Before this, the micro-exon was reported in the
+    TSV but never drawn in the BAM.
+  - Every writer edit recomputes NM/MD from the emitted record (validated against `samtools calmd`)
+    and invalidates alignment scores it cannot reconstruct.
+  - Original 5′ and 3′ hard clips survive rescue, reanchoring and tail clipping; poly(A) walkback no
+    longer scores the wrong query bases after a leading `H` + `S`.
+  - The scored Case-3 5′ fallback applies the placed-exon junction-indel gate to novel landings.
+  - Consensus and chimeric selection decode `=`-compressed SEQ at each candidate's own placement
+    before scoring or stitching, honour the selected path at agreement boundaries, keep hard clips
+    and typed `B` arrays, restore cDNA sibling metadata (frame, `XN`, pretrim fields) after a
+    chimeric win, and accept a changed placement only when it gains an exact query cell without
+    losing one.
+  - `rectify cma` refuses to share a compressed payload whose `=` bases it cannot resolve, so it
+    can no longer change a molecule's sequence.
+  - Protocol chemistry and the typed RNA-sense frame are carried through every BAM writer: TruSeq
+    short reads keep their genomic fragment ends, the clip-origin tag moved to `Xo` so the cDNA
+    orientation tag `XO` is never overwritten, and cDNA stage 1 trims at the matched SSP end.
+  - NET-seq: SEQ encoding no longer changes endpoint calls, every distinct donor acceptor is kept
+    under a multiplicity-adjusted exact-match floor, `N` bases are not splice evidence, a soft clip
+    inside a terminal hard clip is found, and a record without SEQ no longer aborts the run.
+  - Analysis: 5′ positions and fractional (weighted) TSS mass survive every loader and the CPA-index
+    path; empty QC cells, constant-count samples and singleton heatmap axes no longer crash; DESeq2
+    statistics keep the requested CPU budget; `sample_metadata.tsv` is written after the manifest's
+    explicit conditions are applied.
+
+### Changed
+
+- **Two conservative placement repairs are ON by default.** Neither has had the read-level review
+  class that precedes a default-on decision, so each is listed here for the maintainers' ruling:
+  - Module 2H realizes a supported exon block shift as one atomic whole-read placement (both
+    introns of an internal exon move together; a unique exact placement across the shift window is
+    required; annotated boundaries and micro-exon/chimeric provenance are protected). It runs after
+    the per-junction walk and changed no read in a 62,602-read human DRS cohort.
+  - `rectify align` compares an unannotated terminal junction against an exact native continuation
+    on the same non-tail query bases, for modern RNA-sense cDNA records only (never DRS or legacy
+    `XO`-only records), so a 3′ end plus poly(A) aligned as a junction onto a genomic A-run is
+    returned to its native placement. Decisions and receipts are recorded per arm.
+
+### Added
 
 - `scripts/recount_junction_support.py` recounts exact proposed destinations on
   original BAMs, unions primary read names across aligner arms, excludes the

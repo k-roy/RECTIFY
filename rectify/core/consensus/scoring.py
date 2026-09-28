@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Set, Tuple
 import pysam
 
 from .extract import AlignmentInfo, extract_junctions_from_cigar, get_softclip_lengths
+from .sequence import decoded_alignment_copy
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +418,7 @@ def _get_effective_5prime_clip(
     """
     five_clip, _ = get_softclip_lengths(read)
 
+    read = decoded_alignment_copy(read, genome)
     if not read.query_sequence or not read.cigartuples:
         return five_clip
 
@@ -506,6 +508,7 @@ def _get_effective_3prime_clip(
     """
     _, three_clip = get_softclip_lengths(read)
 
+    read = decoded_alignment_copy(read, genome)
     if not read.query_sequence or not read.cigartuples:
         return three_clip
 
@@ -596,6 +599,7 @@ def _count_junction_proximity_errors(
     Returns:
         Total weighted error count summed across all junction-proximal windows.
     """
+    read = decoded_alignment_copy(read, genome)
     if not read.cigartuples or not read.query_sequence:
         return 0
 

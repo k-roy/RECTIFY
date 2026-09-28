@@ -30,7 +30,8 @@ RECTIFY has TWO cDNA routes and they must not be confused:
 * **Path A (UMI-aware):** ``correct-cdna`` -> ``align -y`` -> ``cdna-analyze``.
   Stage 1 emits one consensus per molecule and tags it ``XO:Z:fwd|rev``
   (plus ``XY:Z:umi_captured_fwd|rev``); ``align -y`` carries those into the BAM
-  and ``cdna-analyze`` maps ``{fwd: '+', rev: '-'}`` to get the gene strand.
+  and ``cdna-analyze`` uses the post-alignment flag when ``XN:i:1`` is present,
+  otherwise the legacy mapping ``{fwd: '+', rev: '-'}``.
 * **Path B (pre-UMI-collapse reads):** ``trim-cdna-polya`` -> aligner ->
   ``correct --ONT-cDNA``.  This is the route used for internal-poly(A) work,
   where per-read tail/site *distributions* are wanted and UMI collapse is
@@ -56,6 +57,8 @@ here so this function is correct on a BAM from either path.
 
 Resolution order (documented precedence, C8 + 535i section 3.2)
 ---------------------------------------------------------------
+0. ``XN:i:1`` — the molecule was emitted RNA-sense, so the current alignment
+   flag determines RNA strand. Historical ``XO`` describes the earlier frame.
 1. ``XO:Z:fwd|rev`` (or ``XY:Z:umi_captured_fwd|rev``) — the canonical
    orientation label written by ``rectify correct-cdna``.  Defined on BAM SEQ:
    ``fwd`` = poly-A at the RIGHT of BAM SEQ = gene '+'; ``rev`` = poly-T at the
@@ -187,11 +190,26 @@ CDNA_SUBTYPE_TAG = "XY"
 ORIENT_TO_STRAND = {"fwd": "+", "rev": "-"}
 
 #: ``strand_evidence`` values emitted into the corrected-3'-ends TSV.
+EVIDENCE_RNA_SENSE_FRAME = "XN_frame"
 EVIDENCE_XO_ORIENT = "XO_orient"
 EVIDENCE_POLYA_3P = "polyA_3p"
 EVIDENCE_POLYT_5P = "polyT_5p"
 EVIDENCE_GENE_OVERLAP = "gene_overlap"
 EVIDENCE_UNASSIGNED = "unassigned"
+
+
+def has_rna_sense_frame(read: pysam.AlignedSegment) -> bool:
+    """Whether Stage 1's typed ``XN:i:1`` declares an RNA-sense molecule.
+
+    SAM integer tags can use any of BAM's integer storage widths. Floats and
+    strings are not this marker: coercing ``XN:f:1.5`` to one would incorrectly
+    override a valid legacy orientation, and infinity cannot be coerced at all.
+    """
+    try:
+        value, value_type = read.get_tag("XN", with_value_type=True)
+    except (KeyError, ValueError, TypeError):
+        return False
+    return value_type in ("c", "C", "s", "S", "i", "I") and value == 1
 
 
 def _drs_rule_strand(read: pysam.AlignedSegment) -> str:
@@ -245,7 +263,13 @@ def resolve_rna_strand(
     when unresolvable, and *evidence* is one of the ``EVIDENCE_*`` constants.
     See the module docstring for the precedence.
     """
-    # --- 1. canonical correct-cdna orientation label (XO, else XY) ---
+    # RNA-sense emission makes the current flag authoritative after realignment.
+    # Match cdna-analyze's marker contract; older/invalid markers retain the
+    # existing XO/ro/annotation precedence below.
+    if has_rna_sense_frame(read):
+        return _drs_rule_strand(read), EVIDENCE_RNA_SENSE_FRAME
+
+    # --- 1. legacy correct-cdna orientation label (XO, else XY) ---
     # Defined on BAM SEQ, so it gives the gene strand directly with no
     # is_reverse arithmetic.  Same mapping cdna_analyze_command.py uses.
     orient = None

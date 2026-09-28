@@ -490,7 +490,9 @@ class TestRefusalIsReportedNotSwallowed:
         # after it, ISSUE-026 invariant D the exon-2 prefix after those, ISSUE-028
         # invariant E the two block-shape columns after that; every earlier
         # column keeps its absolute index.
-        assert CORRECTION_TSV_HEADER[-17:] == [
+        # By NAME, not from the end: a negative index goes stale with every appended column.
+        i = CORRECTION_TSV_HEADER.index('five_prime_rescue_refused')
+        assert CORRECTION_TSV_HEADER[i:i + 17] == [
             'five_prime_rescue_refused', 'five_prime_landing_annotated',
             'five_prime_novel_evidence', 'five_prime_exon2_prefix',
             'five_prime_exon_identity', 'five_prime_exon_bits',
@@ -506,10 +508,10 @@ class TestRefusalIsReportedNotSwallowed:
             'five_prime_rescue_refused': REFUSAL_REROUTE,
         })
         assert len(row) == len(CORRECTION_TSV_HEADER)
-        assert row[-17] == REFUSAL_REROUTE
+        assert row[i] == REFUSAL_REROUTE
         # + the ISSUE-034 clip-origin cells, the ISSUE-039 station-C cells and the ISSUE-040
         # station-B cells (applied is a 0/1 flag, so it is '0' rather than '')
-        assert row[-16:] == ['', '', '0', '', '', '', '', '', '', '', '', '', '', '0', '', '']
+        assert row[i + 1:i + 17] == ['', '', '0', '', '', '', '', '', '', '', '', '', '', '0', '', '']
 
     def test_all_three_writers_share_one_implementation(self):
         """write_corrected_bam / write_softclipped_bam / write_dual_bam used to
@@ -524,8 +526,8 @@ class TestRefusalIsReportedNotSwallowed:
         assert src.count('projected_5prime_rescue_intron_edge(') == 1, (
             'the icp gate should have exactly one call site '
             '(apply_5prime_rescue_surgery); more means a writer grew its own copy')
-        assert src.count('apply_5prime_rescue_surgery(read, correction, genome)') == 3, (
-            'all three writers must delegate to the shared helper')
+        assert src.count('apply_5prime_rescue_surgery(read, correction, genome)') == 1, (
+            'the shared 5-prime prepass must own the only surgery call')
         for fn in (bw.write_corrected_bam, bw.write_softclipped_bam, bw.write_dual_bam):
             body = inspect.getsource(fn)
             assert 'extend_read_5prime_for_junction_rescue(' not in body, fn.__name__

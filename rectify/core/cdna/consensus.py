@@ -320,7 +320,8 @@ def pretrim_consensus(consensus_seq: str, orient: str, read_type: int) -> Pretri
     BAM-SEQ frame while some consensus branches emit basecalled frame. See planning/681.
 
     5' trim (Type-1 only — Type-2 has no SSP/UMI):
-      - fwd: SSP_FWD (23nt) + UMI (27nt) + GGG bridge (3nt) = 53 nt off the LEFT
+      - fwd: matched SSP span + UMI (27nt) + GGG bridge (3nt) off the LEFT
+        (53 nt for an exact 23-nt SSP; accepted SSP indels change this span).
       - rev: the mRNA 5' end is at the RIGHT — strip the CCC+UMI_RC+SSP_RC suffix.
 
     3' trim (both types):
@@ -337,9 +338,10 @@ def pretrim_consensus(consensus_seq: str, orient: str, read_type: int) -> Pretri
     if frame == "fwd":
         # ---- 5' (LEFT): SSP + UMI + GGG ----
         if read_type == 1:
-            p = _find_ssp(consensus_seq, "fwd")
+            from .read_info import find_ssp_span
+            p, ssp_end = find_ssp_span(consensus_seq, "fwd")
             if p >= 0:
-                left_trim = p + len(SSP_FWD) + UMI_LEN + BRIDGE_LEN
+                left_trim = ssp_end + UMI_LEN + BRIDGE_LEN
 
         # ---- 3' (RIGHT): poly-A. Anchored (Tier 2) first, unanchored (Tier 1) second ----
         seq_to_search = consensus_seq[left_trim:]

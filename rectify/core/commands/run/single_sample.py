@@ -511,9 +511,18 @@ def _process_one_sample(
                                 )
                         from rectify.utils.genome import load_genome as _load_genome_for_merge
                         _merge_genome = _load_genome_for_merge(str(genome_path))
-                        _raw_bams_s1 = {
-                            a: str(p) for a, p in _sample_per_aligner_bams.items()
-                        } if _sample_per_aligner_bams else {}
+                        # ISSUE-079: each TSV is replayed onto the alignment state it was
+                        # decided against — the receipt-bound post-2H BAM — never the raw arm,
+                        # whose junction placements 2H has since moved. Raises (and fails the
+                        # sample) when a receipt does not vouch for its pair.
+                        from ...bam.writer_input import resolve_writer_inputs
+                        _raw_bams_s1 = resolve_writer_inputs(
+                            per_aligner_tsvs, _sample_per_aligner_bams)
+                        # ISSUE-084: score from materialized arm BAMs only when EVERY corrected
+                        # arm has one. An arm without one scores inf and can never win, so a
+                        # partial set silently biases selection; score lazily instead.
+                        _score_from_arm_bams_s1 = bool(per_aligner_corrected_bams) and (
+                            set(per_aligner_corrected_bams) >= set(per_aligner_tsvs))
                         from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
                         # Align-stage Xa/Xc/Xn/Xt for the four consensus_* columns:
                         # the per-aligner arms carry none, so the merge joins them
@@ -534,8 +543,8 @@ def _process_one_sample(
                                 consensus_bam=_consensus_tag_bam_s1,
                                 per_aligner_corrected_bams={
                                     a: str(p) for a, p in per_aligner_corrected_bams.items()
-                                } if per_aligner_corrected_bams else None,
-                                per_aligner_raw_bams=_staged_s1 if not per_aligner_corrected_bams else None,
+                                } if _score_from_arm_bams_s1 else None,
+                                per_aligner_raw_bams=None if _score_from_arm_bams_s1 else _staged_s1,
                                 genome=_merge_genome,
                                 overhang_table=_overhang_table,
                                 lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
@@ -546,9 +555,7 @@ def _process_one_sample(
                             # Emit the final corrected (rectified) BAM — symmetric with
                             # the chunked path.  Named <sample>.rectified.bam (the actually-
                             # rectified product); a legacy corrected_consensus.bam symlink is
-                            # dropped for back-compat.  Non-fatal: merged TSV is the primary
-                            # output; missing BAM is recoverable via post-hoc
-                            # write_corrected_consensus_bam.
+                            # dropped for back-compat.  A failed write is FATAL (see below).
                             _consensus_bam_out = _final_rectified_bam_path(sample_id, _work)
                             try:
                                 _consensus_stats = write_corrected_consensus_bam(
@@ -567,11 +574,15 @@ def _process_one_sample(
                                     flush=True,
                                 )
                             except Exception as _cbam_exc:
+                                # FATAL (Kevin 2026-09-21). This used to be a warning, so a sample
+                                # could exit 0 with no rectified BAM — and the writer inputs it
+                                # would be rebuilt from are evicted before the scratch sync.
                                 print(
-                                    f"  [{sample_id}] WARNING: {_consensus_bam_out.name} write failed"
-                                    f" (non-fatal): {_cbam_exc}",
+                                    f"  [{sample_id}] ERROR: {_consensus_bam_out.name} write failed:"
+                                    f" {_cbam_exc}",
                                     file=sys.stderr,
                                 )
+                                raise
                     else:
                         print(
                             f"  [{sample_id}] WARNING: No per-aligner correction succeeded; "
@@ -656,6 +667,15 @@ def _process_one_sample(
                 _keep_aligner = getattr(args, 'keep_aligner_bams', False)
                 _bam_dir_final = getattr(args, 'bam_dir', None)
                 _exclude_aligner = (not _keep_aligner) and (_bam_dir_final is None)
+                if _exclude_aligner:
+                    # ISSUE-079: the sync drops every per-arm BAM, the retained writer inputs
+                    # included, but ships their receipts. Mark them evicted first so the durable
+                    # copy never claims a pair it does not hold.
+                    from ...bam.writer_input import evict_all as _evict_writer_inputs
+                    _evict_writer_inputs({
+                        _d.name: _d / 'corrected_reads.tsv'
+                        for _d in (_work / 'per_aligner_corrected').glob('*') if _d.is_dir()
+                    })
                 _sync_to_oak(_work, sample_output, exclude_aligner_bams=_exclude_aligner)
                 log.write("Sync to NFS complete\n")
 
@@ -995,9 +1015,15 @@ def _run_single_sample(args) -> int:
                 # BAMs + corrected TSVs.
                 from rectify.utils.genome import load_genome as _load_genome_for_merge
                 _merge_genome = _load_genome_for_merge(str(genome_path))
-                _raw_bams_s2 = {
-                    a: str(p) for a, p in per_aligner_bams.items()
-                } if per_aligner_bams else {}
+                # ISSUE-079: replay each TSV onto the receipt-bound post-2H BAM it was decided
+                # against, never the raw arm (2H has moved its junction placements). Raises when
+                # a receipt does not vouch for its pair.
+                from ...bam.writer_input import resolve_writer_inputs
+                _raw_bams_s2 = resolve_writer_inputs(per_aligner_tsvs, per_aligner_bams)
+                # ISSUE-084: materialized arm BAMs score the merge only when every corrected arm
+                # has one (a missing arm scores inf and can never win); otherwise score lazily.
+                _score_from_arm_bams_s2 = bool(per_aligner_corrected_bams) and (
+                    set(per_aligner_corrected_bams) >= set(per_aligner_tsvs))
                 from rectify.data import resolve_min_junction_anchor_bp as _resolve_anchor
                 # Align-stage Xa/Xc/Xn/Xt for the four consensus_* columns:
                 # the per-aligner arms carry none, so the merge joins them
@@ -1016,8 +1042,8 @@ def _run_single_sample(args) -> int:
                         consensus_bam=_consensus_tag_bam_s2,
                         per_aligner_corrected_bams={
                             a: str(p) for a, p in per_aligner_corrected_bams.items()
-                        } if per_aligner_corrected_bams else None,
-                        per_aligner_raw_bams=_staged_s2 if not per_aligner_corrected_bams else None,
+                        } if _score_from_arm_bams_s2 else None,
+                        per_aligner_raw_bams=None if _score_from_arm_bams_s2 else _staged_s2,
                         genome=_merge_genome,
                         overhang_table=_overhang_table,
                         lazy_scoring_workers=max(1, int(getattr(args, 'threads', 1) or 1)),
@@ -1029,8 +1055,7 @@ def _run_single_sample(args) -> int:
                     # Emit the final corrected (rectified) BAM — symmetric with the
                     # chunked path.  Named <sample>.rectified.bam; a legacy
                     # corrected_consensus.bam symlink is dropped for back-compat.
-                    # Non-fatal: merged TSV is the primary output; missing BAM is
-                    # recoverable via post-hoc write_corrected_consensus_bam.
+                    # A failed write is FATAL (see below).
                     _consensus_bam_out = _final_rectified_bam_path(sample_id, work_dir)
                     try:
                         _consensus_stats = write_corrected_consensus_bam(
@@ -1049,11 +1074,12 @@ def _run_single_sample(args) -> int:
                             flush=True,
                         )
                     except Exception as _cbam_exc:
+                        # FATAL (Kevin 2026-09-21): a run with no rectified BAM is not a success.
                         print(
-                            f"    {_consensus_bam_out.name} write failed"
-                            f" (non-fatal): {_cbam_exc}",
+                            f"    ERROR: {_consensus_bam_out.name} write failed: {_cbam_exc}",
                             file=sys.stderr,
                         )
+                        raise
             else:
                 # All per-aligner corrections failed — fall back to consensus BAM
                 print(
@@ -1277,6 +1303,14 @@ def _run_single_sample(args) -> int:
             # keep_aligner_bams is False (default), skip per-aligner BAMs in
             # the scratch→Oak sync to save disk space.
             _exclude_aligner = (not keep_aligner_bams) and (bam_dir is None)
+            if _exclude_aligner:
+                # ISSUE-079: the sync drops the retained writer inputs but ships their receipts;
+                # mark them evicted first so the durable copy never claims a pair it lacks.
+                from ...bam.writer_input import evict_all as _evict_writer_inputs
+                _evict_writer_inputs({
+                    _d.name: _d / 'corrected_reads.tsv'
+                    for _d in (scratch_dir / 'per_aligner_corrected').glob('*') if _d.is_dir()
+                })
             sync_to_oak(scratch_dir, output_dir, exclude_aligner_bams=_exclude_aligner)
             print(f"[TIMING] Sync to Oak: {_time.perf_counter() - _t0_sync:.1f}s")
         finally:

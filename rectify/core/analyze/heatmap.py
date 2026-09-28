@@ -110,6 +110,12 @@ def plot_sample_heatmap(
         ].map(value_to_color)
 
     # Create clustermap
+    # Pearson correlation is undefined for constant sample vectors. Preserve
+    # those missing cells and the input order rather than inventing similarity
+    # values or asking linkage to cluster a non-finite distance matrix.
+    missing = ~np.isfinite(corr_matrix)
+    has_missing = bool(missing.to_numpy().any())
+    can_cluster = len(corr_matrix) > 1 and not has_missing
     g = sns.clustermap(
         corr_matrix,
         cmap=cmap,
@@ -118,12 +124,26 @@ def plot_sample_heatmap(
         vmax=1 if method == 'correlation' else None,
         col_colors=col_colors,
         row_colors=col_colors,
+        row_cluster=can_cluster,
+        col_cluster=can_cluster,
+        mask=missing,
         figsize=figsize,
         dendrogram_ratio=0.15,
         cbar_pos=(0.02, 0.8, 0.03, 0.15),
     )
 
-    g.ax_heatmap.set_title(title)
+    title_options = {}
+    if has_missing:
+        g.ax_heatmap.set_facecolor('#d9d9d9')
+        title += '\nUndefined cells (gray); input order'
+        if g.ax_col_colors is not None:
+            # The group-color strip sits above the heatmap. Place both title
+            # lines above that strip, including at small figure sizes.
+            strip_height = max(0., g.ax_col_colors.get_position().y1
+                               - g.ax_heatmap.get_position().y1)
+            title_options['pad'] = (plt.rcParams['axes.titlepad']
+                                    + strip_height * g.fig.get_figheight() * 72)
+    g.ax_heatmap.set_title(title, **title_options)
 
     if output_path:
         plt.savefig(output_path, dpi=200, bbox_inches='tight')
@@ -197,7 +217,7 @@ def plot_cluster_heatmap(
             )
         else:
             # Manual z-score; replace zero std with 1 to avoid NaN for constant features
-            std = data.std(axis=1).replace(0, 1)
+            std = data.std(axis=1).replace(0, 1).fillna(1)
             data = (data.T - data.mean(axis=1)) / std
             data = data.T
 
@@ -220,8 +240,8 @@ def plot_cluster_heatmap(
         vmin=vmin if normalize == 'zscore' else None,
         vmax=vmax if normalize == 'zscore' else None,
         col_colors=col_colors,
-        row_cluster=cluster_rows,
-        col_cluster=cluster_cols,
+        row_cluster=cluster_rows and data.shape[0] > 1,
+        col_cluster=cluster_cols and data.shape[1] > 1,
         figsize=figsize,
         dendrogram_ratio=(0.1, 0.15),
         cbar_pos=(0.02, 0.8, 0.03, 0.15),

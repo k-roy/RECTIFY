@@ -29,6 +29,54 @@ broken is worse than no list at all.
 
 ---
 
+## A 5′ rescue's exon-2 head is drawn as a flat `kM` prefix unless the re-split is on — OPEN (ISSUE-083)
+
+- **Status:** the re-split is built behind `RECTIFY_2F_RESPLIT=1` and is **off by default**; turning it
+  on by default waits on a read-level review of every read it changes.
+- **Affects:** 5′ junction rescues (Module 2F, sequence path and the Case-3 proximity fallback).
+- **Impact:** with the switch off, the writer draws the first `k` exon-2 bases of a rescued read as one
+  ungapped `kM` block after the N, whatever the read says there. On a 62,602-read human DRS cohort
+  the switch changes 342 reads (52 junctions gained, 3 lost) and cuts the mismatches in the first 30
+  exon-2 bases of those reads from 392 to 148 (96 in the unrescued aligner output).
+
+The ruling behind it (2026-09-21): a deletion beside an ANNOTATED N is not a refusal and is not
+charged in the placed block's bits; an insertion is slid off the N through identical bases and keeps
+its cost. In reviewed cases the deletion beside the N was made by 2F's fixed split, not by the read,
+so the re-split aligns the rescued 5′ segment ACROSS the candidate junction with the production
+anchored aligner (`local_aligner.resplit_across_junction`) before the evidence floor scores the
+block, and the writer draws the exon-2 head from the TSV column `five_prime_exon2_cigar`.
+
+- **Workaround:** set `RECTIFY_2F_RESPLIT=1` for runs whose 5′ junction placements you will analyse.
+- **Pinned by:** `tests/test_2f_resplit.py` and
+  `tests/test_2f_replay_f53d770_31.py::test_the_vanished_reads_draw_again` (it sets the switch itself).
+
+## The final rectified BAM discarded Module 2H placements — fixed 2026-09-20 (ISSUE-079)
+
+Any `<sample>.rectified.bam` (run-all) or per-chunk `corrected_consensus.bam` (generated chunk
+merge) written before this fix was replayed from the raw aligner arms: reads whose junctions 2H
+moved were written at their PRE-2H placement while `corrected_reads.tsv` reported the post-2H
+junction. Per-aligner `rectified_corrected_3end.bam` files and the TSVs were correct. Reprocess
+from correction onward; a per-aligner TSV without a `writer_input.json` receipt is rebuilt
+automatically.
+
+## A minus-strand 3′ clip across a whole exon shifted the record — fixed 2026-09-21 (ISSUE-085)
+
+**Symptom.** A minus-strand read whose corrected 3′ end removed its last aligned exon (the
+walkback landed at or before an intron, or the poly(A)-side A-run clip took the last base) was
+written with `reference_start` moved by the clipped bases only, not by the intron or deletion that
+then had to be stripped from the new start. Every surviving base sat that many bp upstream of the
+aligner's placement, and the TSV `junctions` column disagreed with the BAM N ops. On a 62,602-read
+human chr5 cohort this touched 3 reads, all `polya_walkback`, one of them 2,046 bp off.
+
+**Cause.** `read_edits.clip_read_to_corrected_3prime` and `softclip_read_to_corrected_3prime`
+(minus-strand branches) counted a stripped leading I into the clip but a stripped leading D/N into
+nothing; the plus-strand mirrors never move the start and were correct.
+
+**Fix.** A stripped D/N adds its length to the reference count before the start is set; pinned by
+`tests/test_issue085_minus_clip_dangling_n_shift.py` on the real geometry and on `6=4D6=`. Fixed on
+`fix/ultracode-exon-placement-20260919`; present on `master` until that branch lands. The writer's
+TSV-equals-BAM assertion does not cover walkback-edited reads; that gap is still open.
+
 ## Resolver B2 local scoring can worsen the whole emitted placement — fixed 2026-09-16
 
 - **Status:** fixed (CFX-03). Case B2 and its B3 mirror in

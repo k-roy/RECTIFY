@@ -536,8 +536,6 @@ def walkback_3prime_guarded(
     # -------------------------------------------------------------------
     ref_pos = read.reference_start
     read_pos = 0
-    if cigar[0][0] == 4:  # leading soft-clip
-        read_pos = cigar[0][1]
 
     if three_prime_side == THREE_PRIME_SIDE_RIGHT:
         original_3prime = read.reference_end - 1
@@ -560,6 +558,9 @@ def walkback_3prime_guarded(
 
     for op, length in cigar:
         if op == 4:  # soft-clip
+            # S consumes stored query even when an outer H precedes it.
+            # Count it here exactly once; H consumes neither coordinate.
+            read_pos += length
             continue
         elif op in (0, 7, 8):  # M, =, X
             for _ in range(length):

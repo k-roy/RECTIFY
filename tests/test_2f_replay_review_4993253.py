@@ -57,7 +57,11 @@ def test_the_two_wrong_controls_draw_no_rescue(read8, gate, monkeypatch):
 @pytest.mark.parametrize('gate', ['report', 'refuse'])
 def test_22f609c6_keeps_its_annotated_junction(gate, monkeypatch):
     """The right rescue: `1I15M` = 13=/2X at the tip, identity 0.87, 26 - 4 - 2.5 = 19.5 bits — evidence at the
-    default floor. The writer draws exactly that junction."""
+    default floor. The writer draws exactly that junction.
+
+    ISSUE-083 (Kevin 2026-09-21): the insertion is slid one base off the N (`1M1I14M`) — the inserted base and
+    its neighbour are identical, so every reference position keeps its read base and the identity and bits
+    are unchanged. An I/D beside an ANNOTATED N is not a reason to refuse (ISSUE-054 had clipped this read)."""
     row, res, rec, stock, entry = _replay('22f609c6', monkeypatch, gate)
     off = entry['off']
     assert res['rescued'] and res['landing_annotated'] is True
@@ -65,7 +69,7 @@ def test_22f609c6_keeps_its_annotated_junction(gate, monkeypatch):
     assert row['five_prime_rescue_refused'] == ''
     new = [n for n in RB.nops(rec) if n not in RB.nops(stock)]
     assert RB.real(new, off) == [(149487098, 149490313)], RB.real(new, off)
-    assert row['five_prime_exon_cigar'] == '1I15M'
+    assert row['five_prime_exon_cigar'] == '1M1I14M'
     assert row['five_prime_exon_identity'] == pytest.approx(13 / 15)
     assert row['five_prime_exon_bits'] == 19.5
 

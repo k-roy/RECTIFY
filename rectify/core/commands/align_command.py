@@ -1225,14 +1225,6 @@ def run_align(args: argparse.Namespace) -> int:
         )
         results['minimap2'] = str(resolver_bam)
 
-    # Summary of alignment step
-    logger.info(f"\nAlignment summary:")
-    for aligner, bam_path in results.items():
-        status = "SUCCESS" if bam_path else "FAILED"
-        logger.info(f"  {aligner}: {status}")
-        if bam_path:
-            logger.info(f"    Output: {bam_path}")
-
     # Validate outputs: check each reported BAM actually exists and is non-empty.
     # Aligners (especially deSALT) can fail silently, leaving 0-byte files.
     for aligner, bam_path in list(results.items()):
@@ -1245,6 +1237,46 @@ def run_align(args: argparse.Namespace) -> int:
                 "treating as failed"
             )
             results[aligner] = None
+
+    _terminal_run_context = None
+    # Tail-supported native continuation is a placement post-pass, before the
+    # per-arm junction pool/consensus is built. Modern stage-1 cDNA metadata
+    # supplies an explicit RNA-sense frame; generic DRS, legacy XO-only and
+    # short-read records are not implicitly assigned this protocol.
+    if (not getattr(args, 'short_read', False)
+            and not getattr(args, 'dT_primed_cDNA', False)
+            and getattr(args, 'annotation', None)):
+        from ..splice.terminal_tail_placement import (
+            load_annotation_junctions, run_terminal_tail_postpass, terminal_tail_context,
+        )
+        _terminal_annotation = None
+        _terminal_run_context = terminal_tail_context(args.genome, args.annotation)
+
+        def _load_terminal_annotation():
+            nonlocal _terminal_annotation
+            if _terminal_annotation is None:
+                _terminal_annotation = load_annotation_junctions(str(args.annotation))
+            return _terminal_annotation
+
+        for _arm, _bam in list(results.items()):
+            if not _bam:
+                continue
+            _selected, _terminal_stats = run_terminal_tail_postpass(
+                _bam, str(args.genome),
+                args.output_dir / f"{prefix}.{_arm}.terminal_tail.bam",
+                _load_terminal_annotation,
+                context=_terminal_run_context,
+            )
+            results[_arm] = _selected
+            logger.info("terminal-tail %s: %s", _arm, _terminal_stats)
+
+    # Summary of alignment step
+    logger.info(f"\nAlignment summary:")
+    for aligner, bam_path in results.items():
+        status = "SUCCESS" if bam_path else "FAILED"
+        logger.info(f"  {aligner}: {status}")
+        if bam_path:
+            logger.info(f"    Output: {bam_path}")
 
     # Check if we should run consensus selection
     successful_aligners = {k: v for k, v in results.items() if v}
@@ -1270,6 +1302,8 @@ def run_align(args: argparse.Namespace) -> int:
             )
             _sp.run(['samtools', 'index', str(multialigned_bam)], check=True)
             logger.info(f"Single-aligner output (sorted+indexed): {multialigned_bam}")
+        from ..splice.terminal_tail_placement import write_terminal_selection_receipt
+        write_terminal_selection_receipt(multialigned_bam, successful_aligners, _terminal_run_context)
         _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
         return 0
 
@@ -1285,35 +1319,12 @@ def run_align(args: argparse.Namespace) -> int:
     genome = {}
     import pysam as pysam_lib
     genome_path = str(args.genome)
-    try:
-        fasta = pysam_lib.FastaFile(genome_path)
-    except (OSError, IOError) as e:
-        # Handle gzip (not bgzip) compressed genome — auto-convert
-        if genome_path.endswith('.gz'):
-            import gzip as _gzip
-            import subprocess as _sp
-            from shutil import which as _which
-            logger.warning(f"pysam cannot open {genome_path}: {e}")
-            logger.warning("Attempting gzip→bgzip conversion...")
-            raw_path = genome_path[:-3]  # strip .gz
-            with _gzip.open(genome_path, 'rb') as _fin, open(raw_path, 'wb') as _fout:
-                _fout.write(_fin.read())
-            import os as _os
-            _os.rename(genome_path, genome_path + '.gzip_bak')
-            if _which('bgzip'):
-                _sp.run(['bgzip', raw_path], check=True)
-                _sp.run(['samtools', 'faidx', genome_path], check=True)
-                fasta = pysam_lib.FastaFile(genome_path)
-                logger.info(f"Successfully converted genome to bgzip: {genome_path}")
-            else:
-                # No bgzip — use uncompressed
-                fasta = pysam_lib.FastaFile(raw_path)
-                logger.info(f"Using uncompressed genome: {raw_path}")
-        else:
-            raise
-    for chrom in fasta.references:
-        genome[chrom] = fasta.fetch(chrom)
-    fasta.close()
+    from ..align.reference import open_alignment_reference
+    with open_alignment_reference(genome_path, args.output_dir) as fasta:
+        genome_path = (fasta.filename.decode() if isinstance(fasta.filename, bytes)
+                       else str(fasta.filename))
+        for chrom in fasta.references:
+            genome[chrom] = fasta.fetch(chrom)
     logger.info(f"[TIMING] Genome load: {_time.perf_counter() - _t_genome_load:.1f}s")
 
     # Load annotated junctions if annotation provided
@@ -1421,7 +1432,7 @@ def run_align(args: argparse.Namespace) -> int:
         calmd_cmd = [
             'samtools', 'calmd', '-b',
             str(multialigned_bam),
-            str(args.genome),
+            genome_path,
         ]
         with open(str(calmd_bam), 'wb') as fh_out:
             result = _sp.run(calmd_cmd, stdout=fh_out, stderr=_sp.PIPE)
@@ -1438,6 +1449,8 @@ def run_align(args: argparse.Namespace) -> int:
     except Exception as e:
         logger.warning(f"  samtools calmd error: {e}; proceeding without MD tags")
 
+    from ..splice.terminal_tail_placement import write_terminal_selection_receipt
+    write_terminal_selection_receipt(multialigned_bam, successful_aligners, _terminal_run_context)
     _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
     return 0
 

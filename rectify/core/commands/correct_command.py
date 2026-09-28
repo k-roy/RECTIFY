@@ -19,6 +19,7 @@ import pysam
 # CRITICAL: Set thread limits BEFORE importing numpy/pandas
 # This must happen before bam_processor imports numpy
 from ...slurm import set_thread_limits, get_available_cpus, get_slurm_info
+from ..bam import writer_input as _writer_input
 
 from ..bam import bam_processor
 from ..bam import parallel as bam_parallel
@@ -671,8 +672,8 @@ def validate_inputs(args) -> dict:
     # (rectify.core.correct.protocols.ont_cdna) — it is NOT the fixed DRS rule.
     # AG mispriming disabled (no oligo-dT priming step).
     is_ont_cdna = getattr(args, 'ONT_cDNA', False)
-    # Short-read mode (Illumina/Aviti): no poly(A) tail in reads; disable all
-    # modules that assume a poly(A) soft-clip or A-tract walk-back.
+    # Fragmented short-read chemistry has no general poly(A)-tail premise.
+    # Explicit dT/ONT chemistry keeps its existing protocol walkback behavior.
     is_short_read = getattr(args, 'short_read', False)
 
     config = {
@@ -683,10 +684,11 @@ def validate_inputs(args) -> dict:
         # A-tract: detects reads whose 3' end has slid into a genomic A/T-run, and walks
         # the position back to the first non-A (non-T for minus strand) base upstream.
         # Uses genomic reference sequence — does NOT require a sequenced poly(A) tail.
-        # Enabled for short reads: CSP internal priming causes poly-A complement T's to
+        # Enabled for declared dT-primed short reads: internal priming can cause T's to
         # reverse-complement into A's that align into downstream genomic A-runs, shifting
         # the reported 3' end rightward.  The same genomic walk-back corrects this.
         'apply_atract': not args.skip_atract_check,
+        'short_read': is_short_read,
         # AG mispriming: oligo-dT mispriming onto genomic A/G-rich regions creates false 3' ends.
         # Disabled for DRS (default) — direct RNA sequencing has no priming step, so no
         # mispriming artifact is possible.
@@ -718,6 +720,9 @@ def validate_inputs(args) -> dict:
         'corrected_bam': getattr(args, 'corrected_bam', None),
         'softclipped_bam': getattr(args, 'softclipped_bam', None),
         'bedgraph_prefix': getattr(args, 'bedgraph_prefix', None),
+        # ISSUE-079: keep the post-2H BAM these rows are decided against, beside the TSV.
+        'retain_writer_input': getattr(args, 'retain_writer_input', False),
+        'writer_input_origin': getattr(args, 'writer_input_origin', None),
         # Junction refinement (Module 2H)
         'aligner_bams':              [_strip_aligner_prefix(str(p)) for p in getattr(args, 'aligner_bams', []) or []],
         'junction_hp_pen':           getattr(args, 'junction_hp_pen', 0.25),
@@ -768,6 +773,13 @@ def validate_inputs(args) -> dict:
     }
 
     return config
+
+
+def _writer_input_canonical(output_path) -> Path:
+    """The canonical corrected output for ``-o``: its manifest when one exists, else the TSV."""
+    _tsv = Path(str(output_path))
+    _manifest = _tsv.parent / (_tsv.stem + '.manifest.tsv')
+    return _manifest if _manifest.exists() else _tsv
 
 
 def run(args):
@@ -860,7 +872,9 @@ def run(args):
     streaming_mode = getattr(args, 'streaming', False)
     logger.info(f"  Streaming mode:        {'ENABLED' if streaming_mode else 'DISABLED'}")
     if is_short_read:
-        logger.info(f"  Protocol:              short-read (poly(A) modules disabled)")
+        logger.info("  Protocol:              short-read (tail walkback %s)",
+                    "enabled for declared chemistry" if is_dt_primed or is_ont_cdna
+                    else "disabled for fragmented RNA")
     logger.info("")
 
     logger.info("Correction modules:")
@@ -927,13 +941,28 @@ def run(args):
             'SKIP' if _skip_decision.skip else 'RUN',
             _skip_decision.reason,
         )
-        if _skip_decision.skip:
+        if _skip_decision.skip and config.get('retain_writer_input'):
+            # ISSUE-079: the sidecar vouches for the TSV, not for the alignment state the TSV
+            # was decided against. A legacy or damaged pair is rebuilt, never skipped.
+            try:
+                _writer_input.load(
+                    _writer_input_canonical(config['output_path']),
+                    origin_bam=config.get('writer_input_origin') or config['bam_path'],
+                    pool_bams=config.get('aligner_bams'),
+                )
+            except _writer_input.WriterInputError as _wi_exc:
+                logger.info("[RESUME] sample=%s stage=correct decision=RUN reason=%s",
+                            _sample_id, _wi_exc)
+                _skip_decision = None
+        if _skip_decision is not None and _skip_decision.skip:
             logger.info("[RESUME] Skipping correct stage — prior sidecar valid.")
             return 0
 
         # Dry-run mode: print decision and exit.
         if getattr(args, 'dry_run_resume', False):
-            print(f"[dry-run-resume] stage=correct decision=RUN reason={_skip_decision.reason}")
+            _dry_reason = (_skip_decision.reason if _skip_decision is not None
+                           else 'writer-input receipt absent or stale')
+            print(f"[dry-run-resume] stage=correct decision=RUN reason={_dry_reason}")
             return 0
     else:
         _rectify_sha = 'unknown'
@@ -949,6 +978,12 @@ def run(args):
             config=config
         )
         logger.info(f"Provenance tracking initialized for {output_dir}")
+
+    # ISSUE-079: withdraw the previous run's receipt before this run touches its TSV, so a
+    # failure below cannot leave the old pair looking like this run's success.
+    if config.get('retain_writer_input') and config.get('output_path'):
+        _writer_input.invalidate(Path(str(config['output_path'])))
+    _requested_output_path = config.get('output_path')
 
     # Process BAM file
     import time as _time
@@ -975,6 +1010,14 @@ def run(args):
             if config.get('write_corrected_bam'):
                 import shutil as _shutil
                 _shutil.copy(str(config['bam_path']), str(config['write_corrected_bam']))
+            if config.get('retain_writer_input'):
+                _writer_input.publish(
+                    Path(str(config['output_path'])), Path(str(config['bam_path'])),
+                    owned=False,
+                    origin_bam=config.get('writer_input_origin') or config['bam_path'],
+                    pool_bams=config.get('aligner_bams'),
+                    refinement={'ran': False}, producer=_rectify_sha,
+                )
             return
         logger.info("Processing BAM file...")
 
@@ -1009,6 +1052,9 @@ def run(args):
         # scope, because the run may skip the 2H block entirely and the payload is still assembled
         # below — the inner-scope initialiser raised UnboundLocalError on exactly that path.
         _clip_signal = None
+        # ISSUE-079: the 2H intermediate this run owns (None when 2H was skipped or failed open).
+        _owned_refined_bam = None
+        _refinement_receipt = {'ran': False}
 
         # Module 2H: Junction N-op boundary refinement (optional pre-processing step).
         # When --aligner-bams are provided (or a --junction-pool-cache pkl), replace
@@ -1140,6 +1186,7 @@ def run(args):
                         min_observed_support=_min_support,
                         max_junction_size=config.get('junction_max_size'),
                         return_signal=True,
+                        n_workers=config.get('threads', 1),
                     )
                     # ISSUE-034: the unspliced/spliced prior for the 5' clip-origin call.
                     from ..splice.splice_aware_5prime import set_clip_origin_signal, set_site_support
@@ -1282,6 +1329,12 @@ def run(args):
                         profile_sample_rate=config.get('junction_profile_sample_rate', 1),
                     )
                     bam_to_process = _refined_bam
+                    _owned_refined_bam = _refined_bam
+                    _refinement_receipt = {
+                        'ran': True,
+                        'n_op_reads': int(_refine_stats['n_op_reads']),
+                        'refined': int(_refine_stats['refined']),
+                    }
                     logger.info(
                         "  Junction refinement: %d reads with N-ops, %d refined, %d unchanged",
                         _refine_stats['n_op_reads'], _refine_stats['refined'],
@@ -1433,6 +1486,7 @@ def run(args):
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
                     ont_cDNA=config.get('ont_cDNA', False),
                     use_dorado_polya=config.get('use_dorado_polya', False),
+                    short_read=config.get('short_read', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
                 )
@@ -1458,6 +1512,7 @@ def run(args):
                     dt_primed_cDNA=config.get('dt_primed_cDNA', False),
                     ont_cDNA=config.get('ont_cDNA', False),
                     use_dorado_polya=config.get('use_dorado_polya', False),
+                    short_read=config.get('short_read', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
                 )
@@ -1502,6 +1557,7 @@ def run(args):
                 dt_primed_cDNA=config.get('dt_primed_cDNA', False),
                 ont_cDNA=config.get('ont_cDNA', False),
                 use_dorado_polya=config.get('use_dorado_polya', False),
+                short_read=config.get('short_read', False),
                 min_mapq=config.get('min_mapq', 0),
                 min_aligned_length=config.get('min_aligned_length', 0),
                 reuse_pool_container=_pool_container,
@@ -1872,6 +1928,25 @@ def run(args):
                     )
             provenance.save()
             logger.info(f"Provenance saved to {provenance.output_dir}")
+
+        # ISSUE-079: every row above was decided against bam_to_process. The deferred merge and
+        # the final consensus writer replay those rows, so they need that exact alignment state —
+        # retain the 2H intermediate beside the TSV instead of deleting it, receipt LAST.
+        if config.get('retain_writer_input') and _requested_output_path:
+            _owned = (_owned_refined_bam is not None
+                      and bam_to_process == _owned_refined_bam
+                      and Path(_owned_refined_bam).exists())
+            _wi_receipt = _writer_input.publish(
+                _writer_input_canonical(_requested_output_path),
+                Path(bam_to_process),
+                owned=_owned,
+                origin_bam=config.get('writer_input_origin') or config['bam_path'],
+                pool_bams=config.get('aligner_bams'),
+                refinement=_refinement_receipt,
+                producer=_rectify_sha,
+            )
+            logger.info("Writer input retained (%s): %s",
+                        'post-2H BAM' if _owned else 'arm BAM is the writer input', _wi_receipt)
 
         # Clean up the intermediate junction_refined BAM (temporary file).
         # It's no longer needed once the main correction has completed.
@@ -2417,6 +2492,27 @@ def create_correct_parser(subparsers):
              'parallel BAM writer (write_corrected_bam_parallel). Defaults to a new '
              'directory under $TMPDIR / tempfile.gettempdir(). On H2/Sherlock, pass '
              '$L_SCRATCH/rectify_regions for fast local disk.'
+    )
+
+    perf_group.add_argument(
+        '--retain-writer-input',
+        dest='retain_writer_input',
+        action='store_true',
+        default=False,
+        help='Keep the exact post-Module-2H BAM the corrections were decided against as '
+             '<output>.writer_input.bam, with a <output>.writer_input.json receipt binding it '
+             'to the corrected TSV. Required by any deferred consumer that replays the TSV onto '
+             'a BAM (per-aligner merge scoring, the final rectified-BAM writer): the original '
+             'arm BAM has pre-2H junction placements. run-all and the generated chunk scripts '
+             'set this; rectify evicts the BAM once the final outputs are written.'
+    )
+    perf_group.add_argument(
+        '--writer-input-origin',
+        dest='writer_input_origin',
+        default=None,
+        metavar='BAM',
+        help='The durable arm BAM this input is a staged or sorted copy of (recorded in the '
+             'writer-input receipt; default: the input BAM).'
     )
 
     perf_group.add_argument(

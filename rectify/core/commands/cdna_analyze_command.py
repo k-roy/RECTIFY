@@ -51,6 +51,7 @@ from rectify.core.cdna.walkback import (
     walk_back_anchor_and_tail,
     walk_forward_tss,
 )
+from rectify.core.correct.protocols.ont_cdna import has_rna_sense_frame
 
 
 def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
@@ -70,10 +71,7 @@ def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
 def _is_rna_sense(rec: pysam.AlignedSegment) -> bool:
     """True when the record is a `correct-cdna` consensus emitted RNA-sense
     (``XN:i:1``, 3457ecc+), so its flag is the molecule's frame after alignment."""
-    try:
-        return int(rec.get_tag("XN")) == 1
-    except (KeyError, ValueError, TypeError):
-        return False
+    return has_rna_sense_frame(rec)
 
 
 def _read_info_from_bam_record(rec: pysam.AlignedSegment,
@@ -99,11 +97,12 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
         read_subtype = rec.get_tag("XY")
         xc = int(rec.get_tag("XC"))
         xf = int(rec.get_tag("XF"))
-    except (KeyError, ValueError):
+    except (KeyError, ValueError, TypeError, OverflowError):
         # KeyError: an aligner (uLTRA) that didn't propagate the FASTQ comment.
         # ValueError: a colliding non-cDNA tag (uLTRA emits XC:Z:NO_SPLICE) on a
         # molecule with no minimap2 sibling to overwrite it. Either way the read
         # has no valid cDNA metadata -> drop it cleanly instead of crashing.
+        # Arrays and non-finite numeric tags also cannot supply integer counts.
         return None
 
     chrom = rec.reference_name
@@ -125,7 +124,12 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     # the flag is authoritative and the disagreement is counted; a record without
     # `XN` (pre-3457ecc output) keeps XO, the only frame label it has.
     orient_tag = orient
-    if _is_rna_sense(rec):
+    sense_frame = _is_rna_sense(rec)
+    if not sense_frame and orient not in ("fwd", "rev"):
+        # A colliding or malformed legacy XO cannot establish a strand. Modern
+        # RNA-sense records retain the independently authoritative flag frame.
+        return None
+    if sense_frame:
         orient = "rev" if rec.is_reverse else "fwd"
         if orient != orient_tag and tail_stats is not None:
             tail_stats["xo_frame_corrected"] = tail_stats.get("xo_frame_corrected", 0) + 1

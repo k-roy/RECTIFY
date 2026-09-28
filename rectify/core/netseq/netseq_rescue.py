@@ -45,7 +45,7 @@ Author: Kevin R. Roy
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -63,10 +63,11 @@ def revcomp(seq: str) -> str:
 
 
 def longest_common_prefix(a: str, b: str) -> int:
-    """Length of the longest common prefix of two strings (case-insensitive)."""
+    """Exact A/C/G/T prefix length; unresolved bases are not match evidence."""
+    a, b = a.upper(), b.upper()
     n = min(len(a), len(b))
     i = 0
-    while i < n and a[i] == b[i]:
+    while i < n and a[i] in 'ACGT' and a[i] == b[i]:
         i += 1
     return i
 
@@ -114,7 +115,7 @@ class JunctionPool:
     """
 
     def __init__(self, junctions: Iterable[NetseqJunction] = ()):
-        self._by_exon1: Dict[Tuple[str, str], Dict[int, NetseqJunction]] = {}
+        self._by_exon1: Dict[Tuple[str, str], Dict[int, List[NetseqJunction]]] = {}
         self.n_junctions = 0
         #: kept / dropped intron counts by PARENT FEATURE TYPE (mRNA, tRNA, snoRNA, ...)
         self.by_parent_type: Dict[str, int] = {}
@@ -123,15 +124,14 @@ class JunctionPool:
             self.add(j)
 
     def add(self, junction: NetseqJunction) -> None:
-        """Add one junction. Ties on ``exon1_last`` keep the SHORTEST intron (the nearest acceptor)."""
+        """Retain every distinct acceptor at a donor, in deterministic order."""
         key = (junction.chrom, junction.strand)
         slot = self._by_exon1.setdefault(key, {})
-        prev = slot.get(junction.exon1_last)
-        if prev is None:
-            slot[junction.exon1_last] = junction
+        family = slot.setdefault(junction.exon1_last, [])
+        if junction not in family:
+            family.append(junction)
+            family.sort(key=lambda j: (j.intron_length, j.intron_start, j.intron_end))
             self.n_junctions += 1
-        elif junction.intron_length < prev.intron_length:
-            slot[junction.exon1_last] = junction
 
     def __len__(self) -> int:
         return self.n_junctions
@@ -150,15 +150,24 @@ class JunctionPool:
         pooled junction has its exon-1 boundary within ``max_intronic`` nt gene-strand-upstream of
         ``p``.  The SMALLEST ``n_intronic`` wins, i.e. the donor nearest the aligned end.
         """
+        hit = self.lookup_candidates(chrom, strand, p, max_intronic)
+        return (hit[0], hit[1][0]) if hit is not None else None
+
+    def lookup_candidates(self, chrom: str, strand: str, p: int, max_intronic: int):
+        """All acceptors at the nearest eligible donor; donor search is unchanged.
+
+        ``lookup`` retains its historical shortest-junction view for callers
+        inspecting a boundary. Rescue must use this complete candidate family.
+        """
         slot = self._by_exon1.get((chrom, strand))
         if not slot:
             return None
         step = -1 if strand == '+' else 1  # gene-strand-ward from p back to exon1_last
         for n_intronic in range(0, max_intronic + 1):
             exon1_last = p + step * n_intronic
-            junction = slot.get(exon1_last)
-            if junction is not None:
-                return n_intronic, junction
+            family = slot.get(exon1_last)
+            if family:
+                return n_intronic, tuple(family)
         return None
 
     # -- constructors -------------------------------------------------------------------------
@@ -375,6 +384,27 @@ def load_junction_tsv(tsv_path) -> List[NetseqJunction]:
 # Read geometry helpers
 # ---------------------------------------------------------------------------------------------
 
+def terminal_softclip(read: pysam.AlignedSegment, side: str) -> str:
+    """Stored terminal S sequence in genomic orientation, inside any outer H.
+
+    H describes absent query bases and cannot hide a retained soft clip. No
+    sequence is reconstructed for H or for a record without stored SEQ.
+    """
+    if side not in ('left', 'right'):
+        raise ValueError("side must be 'left' or 'right'")
+    cigar, seq = read.cigartuples, read.query_sequence
+    if not cigar or not seq:
+        return ''
+    ops = reversed(cigar) if side == 'right' else iter(cigar)
+    for op, length in ops:
+        if op == 5:
+            continue
+        if op != 4 or length <= 0 or length > len(seq):
+            return ''
+        return seq[-length:] if side == 'right' else seq[:length]
+    return ''
+
+
 def rna_clip(read: pysam.AlignedSegment, strand: str) -> str:
     """The read-5' soft clip in RNA orientation, first base adjacent to the RNA 3' end.
 
@@ -384,14 +414,8 @@ def rna_clip(read: pysam.AlignedSegment, strand: str) -> str:
     read maps forward and its read-5' terminus is the LEFT end (returned reverse-complemented, so
     index 0 is again the base adjacent to the aligned RNA 3' end).
     """
-    if not read.cigartuples or not read.query_sequence:
-        return ""
-    seq = read.query_sequence.upper()
-    if strand == '+':
-        op, length = read.cigartuples[-1]
-        return seq[len(seq) - length:] if op == 4 else ""
-    op, length = read.cigartuples[0]
-    return revcomp(seq[:length]) if op == 4 else ""
+    clip = terminal_softclip(read, 'right' if strand == '+' else 'left').upper()
+    return clip if strand == '+' else revcomp(clip)
 
 
 def _ref_to_query(read: pysam.AlignedSegment) -> Dict[int, int]:
@@ -424,7 +448,7 @@ def aligned_intronic_bases(
     out = []
     for ref_pos in positions:
         q = ref_to_query.get(ref_pos)
-        if q is None:
+        if q is None or not 0 <= q < len(seq):
             return ""  # an indel/N inside the intronic stub: refuse rather than guess
         base = seq[q]
         out.append(base if strand == '+' else base.translate(_COMPLEMENT))
@@ -499,6 +523,8 @@ def call_tail(
             them classified as splicing intermediates -- were walked 4 nt off it, erasing the peak.
     """
     clip = rna_clip(read, strand) if clip_rna is None else clip_rna
+    if not read.query_sequence:
+        return TailCall()
     randomer = ""
     if umi_length > 0 and clip:
         randomer = clip[max(0, len(clip) - umi_length):]
@@ -523,7 +549,7 @@ def call_tail(
         pos = p
         while walkback < max_walkback and 0 <= pos < len(genome_seq):
             q = ref_to_query.get(pos)
-            if q is None:
+            if q is None or not 0 <= q < len(seq):
                 break
             if seq[q] != read_a or genome_seq[pos].upper() != genome_a:
                 break
@@ -575,6 +601,7 @@ class RescueCall:
     decoy_would_rescue: bool = False  # the SAME acceptance rule applied to the decoy acceptor
     junction: Optional[NetseqJunction] = None
     s_seq: str = ""                  # the matched string S, RNA orientation
+    n_candidates: int = 0           # distinct acceptors actually searched
 
 
 def allowed_remainders(umi_length: int) -> Tuple[int, ...]:
@@ -624,18 +651,45 @@ def rescue_read(
     chance-match floor for the rescue count, and is why the accepted-``k`` distribution can be read
     as evidence rather than assertion.
     """
-    if pool is None or genome_seq is None:
+    if pool is None or genome_seq is None or not read.query_sequence:
         return RescueCall()
 
-    hit = pool.lookup(chrom, strand, p, max_intronic)
+    hit = pool.lookup_candidates(chrom, strand, p, max_intronic)
     if hit is None:
         return RescueCall()
-    n_intronic, junction = hit
+    n_intronic, family = hit
+    if len(family) > 1:
+        # Preserve the existing quarter-per-base chance model and spend its
+        # same error budget across M acceptors: M * 4^-(k+extra) <= 4^-k.
+        # Integer arithmetic gives ceil(log4(M)) without rounding boundaries.
+        # This is a conditional extension of the existing null, not a
+        # genome-wide FDR estimate or a new single-candidate operating point.
+        extra, budget = 0, 1
+        while budget < len(family):
+            extra += 1
+            budget *= 4
+        calls = [rescue_read(
+            read, strand, chrom, p, JunctionPool([j]), genome_seq,
+            umi_length=umi_length, max_intronic=max_intronic,
+            min_k=min_k + extra, min_k_with_remainder=min_k_with_remainder + extra,
+            clip_rna=clip_rna, ref_to_query=ref_to_query, decoy_offset=decoy_offset,
+        ) for j in family]
+        supported = [c for c in calls if c.status == 'spliced_rescued']
+        # A distinct supported placement is an ambiguity, even if its matched
+        # prefix is shorter. Read length alone must not choose its acceptor.
+        chosen = supported[0] if len(supported) == 1 else max(calls, key=lambda c: c.k)
+        result = replace(chosen, n_candidates=len(family),
+                         decoy_k=max(c.decoy_k for c in calls),
+                         decoy_would_rescue=sum(c.decoy_would_rescue for c in calls) == 1)
+        if len(supported) > 1 or (not supported and any(c.status == 'ambiguous' for c in calls)):
+            result = replace(result, status='ambiguous', position=None, junction=None)
+        return result
+    junction = family[0]
 
     intronic = aligned_intronic_bases(read, strand, p, n_intronic, ref_to_query=ref_to_query)
     if n_intronic > 0 and not intronic:
         # indel inside the intronic stub -- do not guess
-        return RescueCall(status="none", n_intronic=n_intronic, junction=junction)
+        return RescueCall(status="none", n_intronic=n_intronic, junction=junction, n_candidates=1)
     clip = rna_clip(read, strand) if clip_rna is None else clip_rna
     s_seq = intronic + clip
 
@@ -659,7 +713,8 @@ def rescue_read(
     decoy_r = len(s_seq) - decoy_k
     decoy_would_rescue = _accept(decoy_k, decoy_r)
     common = dict(k=k, r=r, n_intronic=n_intronic, decoy_k=decoy_k,
-                  decoy_would_rescue=decoy_would_rescue, junction=junction, s_seq=s_seq)
+                  decoy_would_rescue=decoy_would_rescue, junction=junction, s_seq=s_seq,
+                  n_candidates=1)
 
     # ORDER MATTERS: the k FLOOR is tested first, the remainder second.
     #
@@ -698,6 +753,7 @@ class NetseqReadRecord(UnifiedReadRecord):
     rescue_k: int = 0
     rescue_r: int = 0
     rescue_n_intronic: int = 0
+    rescue_n_candidates: int = 0
     rescue_decoy_k: int = 0
     rescue_decoy_would_rescue: bool = False
     rescue_intron_start: int = -1

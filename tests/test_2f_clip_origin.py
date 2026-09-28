@@ -104,7 +104,9 @@ def test_prior_can_tip_a_close_call_toward_the_intron():
 
 
 def test_tsv_columns_are_appended_last_and_filled():
-    assert CORRECTION_TSV_HEADER[-11:] == ['five_prime_clip_origin', 'five_prime_clip_origin_bits',
+    # By NAME, not from the end: the header is append-only and a negative index goes stale.
+    i = CORRECTION_TSV_HEADER.index('five_prime_clip_origin')
+    assert CORRECTION_TSV_HEADER[i:i + 11] == ['five_prime_clip_origin', 'five_prime_clip_origin_bits',
                                            'five_prime_clip_prior_bits',
                                            'five_prime_site_support', 'five_prime_landing_established',
                                            'station_b_microexons', 'station_b_alternatives',
@@ -115,13 +117,13 @@ def test_tsv_columns_are_appended_last_and_filled():
     assert row['five_prime_clip_origin'] == 'intron'
     cells = correction_result_to_tsv_row(row)
     assert len(cells) == len(CORRECTION_TSV_HEADER)
-    assert cells[-11] == 'intron' and cells[-10] != '' and cells[-9] == '0.0'
+    assert cells[i] == 'intron' and cells[i + 1] != '' and cells[i + 2] == '0.0'
     # ISSUE-039: no rescue was drawn, so the station-C columns are blank; ISSUE-040: station B
     # found nothing on this read, so its columns are blank apart from the 0/1 applied flag.
     # ISSUE-039: a refused read still reports the site it was judged at, so these are '0'/'0'
     # rather than blank; only a read with no judged site at all leaves them empty.
-    assert cells[-8] in ('', '0') and cells[-7] in ('', '0')
-    assert cells[-6:] == ['', '', '', '0', '', '']
+    assert cells[i + 3] in ('', '0') and cells[i + 4] in ('', '0')
+    assert cells[i + 5:i + 11] == ['', '', '', '0', '', '']
 
 
 def test_prescan_unspliced_signal_counts_reads_running_through_an_intron_edge():

@@ -35,6 +35,34 @@ _QUERY_CONSUMING: frozenset = frozenset([0, 1, 4, 7, 8])  # M, I, S, =, X
 # Note: H (5) is excluded from both — hard-clipped bases are NOT in query_sequence.
 
 
+def _five_prime_hardclip_ops(cigar, strand):
+    """Original RNA5 H operations; these bases are absent from stored SEQ."""
+    if strand == '-':
+        i = len(cigar)
+        while i and cigar[i - 1][0] == 5:
+            i -= 1
+        return list(cigar[i:])
+    i = 0
+    while i < len(cigar) and cigar[i][0] == 5:
+        i += 1
+    return list(cigar[:i])
+
+
+def _without_5prime_hardclips(cigar, strand):
+    """Local geometry view; H consumes neither query nor reference."""
+    result = list(cigar)
+    edge = -1 if strand == '-' else 0
+    while result and result[edge][0] == 5:
+        result.pop(edge)
+    return result
+
+
+def _with_5prime_hardclips(cigar, original, strand):
+    """Restore the original molecule extent outside the new S/aligned block."""
+    hard = _five_prime_hardclip_ops(original, strand)
+    return list(cigar) + hard if strand == '-' else hard + list(cigar)
+
+
 def reanchor_5prime_for_rescue(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -149,7 +177,8 @@ def reanchor_5prime_for_rescue(
                         else:
                             new_cigar.append((first_op, first_len))
                         new_cigar.extend(cigar[run_start_idx + 1:])
-                        read.cigartuples = new_cigar
+                        read.cigartuples = _with_5prime_hardclips(
+                            new_cigar, cigar, '-' if read.is_reverse else '+')
                         read.reference_start = run_start_r
                         return True
                 else:
@@ -228,7 +257,8 @@ def reanchor_5prime_for_rescue(
                         first_op, first_len = cigar[run_end_idx]
                         new_cigar.append((first_op, first_len - run_end_off))
                         new_cigar.append((4, trail_s_len))
-                        read.cigartuples = new_cigar
+                        read.cigartuples = _with_5prime_hardclips(
+                            new_cigar, cigar, '-' if read.is_reverse else '+')
                         # reference_start unchanged; reference_end shrinks.
                         return True
                 else:
@@ -251,6 +281,8 @@ def clip_read_to_corrected_3prime(
     Bases removed from the CIGAR are converted to a single trailing / leading H
     (hard-clip) op and deleted from the stored query sequence and quality array.
     Any existing soft-clip at the clipped end is subsumed into the new hard clip.
+    Existing hard-clipped bases remain in the molecule extent and are added to
+    the new H count; they are never removed from stored query a second time.
 
     If *corrected_3prime* equals the current boundary the read is unchanged and
     False is returned.  Unmapped reads, reads without CIGAR, and reads where the
@@ -270,6 +302,8 @@ def clip_read_to_corrected_3prime(
 
     seq   = read.query_sequence
     quals = read.query_qualities  # numpy uint8 array or None
+    original_hard = sum(length for _, length in _five_prime_hardclip_ops(
+        cigar, '-' if strand == '+' else '+'))
 
     if strand == '+':
         current_end = read.reference_end - 1  # 0-based inclusive right boundary
@@ -323,9 +357,9 @@ def clip_read_to_corrected_3prime(
         if not cigar:
             return False
 
-        # 4. Append hard-clip for removed query bases (if any).
-        if n_query_remove > 0:
-            cigar.append((5, n_query_remove))
+        # 4. Preserve absent source bases as well as newly removed query bases.
+        if n_query_remove + original_hard > 0:
+            cigar.append((5, n_query_remove + original_hard))
 
         # 5. Apply to read.  Set sequence before qualities (setting seq resets quals).
         if n_query_remove > 0 and seq is not None:
@@ -376,16 +410,23 @@ def clip_read_to_corrected_3prime(
 
         # 3.5. Strip leading D/N/I ops dangling after the walk (minus strand).
         # I: absorb into hard-clip; D/N: invalid at start of CIGAR.
+        # ISSUE-085: a stripped D/N consumed reference, so it moves the first
+        # surviving base right by its length. Before this the record kept
+        # `current_start + n_ref_removed` and every surviving base was drawn
+        # `length` bp upstream of where the aligner put it (5cac4ae6, chr5 -:
+        # `25S6M650I2046N45M…` clipped to 40832462 landed 2,046 bp off).
         while cigar and cigar[0][0] in (1, 2, 3):  # I=1, D=2, N=3
             op, length = cigar.pop(0)
             if op == 1:
                 n_query_remove += length
+            else:
+                n_ref_removed += length
         if not cigar:
             return False
 
-        # 4. Prepend hard-clip for removed query bases.
-        if n_query_remove > 0:
-            cigar.insert(0, (5, n_query_remove))
+        # 4. Preserve absent source bases as well as newly removed query bases.
+        if n_query_remove + original_hard > 0:
+            cigar.insert(0, (5, n_query_remove + original_hard))
 
         # 5. Apply to read; also shift reference_start for minus strand clips.
         if n_query_remove > 0 and seq is not None:
@@ -423,6 +464,8 @@ def softclip_read_to_corrected_3prime(
 
     seq   = read.query_sequence
     quals = read.query_qualities
+    original_hard = sum(length for _, length in _five_prime_hardclip_ops(
+        cigar, '-' if strand == '+' else '+'))
 
     if strand == '+':
         current_end = read.reference_end - 1
@@ -435,7 +478,7 @@ def softclip_read_to_corrected_3prime(
         # 1. Absorb trailing soft-clips into the new soft-clip.
         while cigar and cigar[-1][0] == 4:   # S
             n_query_remove += cigar.pop()[1]
-        # 2. Strip trailing hard-clips (not in sequence; discard silently).
+        # 2. Set original hard-clips aside; restore outside the new S below.
         while cigar and cigar[-1][0] == 5:   # H
             cigar.pop()
 
@@ -472,6 +515,8 @@ def softclip_read_to_corrected_3prime(
         # 4. Append soft-clip (sequence stays in read).
         if n_query_remove > 0:
             cigar.append((4, n_query_remove))  # S, not H
+        if original_hard:
+            cigar.append((5, original_hard))
         read.cigartuples = cigar
         return True
 
@@ -486,7 +531,7 @@ def softclip_read_to_corrected_3prime(
         # 1. Absorb leading soft-clips.
         while cigar and cigar[0][0] == 4:   # S
             n_query_remove += cigar.pop(0)[1]
-        # 2. Strip leading hard-clips.
+        # 2. Set original hard-clips aside; restore outside the new S below.
         while cigar and cigar[0][0] == 5:   # H
             cigar.pop(0)
 
@@ -513,16 +558,22 @@ def softclip_read_to_corrected_3prime(
         # 3.5. Strip leading D/N/I dangling after the walk (minus strand softclip).
         # I: absorb into soft-clip (query bases kept in sequence).
         # D/N: invalid immediately after a leading soft-clip.
+        # ISSUE-085: a stripped D/N moves the first surviving base right by its
+        # length (see clip_read_to_corrected_3prime).
         while cigar and cigar[0][0] in (1, 2, 3):  # I=1, D=2, N=3
             op, length = cigar.pop(0)
             if op == 1:
                 n_query_remove += length
+            else:
+                n_ref_removed += length
         if not cigar:
             return False
 
         # 4. Prepend soft-clip (sequence stays in read).
         if n_query_remove > 0:
             cigar.insert(0, (4, n_query_remove))  # S, not H
+        if original_hard:
+            cigar.insert(0, (5, original_hard))
         read.cigartuples     = cigar
         read.reference_start = current_start + n_ref_removed
         return True
@@ -1103,6 +1154,7 @@ def reroute_intronic_tail_5prime_via_junction(
 
     exon_q_bases = sum(l for op, l in exon_ops if op in _QUERY_CONSUMING)
     cigar = list(read.cigartuples)
+    original_cigar = tuple(cigar)
 
     if strand == '-':
         if read.reference_end <= clip_boundary:
@@ -1201,7 +1253,7 @@ def reroute_intronic_tail_5prime_via_junction(
                 merged[-1] = (3, merged[-1][1] + _l)
             else:
                 merged.append((_op, _l))
-        read.cigartuples = merged
+        read.cigartuples = _with_5prime_hardclips(merged, original_cigar, strand)
         return True
 
     else:  # plus strand
@@ -1307,7 +1359,7 @@ def reroute_intronic_tail_5prime_via_junction(
                 merged_p.append((_op, _l))
         cigar = merged_p
 
-        read.cigartuples = cigar
+        read.cigartuples = _with_5prime_hardclips(cigar, original_cigar, strand)
         read.reference_start = new_ref_start
         return True
 
@@ -1318,9 +1370,15 @@ def projected_5prime_rescue_intron_edge(
     strand: str,
     upstream_trim: int = 0,
     exon2_prefix: int = 0,
+    exon_cigar_str: str = '',
+    exon2_cigar_str: str = '',
 ) -> Optional[int]:
     """Exon-2-side reference edge of the N-op :func:`extend_read_5prime_for_junction_rescue`
     would draw on *read*, or ``None`` when that function would not run at all.
+
+    With ``exon2_cigar_str`` (ISSUE-083 re-split) the edge is where the body resumes
+    after the head the exon-2 CIGAR replaces, minus that CIGAR's reference span —
+    the projection of :func:`_extend_with_exon2_cigar`.
 
     ``extend`` derives ``intron_len`` from the LIVE alignment edge and never
     reads ``five_prime_intron_clip_pos``; the N-op it writes therefore always
@@ -1340,7 +1398,36 @@ def projected_5prime_rescue_intron_edge(
     cigar = list(read.cigartuples or [])
     if not cigar or read.is_unmapped or soft_clip_len <= 0:
         return None
+    cigar = _without_5prime_hardclips(cigar, strand)
+    if not cigar:
+        return None
     _MX_OPS = frozenset([0, 7, 8])  # M, =, X
+
+    if exon2_cigar_str and exon_cigar_str:
+        try:
+            from ..align.local_aligner import cigar_str_to_ops as _c2o
+            e1, e2 = list(_c2o(exon_cigar_str) or []), list(_c2o(exon2_cigar_str) or [])
+        except Exception:
+            return None
+        _q = frozenset([0, 1, 4, 7, 8])
+        r2 = sum(l for op, l in e2 if op in (0, 2, 7, 8))
+        if strand == '+':
+            if cigar[0][0] != 4:
+                return None
+            sc = cigar.pop(0)[1]
+        else:
+            if cigar[-1][0] != 4:
+                return None
+            sc = cigar.pop()[1]
+        body_replaced = sum(l for op, l in e1 if op in _q) + sum(l for op, l in e2 if op in _q) - sc
+        if body_replaced < 0:
+            return None
+        body, ref_consumed = _trim_body_head(cigar, body_replaced, strand)
+        if body is None or r2 < ref_consumed:
+            return None
+        if strand == '+':
+            return None if read.reference_start is None else read.reference_start + ref_consumed - r2
+        return None if read.reference_end is None else read.reference_end - ref_consumed + r2
 
     if strand == '+':
         if cigar[0][0] != 4:
@@ -1382,6 +1469,90 @@ def _cigar_ref_end(ref_start: int, cigar: list) -> int:
     return pos
 
 
+def _trim_body_head(cigar: list, n_query: int, strand: str):
+    """ISSUE-083 re-split: remove *n_query* query bases from the junction-side end
+    of the body ops (the START on ``+``, the END on ``-``; the 5' S is already
+    popped), dropping any D met inside that span and refusing to cross an N.
+    Returns ``(ops, ref_consumed)`` or ``(None, 0)`` when the span cannot be cut."""
+    ops = list(cigar)
+    q = r = 0
+    while ops and q < n_query:
+        o, n = ops[0] if strand == '+' else ops[-1]
+        if o == 3 or o == 5:                      # never across an N; H is outside the body
+            return None, 0
+        if o in (0, 7, 8):
+            take = min(n, n_query - q)
+            q += take
+            r += take
+        elif o in (1, 4):
+            take = min(n, n_query - q)
+            q += take
+        else:                                     # D: reference only
+            take = n
+            r += n
+        if take == n:
+            ops.pop(0 if strand == '+' else -1)
+        else:
+            if strand == '+':
+                ops[0] = (o, n - take)
+            else:
+                ops[-1] = (o, n - take)
+    if q != n_query or not ops:
+        return None, 0
+    return ops, r
+
+
+def _extend_with_exon2_cigar(read, cigar, original_cigar, exon_ops, exon2_ops, actual_sc,
+                             five_prime_position, strand) -> bool:
+    """ISSUE-083 re-split surgery: ``[exon1][N][exon-2 head][body from the anchor]``.
+    *cigar* is the record without its 5' S and hard clips. The exon-2 head replaces
+    the clip's exon-2 prefix AND ``qspan(exon1) + qspan(exon2) - actual_sc`` body
+    query bases; its reference span must end exactly where the trimmed body
+    resumed (the re-split's anchor), so the N still runs from the reported donor
+    to the reported acceptor. Any violated invariant refuses (read untouched)."""
+    _q = frozenset([0, 1, 4, 7, 8])
+    _r = frozenset([0, 2, 7, 8])
+    q1 = sum(l for op, l in exon_ops if op in _q)
+    q2 = sum(l for op, l in exon2_ops if op in _q)
+    r1 = sum(l for op, l in exon_ops if op in _r)
+    r2 = sum(l for op, l in exon2_ops if op in _r)
+    body_replaced = q1 + q2 - actual_sc
+    if body_replaced < 0 or not exon_ops:
+        return False
+    body, ref_consumed = _trim_body_head(cigar, body_replaced, strand)
+    if body is None:
+        logger.debug("re-split refused for read %s: the body head cannot give up %d query bases",
+                     read.query_name, body_replaced)
+        return False
+    # The exon-2 head spans the clip's prefix bases AND the trimmed body head, so the
+    # acceptor is where the body resumes minus the head's reference span (r2 >= ref_consumed).
+    if r2 < ref_consumed:
+        return False
+    if strand == '+':
+        intron_end = read.reference_start + ref_consumed - r2
+        intron_len = intron_end - five_prime_position - 1
+        new_ref_start = five_prime_position - r1 + 1
+        if intron_len <= 0 or new_ref_start < 0:
+            return False
+        new = list(exon_ops) + [(3, intron_len)] + list(exon2_ops) + body
+        read.cigartuples = _with_5prime_hardclips(new, original_cigar, strand)
+        read.reference_start = new_ref_start
+        return True
+    intron_start = read.reference_end - ref_consumed + r2
+    intron_len = five_prime_position - intron_start
+    if intron_len <= 0:
+        return False
+    try:
+        _clen = read.header.get_reference_length(read.reference_name) if read.reference_name is not None else None
+    except Exception:
+        _clen = None
+    if _clen is not None and five_prime_position + r1 > _clen:
+        return False
+    new = body + list(exon2_ops) + [(3, intron_len)] + list(exon_ops)
+    read.cigartuples = _with_5prime_hardclips(new, original_cigar, strand)
+    return True
+
+
 def extend_read_5prime_for_junction_rescue(
     read: pysam.AlignedSegment,
     five_prime_position: int,
@@ -1390,9 +1561,15 @@ def extend_read_5prime_for_junction_rescue(
     exon_cigar_str: str = '',
     upstream_trim: int = 0,
     exon2_prefix: int = 0,
+    exon2_cigar_str: str = '',
 ) -> bool:
     """
     Extend a read's 5' alignment to cover a rescued splice-junction exon.
+
+    ``exon2_cigar_str`` (ISSUE-083 re-split): when given, the exon-2 head is drawn
+    from it instead of the flat ``kM`` prefix, and it also replaces the body head
+    up to the re-split's anchor (``qspan(exon1) + qspan(exon2) - soft_clip`` body
+    query bases); ``exon2_prefix`` and ``upstream_trim`` are then ignored.
 
     ``exon2_prefix`` (ISSUE-026 invariant D): the junction-side ``k`` bases of
     the soft clip lie over EXON-2 positions — the alignment starts ``k`` bases
@@ -1454,6 +1631,13 @@ def extend_read_5prime_for_junction_rescue(
     if not cigar or read.is_unmapped or soft_clip_len <= 0:
         return False
 
+    # H lies outside S and is not part of the query interval being rescued.
+    # Keep it separate while inspecting/splitting the live soft clip.
+    original_cigar = tuple(cigar)
+    cigar = _without_5prime_hardclips(cigar, strand)
+    if not cigar:
+        return False
+
     # Parse exon CIGAR if provided.
     exon_ops: Optional[list] = None
     if exon_cigar_str:
@@ -1464,6 +1648,14 @@ def extend_read_5prime_for_junction_rescue(
                 exon_ops = _parsed
         except Exception:
             pass  # fall back to flat M
+    # ISSUE-083 re-split: the exon-2 head's CIGAR (None = the legacy kM prefix).
+    exon2_ops: Optional[list] = None
+    if exon2_cigar_str and exon_ops:
+        try:
+            from ..align.local_aligner import cigar_str_to_ops as _c2o
+            exon2_ops = list(_c2o(exon2_cigar_str) or [])
+        except Exception:
+            return False                          # a malformed exon-2 head is never drawn flat
 
     # Ops that consume both query and reference (eligible for upstream_trim).
     _MX_OPS = frozenset([0, 7, 8])  # M, =, X
@@ -1476,6 +1668,9 @@ def extend_read_5prime_for_junction_rescue(
             return False
         actual_sc = cigar.pop(0)[1]
         n = actual_sc
+        if exon2_ops is not None:
+            return _extend_with_exon2_cigar(read, cigar, original_cigar, exon_ops, exon2_ops, actual_sc,
+                                            five_prime_position, strand)
         # ISSUE-026 invariant D: the clip's last k bases are exon-2 sequence.
         k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
 
@@ -1539,7 +1734,7 @@ def extend_read_5prime_for_junction_rescue(
             # No intron gap — just prepend exon ops.
             for op_tup in reversed(exon_ops):
                 cigar.insert(0, op_tup)
-            read.cigartuples = cigar
+            read.cigartuples = _with_5prime_hardclips(cigar, original_cigar, strand)
             read.reference_start = new_ref_start
             return True
 
@@ -1547,7 +1742,7 @@ def extend_read_5prime_for_junction_rescue(
         cigar.insert(0, (3, intron_len))  # N
         for op_tup in reversed(exon_ops):
             cigar.insert(0, op_tup)
-        read.cigartuples = cigar
+        read.cigartuples = _with_5prime_hardclips(cigar, original_cigar, strand)
         read.reference_start = new_ref_start
         return True
 
@@ -1556,6 +1751,9 @@ def extend_read_5prime_for_junction_rescue(
             return False
         actual_sc = cigar.pop()[1]
         n = actual_sc
+        if exon2_ops is not None:
+            return _extend_with_exon2_cigar(read, cigar, original_cigar, exon_ops, exon2_ops, actual_sc,
+                                            five_prime_position, strand)
         # ISSUE-026 invariant D: the clip's first k bases (junction side, BAM
         # orientation) are exon-2 sequence.
         k = exon2_prefix if 0 < exon2_prefix < actual_sc else 0
@@ -1622,14 +1820,14 @@ def extend_read_5prime_for_junction_rescue(
         if intron_len <= 0:
             for op_tup in exon_ops:
                 cigar.append(op_tup)
-            read.cigartuples = cigar
+            read.cigartuples = _with_5prime_hardclips(cigar, original_cigar, strand)
             return True
 
         # Append: (exon-2 prefix M) N(intron_len) then exon_ops
         cigar.append((3, intron_len))  # N
         for op_tup in exon_ops:
             cigar.append(op_tup)
-        read.cigartuples = cigar
+        read.cigartuples = _with_5prime_hardclips(cigar, original_cigar, strand)
         # reference_end is recomputed automatically by pysam from the new cigar
         return True
 
@@ -1973,7 +2171,8 @@ def _apply_reanchor_from_clip_len(
             new_cigar: list = [(4, clip_len)]
             new_cigar.append((op, length - offset))
             new_cigar.extend(cigar[i + 1:])
-            read.cigartuples = new_cigar
+            read.cigartuples = _with_5prime_hardclips(
+                new_cigar, cigar, '-' if read.is_reverse else '+')
             read.reference_start = read.reference_start + r_acc + offset
             return True
         return False  # clip_len > total query span — shouldn't happen
@@ -2005,7 +2204,8 @@ def _apply_reanchor_from_clip_len(
             if length - remaining > 0:
                 new_cigar.append((op, length - remaining))
             new_cigar.append((4, clip_len))
-            read.cigartuples = new_cigar
+            read.cigartuples = _with_5prime_hardclips(
+                new_cigar, cigar, '-' if read.is_reverse else '+')
             return True
         return False
 

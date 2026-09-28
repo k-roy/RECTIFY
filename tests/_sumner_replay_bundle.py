@@ -129,6 +129,7 @@ def correction_from_row(row):
         'five_prime_upstream_trim': int(row.get('five_prime_upstream_trim') or 0),
         'reanchor_clip_len': int(row.get('reanchor_clip_len') or 0),
         'five_prime_exon2_prefix': int(row.get('five_prime_exon2_prefix') or 0),
+        'five_prime_exon2_cigar': row.get('five_prime_exon2_cigar') or '',    # ISSUE-083 re-split
         'five_prime_intron_clip_pos': int(icp) if isinstance(icp, int) else -1,
         'sc_homopolymer_extension': 0, 'sc_rescued_seq': '', 'sc_original_softclip_len': 0,
         'oc_homopolymer_extension': 0, 'oc_overcall_count': 0, 'oc_terminal_base': '',

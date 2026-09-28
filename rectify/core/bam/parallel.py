@@ -596,6 +596,7 @@ def _process_region_worker(
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
+    short_read: bool = False,
 ) -> Union[List[Dict], str]:
     """
     Worker function to process a single region.
@@ -690,6 +691,7 @@ def _process_region_worker(
                 dt_primed_cDNA=dt_primed_cDNA,
                 ont_cDNA=ont_cDNA,
                 use_dorado_polya=use_dorado_polya,
+                short_read=short_read,
                 exclusion_detector=exclusion_detector,
             )
             results.extend(read_results)
@@ -742,6 +744,7 @@ def process_bam_file_parallel(
     min_aligned_length: int = 0,
     reuse_pool_container: Optional[list] = None,
     exclusion_detector: Optional['ExclusionRegionDetector'] = None,
+    short_read: bool = False,
 ) -> Union[List[Dict], Tuple[List[Dict], ProcessingStats]]:
     """
     Process BAM file with parallel region-based processing.
@@ -832,6 +835,7 @@ def process_bam_file_parallel(
                 dt_primed_cDNA=dt_primed_cDNA,
                 ont_cDNA=ont_cDNA,
                 use_dorado_polya=use_dorado_polya,
+                short_read=short_read,
                 min_mapq=min_mapq,
                 min_aligned_length=min_aligned_length,
             )
@@ -880,6 +884,7 @@ def process_bam_file_parallel(
         dt_primed_cDNA=dt_primed_cDNA,
         ont_cDNA=ont_cDNA,
         use_dorado_polya=use_dorado_polya,
+        short_read=short_read,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
         exclusion_detector=exclusion_detector,
@@ -993,6 +998,7 @@ def process_bam_streaming(
     use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
+    short_read: bool = False,
 ) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
@@ -1089,6 +1095,7 @@ def process_bam_streaming(
                     dt_primed_cDNA=dt_primed_cDNA,
                     ont_cDNA=ont_cDNA,
                     use_dorado_polya=use_dorado_polya,
+                    short_read=short_read,
                 )
                 chunk.extend(read_results)
 
@@ -1186,6 +1193,7 @@ def process_bam_streaming_parallel(
     use_dorado_polya: bool = False,
     min_mapq: int = 0,
     min_aligned_length: int = 0,
+    short_read: bool = False,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
@@ -1332,6 +1340,7 @@ def process_bam_streaming_parallel(
         dt_primed_cDNA=dt_primed_cDNA,
         ont_cDNA=ont_cDNA,
         use_dorado_polya=use_dorado_polya,
+        short_read=short_read,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
     )

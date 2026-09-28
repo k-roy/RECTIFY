@@ -18,6 +18,7 @@ import argparse
 import collections.abc
 import logging
 import os
+import sys
 
 import pysam
 
@@ -94,9 +95,14 @@ def _run_build(args):
     panel = args.panel.split(",") if args.panel else None
     genome = _genome_from_args(args)
     logger.info("Building CMA from %d aligner BAMs → %s", len(aligner_bams), args.out)
-    stats = build_cma_from_bams(aligner_bams, args.out, panel=panel, genome=genome)
-    if genome:
-        genome.close()
+    try:
+        stats = build_cma_from_bams(aligner_bams, args.out, panel=panel, genome=genome)
+    except ValueError as exc:
+        print(f"[cma build] {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if genome is not None:
+            genome.close()
     problems = validate_cma(args.out)
     print(f"[cma build] {stats['reads']} reads, {stats['records']} records → {args.out}")
     if problems:
@@ -238,12 +244,15 @@ def create_cma_parser(subparsers: argparse._SubParsersAction) -> argparse.Argume
                    help="aligner=path ... (or bare path; aligner inferred from *.<aligner>.bam)")
     b.add_argument("--out", required=True, help="output CMA BAM (name/RN-sorted)")
     b.add_argument("--panel", default=None, help="comma-list panel/aligner order")
+    b.add_argument("--genome", default=None,
+                   help="reference FASTA (required for '='-encoded payload SEQ; or use --Scer)")
     add_organism_args(b)
 
     e = sub.add_parser("expand", help="Materialize per-aligner records from a CMA")
     e.add_argument("--cma", required=True)
     e.add_argument("--out", required=True)
     e.add_argument("--aligner", default=None, help="only this aligner (default: all)")
+    e.add_argument("--genome", default=None, help="reference FASTA")
     add_organism_args(e)
 
     v = sub.add_parser("validate", help="Structural validation of a CMA")
@@ -254,6 +263,8 @@ def create_cma_parser(subparsers: argparse._SubParsersAction) -> argparse.Argume
     vf.add_argument("--aligner-bams", nargs="+", required=True)
     vf.add_argument("--max-reads", type=int, default=0,
                     help="verify only the first N reads (validation sample; 0=all)")
+    vf.add_argument("--genome", default=None,
+                    help="reference FASTA for decoding and scoring the original placements")
     add_organism_args(vf)
     return p
 

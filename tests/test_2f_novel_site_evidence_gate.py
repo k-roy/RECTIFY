@@ -280,7 +280,9 @@ def _cells(row):
 def test_tsv_columns_report_mode():
     # ISSUE-026 invariant D appended `five_prime_exon2_prefix` after these two;
     # ISSUE-028 invariant E the two block-shape columns after that.
-    assert CORRECTION_TSV_HEADER[-16:] == ['five_prime_landing_annotated',
+    # By NAME, not from the end: the header is append-only and a negative index goes stale.
+    i = CORRECTION_TSV_HEADER.index('five_prime_landing_annotated')
+    assert CORRECTION_TSV_HEADER[i:i + 16] == ['five_prime_landing_annotated',
                                           'five_prime_novel_evidence',
                                           'five_prime_exon2_prefix',
                                           'five_prime_exon_identity',

@@ -192,13 +192,13 @@ def test_fixture_selection_equivalence(tmp_path, genome):
         assert _winner(expanded[k]) == _winner(_explicit(orig[k])), f"selection diverged for {k}"
 
 
-def test_fixture_one_seq_copy_per_read(tmp_path):
+def test_fixture_one_seq_copy_per_read(tmp_path, genome):
     """Footprint correctness: exactly one SEQ-bearing (payload) record per read."""
     bam_paths = _bam_paths()
     with pysam.AlignmentFile(bam_paths["minimap2"], "rb") as bam:
         header = bam.header
     cma = str(tmp_path / "drs.cma.bam")
-    build_cma(load_aligner_records(bam_paths), header, cma, PANEL)
+    build_cma(load_aligner_records(bam_paths), header, cma, PANEL, genome=genome)
 
     seq_bearing = defaultdict(int)
     payload_tag = defaultdict(int)

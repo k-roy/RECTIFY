@@ -24,6 +24,7 @@ Author: Kevin R. Roy
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from typing import Dict, List, Optional, Tuple, Set
 
 import pysam
@@ -186,6 +187,9 @@ class SegmentScore:
     # catalog wanted it but the read didn't earn it; bonus withheld.
     n_annotated_unsupported: int = 0
     has_false_3prime_junction: bool = False
+    # Actual bases, not the spelling M/=/X, determine placement evidence.
+    n_unknown: int = 0
+    dominated_by: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -197,6 +201,7 @@ class ChimericSegment:
     winning_aligner: str = ""
     scores: Dict[str, SegmentScore] = field(default_factory=dict)
     cigar_events: Dict[str, List[CigarEvent]] = field(default_factory=dict)
+    selection_reason: str = "policy_score"
 
 
 @dataclass
@@ -556,6 +561,75 @@ def extract_events_for_query_range(
 # Segment scoring
 # ============================================================================
 
+def _aligned_base_evidence(event, query_sequence, reference):
+    """Yield known exactness (or None) at the supplied mapped query cells."""
+    for offset in range(event.length):
+        q = event.q_start + offset
+        r = event.r_start + offset
+        if (query_sequence is None or q < 0 or q >= len(query_sequence)
+                or r < 0 or r >= len(reference)):
+            yield None
+            continue
+        qb, rb = query_sequence[q].upper(), reference[r].upper()
+        yield qb == rb if qb in 'ACGT' and rb in 'ACGT' else None
+
+
+def _gap_free_match_profile(events, q_start, q_end, query_sequence, reference):
+    """Known per-cell evidence for a comparison without gap/clip tradeoffs.
+
+    Use full events so a D at either segment boundary cannot disappear during
+    extraction. N changes placement without consuming query; I/S and D make
+    this conservative comparison unavailable. Unknown bases are not evidence.
+    """
+    if query_sequence is None or not reference or q_start >= q_end:
+        return None
+    for event in events:
+        if (event.op == 2 and q_start <= event.q_start <= q_end
+                or event.op in (1, 4)
+                and event.q_start < q_end and event.q_end > q_start):
+            return None
+    profile = []
+    cursor = q_start
+    for event in extract_events_for_query_range(events, q_start, q_end):
+        if event.op in (0, 7, 8):
+            if event.q_start != cursor:
+                return None
+            evidence = list(_aligned_base_evidence(event, query_sequence, reference))
+            if any(value is None for value in evidence):
+                return None
+            profile.extend(evidence)
+            cursor = event.q_end
+    return tuple(profile) if cursor == q_end else None
+
+
+def _mark_dominated_placements(segment, all_events, aligner_reads, reference):
+    """Exclude a strictly worse same-query placement, with no error tradeoff.
+
+    Each changed cell must turn a known mismatch into an exact match; no exact
+    cell may become a mismatch. Under an independent symmetric substitution
+    model with error probability below 3/4, each such cell favors that path.
+    This uses only supplied candidates, without a new search or tuned penalty.
+    Conflicting, gapped, unknown and terminal comparisons keep existing policy.
+    """
+    if segment.position != 'interior':
+        return
+    sequences = {name: read.query_sequence for name, read in aligner_reads.items()}
+    profiles = {
+        name: _gap_free_match_profile(events, segment.q_start, segment.q_end,
+                                     sequences[name], reference)
+        for name, events in all_events.items()
+    }
+    for worse, profile in profiles.items():
+        if profile is None:
+            continue
+        for better, other in profiles.items():
+            if (better == worse or other is None
+                    or sequences[better].upper() != sequences[worse].upper()):
+                continue
+            if all(a >= b for a, b in zip(other, profile)) and other != profile:
+                segment.scores[worse].dominated_by.append(better)
+
+
 def score_segment(
     events: List[CigarEvent],
     position: str,
@@ -565,6 +639,7 @@ def score_segment(
     annotated_min_anchor: int = _ANNOTATED_SUPPORT_MIN_ANCHOR,
     aligner_full_events: Optional[List[CigarEvent]] = None,
     strand: str = '+',
+    query_sequence: Optional[str] = None,
 ) -> SegmentScore:
     """
     Score a segment from one aligner based on its position in the read.
@@ -572,7 +647,8 @@ def score_segment(
     Scoring varies by position:
       - five_prime: penalize soft-clipping heavily (-3/base), reward aligned bases
       - interior: reward canonical junctions (+5), annotated junctions (+8),
-                  penalize non-canonical junctions (-3), penalize mismatches
+                  penalize non-canonical junctions (-3). The selector separately
+                  excludes strictly worse comparable query placements.
       - three_prime: REWARD soft-clipping (+2/base) — clean poly(A) boundary
                      is better than extending into genomic A-tracts. Penalize
                      false 3' junctions from A-tract alignment.
@@ -597,6 +673,8 @@ def score_segment(
         annotated_min_anchor: minimum contiguous matched bases on the SHORTER
             flank of a junction for its annotated bonus to apply.
         strand: Transcript strand ('+' or '-'); CIGAR coordinates stay genomic.
+        query_sequence: Literal stored SEQ in the genomic CIGAR frame. Absent or
+            unknown bases produce unknown evidence, never invented matches.
 
     Returns:
         SegmentScore with detailed breakdown
@@ -608,7 +686,13 @@ def score_segment(
 
     for idx, ev in enumerate(events):
         if ev.op in (0, 7, 8):  # M/=/X: aligned bases
-            score_obj.n_matches += ev.length
+            for exact in _aligned_base_evidence(ev, query_sequence, seq):
+                if exact is None:
+                    score_obj.n_unknown += 1
+                elif exact:
+                    score_obj.n_matches += 1
+                else:
+                    score_obj.n_mismatches += 1
             # Small reward per aligned base in terminal segments
             if position in ('five_prime', 'three_prime'):
                 score += ev.length * 0.5
@@ -747,6 +831,72 @@ def _is_false_3prime_junction(
 # Chimeric CIGAR construction
 # ============================================================================
 
+def _omit_traversed_agreement_edge(
+    events: List[CigarEvent],
+    segment: ChimericSegment,
+    current_ref: Optional[int],
+) -> List[CigarEvent]:
+    """Ignore an alternative edge only when the selected path already ends there.
+
+    Agreement describes mapped query bases, not the D/N operations another arm
+    used to reach the first base. A leading, contiguous reference-only chain
+    ending at our current cursor is redundant when that next mapped base is
+    the same query/reference sync point. A still-needed edge, partial overlap,
+    or non-agreement boundary keeps the ordinary continuity/refusal path.
+    """
+    if segment.position != 'agreement' or current_ref is None:
+        return events
+    count = 0
+    edge_end = None
+    for event in events:
+        if event.op not in (2, 3):
+            break
+        if (event.q_start != segment.q_start or event.q_end != segment.q_start
+                or event.length <= 0 or event.r_end - event.r_start != event.length
+                or (edge_end is not None and event.r_start != edge_end)):
+            return events
+        edge_end = event.r_end
+        count += 1
+    if not count or count == len(events):
+        return events
+    following = events[count]
+    if (following.op not in (0, 7, 8)
+            or following.q_start != segment.q_start
+            or following.q_end <= following.q_start
+            or edge_end != current_ref or following.r_start != current_ref):
+        return events
+    return events[count:]
+
+
+def _selected_query_path_matches(
+    segments: List[ChimericSegment],
+    aligner_events: Dict[str, List[CigarEvent]],
+    ref_start: int,
+    cigar: List[Tuple[int, int]],
+) -> bool:
+    """Check every selected query placement without expanding reference skips."""
+    def query_cells(events):
+        for event in events:
+            if event.op in (0, 7, 8):
+                for offset in range(event.length):
+                    yield event.q_start + offset, event.r_start + offset, 'aligned'
+            elif event.op in (1, 4):
+                for offset in range(event.length):
+                    yield event.q_start + offset, None, event.op
+
+    def selected_events():
+        for segment in segments:
+            if segment.winning_aligner:
+                yield from extract_events_for_query_range(
+                    aligner_events[segment.winning_aligner],
+                    segment.q_start, segment.q_end,
+                )
+
+    expected = query_cells(selected_events())
+    observed = query_cells(cigar_to_events(cigar, ref_start))
+    return all(left == right for left, right in zip_longest(expected, observed))
+
+
 def build_chimeric_cigar(
     segments: List[ChimericSegment],
     aligner_events: Dict[str, List[CigarEvent]],
@@ -777,6 +927,7 @@ def build_chimeric_cigar(
     chimeric_ops: List[Tuple[int, int]] = []
     ref_start: Optional[int] = None
     cur_ref: Optional[int] = None  # tracks current reference position
+    omitted_agreement_edge = False
 
     for seg in segments:
         winner = seg.winning_aligner
@@ -787,8 +938,10 @@ def build_chimeric_cigar(
         seg_events = extract_events_for_query_range(
             aligner_events[winner], seg.q_start, seg.q_end
         )
+        path_events = _omit_traversed_agreement_edge(seg_events, seg, cur_ref)
+        omitted_agreement_edge |= path_events is not seg_events
 
-        for ev in seg_events:
+        for ev in path_events:
             if ev.op in (0, 7, 8, 2, 3):  # reference-consuming: M/=/X, D, N
                 if cur_ref is None:
                     # First reference-consuming event anchors ref_start
@@ -858,6 +1011,10 @@ def build_chimeric_cigar(
 
     # Merge adjacent operations of the same type
     merged = _merge_cigar_ops(chimeric_ops)
+    if omitted_agreement_edge and not _selected_query_path_matches(
+            segments, aligner_events, ref_start, merged):
+        logger.debug("Chimeric agreement-edge repair changed the selected query path")
+        return None, []
 
     return ref_start, merged
 
@@ -938,6 +1095,28 @@ def _revcomp(seq: str) -> str:
     return seq.translate(_COMPLEMENT)[::-1]
 
 
+def _cigar_query_frame(cigar_tuples):
+    """Stored query interval within the original molecule, reference-forward.
+
+    H contributes to the molecule's extent but consumes no stored query.  S
+    and I do consume query, so equal SEQ lengths alone cannot establish that
+    two hard-clipped records describe the same original query interval.
+    """
+    ops = cigar_tuples or []
+    left = right = 0
+    start, end = 0, len(ops)
+    while start < end and ops[start][0] == 5:
+        left += ops[start][1]
+        start += 1
+    while end > start and ops[end - 1][0] == 5:
+        right += ops[end - 1][1]
+        end -= 1
+    if any(op == 5 for op, _ in ops[start:end]):
+        raise ValueError("Chimeric query frame has an internal hard clip")
+    stored = sum(n for op, n in ops if op in (0, 1, 4, 7, 8))
+    return left, stored, right
+
+
 def build_chimeric_read(
     template_read: pysam.AlignedSegment,
     ref_start: int,
@@ -976,11 +1155,29 @@ def build_chimeric_read(
             belong to (``chimeric_result.anchor_aligner``). Defaults to
             ``template_read`` only for callers that cannot supply it.
         aligner_reads: Source placements for per-junction micro-exon provenance.
+        The template must contain explicit sequence: decode any SAM ``=``
+        against its original reference placement before calling this builder.
+        Its retained original-query interval must match the placement, after
+        reversing that interval if the donor and anchor strands differ.
 
     Returns:
         New pysam.AlignedSegment ready to write
     """
+    if '=' in (template_read.query_sequence or ''):
+        raise ValueError(
+            "Cannot build chimeric read from SEQ '=': decode the template "
+            "against its original reference placement before building"
+        )
     anchor = anchor_read if anchor_read is not None else template_read
+    donor_frame = _cigar_query_frame(template_read.cigartuples)
+    if template_read.is_reverse != anchor.is_reverse:
+        donor_frame = donor_frame[::-1]
+    if (donor_frame != _cigar_query_frame(cigar_tuples)
+            or (template_read.query_sequence is not None
+                and len(template_read.query_sequence) != donor_frame[1])):
+        raise ValueError(
+            "Chimeric SEQ donor and placement have different original query frames"
+        )
 
     out = pysam.AlignedSegment(header)
     out.query_name = template_read.query_name
@@ -1029,6 +1226,12 @@ def build_chimeric_read(
     for _name, _value, _vtype in template_read.get_tags(with_value_type=True):
         if _name in _POSITIONAL_TAGS:
             continue
+        if _vtype == 'B':
+            # pysam reports every array as BAM type B, but set_tag requires
+            # the concrete array subtype to be inferred from array.typecode.
+            # Passing value_type='B' raises and used to silently lose the tag.
+            out.set_tag(_name, _value)
+            continue
         try:
             out.set_tag(_name, _value, value_type=_vtype)
         except (TypeError, ValueError):
@@ -1076,12 +1279,111 @@ def build_chimeric_read(
 # Main chimeric selection
 # ============================================================================
 
+def _result_dominates_legacy(candidate, legacy, aligner_reads, genome):
+    """Compare actual assembled/fallback records, including their query frames.
+
+    Local segment improvement cannot authorize a worse global fallback or a
+    tradeoff against the legacy fallback. Gaps/clips must keep their disposition;
+    each relocated query cell must be known and lose no old exact match.
+    """
+    from .sequence import decoded_alignment_copy
+    sources = {name: decoded_alignment_copy(read, genome)
+               for name, read in aligner_reads.items()}
+
+    def materialize(result):
+        anchor = sources.get(result.anchor_aligner)
+        if anchor is None or anchor.query_sequence is None:
+            return None
+        return build_chimeric_read(
+            anchor, result.chimeric_ref_start, result.chimeric_cigar, result,
+            anchor.header, anchor_read=anchor, aligner_reads=sources,
+        )
+
+    try:
+        new, old = materialize(candidate), materialize(legacy)
+    except (ValueError, AssertionError):
+        return False
+    if (new is None or old is None or new.reference_name != old.reference_name
+            or new.is_reverse != old.is_reverse
+            or new.query_sequence != old.query_sequence
+            or new.query_qualities != old.query_qualities
+            or _cigar_query_frame(new.cigartuples) != _cigar_query_frame(old.cigartuples)):
+        return False
+    reference = genome.get(new.reference_name, '')
+    if not reference:
+        return False
+    new_events = cigar_to_events(new.cigartuples, new.reference_start)
+    old_events = cigar_to_events(old.cigartuples, old.reference_start)
+    deletions = lambda events: [(e.q_start, e.r_start, e.r_end) for e in events if e.op == 2]
+    if deletions(new_events) != deletions(old_events):
+        return False
+
+    def cells(events):
+        for event in events:
+            if event.op in (0, 7, 8):
+                for offset in range(event.length):
+                    yield event.q_start + offset, event.r_start + offset, 'aligned'
+            elif event.op in (1, 4):
+                for offset in range(event.length):
+                    yield event.q_start + offset, None, event.op
+
+    improves = False
+    for after, before in zip_longest(cells(new_events), cells(old_events)):
+        if after is None or before is None or after[0] != before[0] or after[2] != before[2]:
+            return False
+        q, nr, state = after
+        _, old_r, _ = before
+        if state != 'aligned' or nr == old_r:
+            continue
+        if min(nr, old_r) < 0 or max(nr, old_r) >= len(reference):
+            return False
+        qb, nb, ob = new.query_sequence[q].upper(), reference[nr].upper(), reference[old_r].upper()
+        if qb not in 'ACGT' or nb not in 'ACGT' or ob not in 'ACGT':
+            return False
+        if qb == ob and qb != nb:
+            return False
+        improves |= qb == nb and qb != ob
+    return improves
+
+
 def select_best_chimeric(
     aligner_reads: Dict[str, pysam.AlignedSegment],
     genome: Dict[str, str],
     annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
     min_sync_fraction: float = 0.05,
     max_intron: int = 10_000,
+) -> ChimericResult:
+    """Select supplied segments; evidence changes must improve the final record.
+
+    Only changed segment decisions require a second legacy-policy selection.
+    That comparison includes actual assembly/refusal/fallback and provenance,
+    preventing a local improvement from escaping through a worse final path.
+    """
+    evidence_changes = []
+    candidate = _select_best_chimeric(
+        aligner_reads, genome, annotated_junctions, min_sync_fraction, max_intron,
+        evidence_changes=evidence_changes,
+    )
+    if not evidence_changes:
+        return candidate
+    legacy = _select_best_chimeric(
+        aligner_reads, genome, annotated_junctions, min_sync_fraction, max_intron,
+        use_query_evidence=False,
+    )
+    if _result_dominates_legacy(candidate, legacy, aligner_reads, genome):
+        return candidate
+    return legacy
+
+
+def _select_best_chimeric(
+    aligner_reads: Dict[str, pysam.AlignedSegment],
+    genome: Dict[str, str],
+    annotated_junctions: Optional[Set[Tuple[str, int, int]]] = None,
+    min_sync_fraction: float = 0.05,
+    max_intron: int = 10_000,
+    *,
+    use_query_evidence: bool = True,
+    evidence_changes: Optional[List[bool]] = None,
 ) -> ChimericResult:
     """
     Select the best chimeric alignment from multiple aligners for a single read.
@@ -1098,6 +1400,7 @@ def select_best_chimeric(
     Falls back to simple best-alignment selection when:
     - Only 1 aligner produced an alignment
     - Aligners map to different chromosomes or strands
+    - Aligners retain different intervals of the original hard-clipped query
     - Too few sync points to meaningfully segment
 
     Args:
@@ -1112,6 +1415,12 @@ def select_best_chimeric(
     """
     if not aligner_reads:
         return _empty_result()
+
+    from .sequence import decoded_alignment_copy
+    aligner_reads = {
+        name: decoded_alignment_copy(read, genome)
+        for name, read in aligner_reads.items()
+    }
 
     aligner_names = list(aligner_reads.keys())
     read_id = aligner_reads[aligner_names[0]].query_name
@@ -1129,6 +1438,13 @@ def select_best_chimeric(
     if len(chroms) > 1 or len(strands) > 1:
         # Different chrom/strand: fall back to simple scoring
         return _fallback_simple_selection(aligner_reads, genome, annotated_junctions)
+
+    # Segment offsets address stored query, not a full hard-clipped molecule.
+    # Only combine candidates whose original retained intervals are identical.
+    query_frames = {_cigar_query_frame(r.cigartuples) for r in aligner_reads.values()}
+    if len(query_frames) != 1:
+        return _fallback_simple_selection(aligner_reads, genome, annotated_junctions)
+    left_hardclip, _, right_hardclip = query_frames.pop()
 
     chrom = chroms.pop()
     is_reverse = strands.pop()
@@ -1209,6 +1525,7 @@ def select_best_chimeric(
                     seg_events, seg_type, chrom, genome, annotated_for_segments,
                     aligner_full_events=all_events[name],
                     strand='-' if is_reverse else '+',
+                    query_sequence=aligner_reads[name].query_sequence,
                 )
                 score_result.aligner = name
                 seg.scores[name] = score_result
@@ -1217,7 +1534,23 @@ def select_best_chimeric(
                     best_score = score_result.score
                     best_aligner = name
 
-            seg.winning_aligner = best_aligner
+            if use_query_evidence:
+                _mark_dominated_placements(seg, all_events, aligner_reads,
+                                           genome.get(chrom, ""))
+            dominators = seg.scores[best_aligner].dominated_by
+            # With three or more arms, an unrelated frontier candidate can be
+            # incomparable to the original policy winner. Require the replacement
+            # itself to improve that winner, preserving all its exact query cells.
+            eligible = [name for name in aligner_names if name in dominators
+                        and not seg.scores[name].dominated_by]
+            # A strict finite partial order has an undominated dominator whenever
+            # the old winner is dominated. Keep input order on policy-score ties.
+            seg.winning_aligner = (max(eligible, key=lambda name: seg.scores[name].score)
+                                   if eligible else best_aligner)
+            if seg.winning_aligner != best_aligner:
+                seg.selection_reason = 'query_evidence'
+                if evidence_changes is not None:
+                    evidence_changes.append(True)
 
         chimeric_segments.append(seg)
 
@@ -1229,15 +1562,24 @@ def select_best_chimeric(
     # Validate: fall back to simple selection if the chimeric CIGAR is
     # geometrically invalid (reference regression → sentinel None) or
     # biologically implausible (giant phantom insertions or huge N bridges).
-    if ref_start is None or not _validate_chimeric_cigar(
-        cigar_tuples, read_length, max_intron=max_intron
-    ):
+    if (ref_start is None or not _validate_chimeric_cigar(
+            cigar_tuples, read_length, max_intron=max_intron)
+            or (any(seg.selection_reason == 'query_evidence' for seg in chimeric_segments)
+                and not _selected_query_path_matches(
+                    chimeric_segments, all_events, ref_start, cigar_tuples))):
         logger.debug(
             "Read %s: chimeric CIGAR failed validation — falling back to "
             "single-aligner selection",
             read_id,
         )
         return _fallback_simple_selection(aligner_reads, genome, annotated_junctions)
+
+    # H never enters segment extraction. Reattach the common original query
+    # frame after successful assembly; do not add or remove stored SEQ bases.
+    if left_hardclip:
+        cigar_tuples = [(5, left_hardclip)] + cigar_tuples
+    if right_hardclip:
+        cigar_tuples = cigar_tuples + [(5, right_hardclip)]
 
     # ---- Collect results ----
     segment_winners = [
@@ -1289,9 +1631,8 @@ def select_best_chimeric(
         interior_aligners=interior_aligners,
         three_prime_aligner=three_prime_aligner,
         all_segment_scores=chimeric_segments,
-        # Every candidate that reached this point passed the same-contig +
-        # same-strand precondition above, so `chrom`/`is_reverse` describe the
-        # stitched CIGAR unambiguously and any candidate is a safe template.
+        # Every candidate passed the same-contig, strand and retained-query
+        # frame preconditions, so any candidate is a safe geometry template.
         anchor_aligner=(chimeric_segments[0].winning_aligner
                         if chimeric_segments else aligner_names[0]),
         ref_name=chrom,
@@ -1395,6 +1736,7 @@ def _classify_term(winner: 'SegmentScore', loser: 'SegmentScore') -> str:
     segment.  Checked in priority order so the dominant motif/structure term is
     attributed before the residue-level fallback:
 
+      query_evidence — loser was excluded by a strictly better query placement
       annotated    — winner placed more annotated junctions than the loser
       canonical    — winner placed more canonical (GT-AG) junctions
       false_3prime — loser carried a spurious 3' junction the winner did not
@@ -1407,6 +1749,8 @@ def _classify_term(winner: 'SegmentScore', loser: 'SegmentScore') -> str:
     empty — versus the canonical (+5/-3) term, separating signal from the
     load_annotated_junctions confound.
     """
+    if winner.aligner in loser.dominated_by:
+        return 'query_evidence'
     if winner.n_annotated_junctions > loser.n_annotated_junctions:
         return 'annotated'
     if winner.n_canonical_junctions > loser.n_canonical_junctions:

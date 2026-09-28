@@ -126,7 +126,7 @@ def _postprocess_positions_df(
 
     # Drop columns not needed downstream to reduce memory usage
     _keep_cols = {'chrom', 'strand', 'corrected_position', sample_column}
-    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count'):
+    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count', 'five_prime_position'):
         if _opt in df.columns:
             _keep_cols.add(_opt)
     _drop_cols = [c for c in df.columns if c not in _keep_cols]
@@ -244,7 +244,7 @@ def load_corrected_positions(
 
     # Drop columns not needed downstream to reduce memory usage
     _keep_cols = {'chrom', 'strand', 'corrected_position', sample_column}
-    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count'):
+    for _opt in ('fraction', 'alignment_start', 'alignment_end', 'count', 'five_prime_position'):
         if _opt in df.columns:
             _keep_cols.add(_opt)
     _drop_cols = [c for c in df.columns if c not in _keep_cols]
@@ -265,7 +265,11 @@ def _load_large_file_chunked(
     """Load large file in chunks, aggregating counts by position.
 
     Instead of loading all 200M+ rows, aggregate counts by:
-    (chrom, strand, position, sample) -> count
+    (chrom, strand, position, sample[, five_prime_position]) -> count
+
+    Keep both endpoints in the key when present: collapsing by CPA alone
+    would discard distinct TSS placements or attach the whole CPA count to
+    each TSS. Missing TSS values still contribute their full CPA weight.
 
     This reduces memory by ~100x for most datasets.
     Uses vectorized pandas operations instead of iterrows for speed.
@@ -283,6 +287,8 @@ def _load_large_file_chunked(
 
     # Check for fraction column (proportional assignment)
     has_fraction = 'fraction' in header.columns
+    has_count = 'count' in header.columns
+    has_tss = 'five_prime_position' in header.columns
 
     # Build usecols list — only load columns actually needed
     _usecols_set = {position_col, sample_column, 'chrom', 'strand'}
@@ -290,11 +296,15 @@ def _load_large_file_chunked(
         _usecols_set.update(['corrected_3prime', 'corrected_position'])
     if has_fraction:
         _usecols_set.add('fraction')
+    if has_count:
+        _usecols_set.add('count')
+    if has_tss:
+        _usecols_set.add('five_prime_position')
     for _optional_col in ('alignment_start', 'alignment_end'):
         if _optional_col in header.columns:
             _usecols_set.add(_optional_col)
     # Preserve a stable order: required cols first, then optional
-    _usecols = [c for c in [position_col, sample_column, 'chrom', 'strand', 'corrected_3prime', 'corrected_position', 'fraction', 'alignment_start', 'alignment_end'] if c in _usecols_set]
+    _usecols = [c for c in [position_col, sample_column, 'chrom', 'strand', 'corrected_3prime', 'corrected_position', 'fraction', 'count', 'five_prime_position', 'alignment_start', 'alignment_end'] if c in _usecols_set]
 
     # Aggregated DataFrames from each chunk
     aggregated_chunks = []
@@ -304,11 +314,11 @@ def _load_large_file_chunked(
         # select cols AFTER a full-typed read; avoids the pandas usecols+chunksize `_concatenate_chunks`
         # IndexError when a numeric col has empty values in some chunk. dedup: _usecols can list the
         # position_col (e.g. corrected_3prime) twice, which would create a duplicate column -> groupby fails.
-        chunk = chunk[list(dict.fromkeys(_usecols))]
+        chunk = chunk[list(dict.fromkeys(_usecols))].copy()
         # Coerce ALL numeric columns to numeric: with the full-typed read above, any numeric column that has
         # empty values in some row gets inferred as object/str for the whole column, which later breaks both
         # the `>=` position filters (TypeError str vs int) AND the groupby sum on `fraction` (float + str).
-        for _nc in ({position_col, 'corrected_position', 'corrected_3prime', 'fraction',
+        for _nc in ({position_col, 'corrected_position', 'corrected_3prime', 'fraction', 'count', 'five_prime_position',
                      'alignment_start', 'alignment_end'} & set(chunk.columns)):
             chunk[_nc] = pd.to_numeric(chunk[_nc], errors='coerce')
         chunk = chunk.dropna(subset=[position_col])
@@ -327,15 +337,17 @@ def _load_large_file_chunked(
 
         # VECTORIZED AGGREGATION: Use groupby instead of iterrows
         group_cols = ['chrom', 'strand', position_col, sample_column]
-
+        # Required grouping fields keep their previous missing-value refusal;
+        # only an optional missing TSS must survive the joint aggregation.
+        chunk = chunk.dropna(subset=group_cols)
+        if has_tss:
+            group_cols.append('five_prime_position')
+        chunk['_effective_count'] = chunk['count'] if has_count else 1.0
         if has_fraction:
-            # Sum fractions for each position/sample combination
-            chunk_agg = chunk.groupby(group_cols)['fraction'].sum().reset_index()
-            chunk_agg.columns = ['chrom', 'strand', 'corrected_position', sample_column, 'count']
-        else:
-            # Count occurrences
-            chunk_agg = chunk.groupby(group_cols).size().reset_index(name='count')
-            chunk_agg.columns = ['chrom', 'strand', 'corrected_position', sample_column, 'count']
+            chunk['_effective_count'] *= chunk['fraction']
+        chunk_agg = (chunk.groupby(group_cols, dropna=False)['_effective_count']
+                     .sum().reset_index(name='count')
+                     .rename(columns={position_col: 'corrected_position'}))
 
         aggregated_chunks.append(chunk_agg)
 
@@ -349,7 +361,9 @@ def _load_large_file_chunked(
 
     # Final aggregation to merge duplicate keys across chunks
     group_cols = ['chrom', 'strand', 'corrected_position', sample_column]
-    final = combined.groupby(group_cols)['count'].sum().reset_index()
+    if has_tss:
+        group_cols.append('five_prime_position')
+    final = combined.groupby(group_cols, dropna=False)['count'].sum().reset_index()
 
     print(f"  Aggregated {total_rows:,} rows into {len(final):,} position/sample combinations")
 

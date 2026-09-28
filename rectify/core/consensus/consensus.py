@@ -405,7 +405,10 @@ def _parse_fastq_comment_tags(comment: str) -> List[Tuple[str, str, object]]:
     return tags
 
 
-_CDNA_COMMENT_TAGS = ('XU', 'XO', 'XT', 'XY', 'XC', 'XF', 'XM', 'XB', 'XR', 'XA', 'XP', 'XD', 'XW')
+_CDNA_COMMENT_TAGS = (
+    'XU', 'XO', 'XN', 'XT', 'XY', 'XC', 'XF', 'XM', 'XB', 'XR', 'XA',
+    'XP', 'XD', 'XW', 'XQ', 'XK',
+)
 
 
 def _restore_comment_tags_from_siblings(best_read, aligner_reads):
@@ -415,7 +418,8 @@ def _restore_comment_tags_from_siblings(best_read, aligner_reads):
     because the *winning* aligner did not propagate the FASTQ comment.
 
     The cDNA Stage-1 writer puts per-molecule metadata (XU=UMI, XO=orient,
-    XT/XY=read type, XC=cluster_size, XF=full-length tier, +XM/XB/XR/XA) on the
+    XN=RNA-sense frame, XT/XY=read type, XC=cluster_size, XF=full-length tier,
+    XQ/XK=trimmed prefix/suffix lengths, +XM/XB/XR/XA) on the
     FASTQ comment; these reach the BAM ONLY via an aligner run with FASTQ-comment
     pass-through (minimap2 / minimap2-family presets with ``-y``). A winner from a
     junction aligner that does not pass FASTQ comments (uLTRA) either LACKS these
@@ -920,7 +924,9 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
     """Process a batch of reads and write best alignments to output BAM."""
     _max_reportable_intron = max_reportable_intron_from_env()
     if use_chimeric:
-        from .chimeric_consensus import select_best_chimeric, build_chimeric_read
+        from .chimeric_consensus import (
+            select_best_chimeric, build_chimeric_read, _cigar_query_frame,
+        )
 
     for i, (read_id, alignments) in enumerate(read_batch):
         _, aligner_reads = raw_read_batch[i]
@@ -983,22 +989,23 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             # Pass 1: the anchor -- for a single-aligner / fallback result
             # `chimeric_cigar` IS its own CIGAR, so the query span matches by
             # construction.
-            # Pass 2: another candidate on the anchor's contig and strand whose
-            # sequence length matches the chimeric CIGAR query length (prevents
-            # "CIGAR and query sequence lengths differ").
-            # Pass 3: any read with a sequence; the CIGAR may be slightly wrong
-            # in length, but losing the read entirely is worse.
-            query_ops = {0, 1, 4, 7, 8}  # M, I, S, =, X
-            expected_len = sum(
-                length for op, length in chimeric_result.chimeric_cigar if op in query_ops
-            ) if chimeric_result.chimeric_cigar else 0
+            # Pass 2: a candidate on the anchor's contig and strand retaining
+            # the same original query interval. Pass 3 permits another locus
+            # or strand, with the interval reversed for an opposite-strand
+            # donor. Equal SEQ lengths alone do not establish a shared frame.
+            expected_frame = _cigar_query_frame(chimeric_result.chimeric_cigar)
 
-            def _template_len_ok(r):
+            def _template_frame_ok(r):
                 seq = r.query_sequence
-                return seq is not None and (expected_len == 0 or len(seq) == expected_len)
+                if seq is None:
+                    return False
+                frame = _cigar_query_frame(r.cigartuples)
+                if anchor is not None and r.is_reverse != anchor.is_reverse:
+                    frame = frame[::-1]
+                return frame == expected_frame and len(seq) == expected_frame[1]
 
             template = None
-            if anchor is not None and _template_len_ok(anchor):
+            if anchor is not None and _template_frame_ok(anchor):
                 template = anchor
             if template is None:
                 for r in aligner_reads.values():
@@ -1006,16 +1013,19 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                             r.reference_id != anchor.reference_id
                             or r.is_reverse != anchor.is_reverse):
                         continue
-                    if _template_len_ok(r):
+                    if _template_frame_ok(r):
                         template = r
                         break
             if template is None:
-                # Fallback: accept any read with a sequence even if length mismatches.
                 for r in aligner_reads.values():
-                    if r.query_sequence is not None:
+                    if _template_frame_ok(r):
                         template = r
                         break
             if template is None:
+                if any(r.query_sequence is not None for r in aligner_reads.values()):
+                    raise ValueError(
+                        f"No SEQ donor with a compatible original query frame for '{read_id}'"
+                    )
                 logger.warning(
                     f"No valid template read for chimeric assembly of '{read_id}'; skipping"
                 )
@@ -1075,6 +1085,10 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
             # this, mapPacBio/uLTRA-templated chimeric reads carry mutated
             # QNAMEs into every downstream QNAME-keyed join.
             out_read.query_name = _normalize_bam_read_name(out_read.query_name or '')
+            # A stitched or fallback template may come from an aligner that
+            # omitted Stage-1 comments. Restore the same authoritative sibling
+            # block as standard selection before the sidecar's final override.
+            _restore_comment_tags_from_siblings(out_read, aligner_reads)
             _restore_sidecar_tags(out_read, read_num_sidecar)
             _enforce_intron_sanity(out_read, out_bam, _max_reportable_intron, stats)
             out_bam.write(out_read)
@@ -1428,6 +1442,15 @@ def run_consensus_selection(
             if _n_skipped < n_reads_to_skip:
                 _n_skipped += 1
                 continue
+
+            # Each '=' belongs to this candidate's ORIGINAL placement. Decode
+            # before standard/chimeric scoring or borrowing a stitch template;
+            # retain caller/input records and their qualities/tags unchanged.
+            from .sequence import decoded_alignment_copy
+            aligner_reads = {
+                aligner: decoded_alignment_copy(read, genome)
+                for aligner, read in aligner_reads.items()
+            }
 
             stats['total_reads'] += 1
 

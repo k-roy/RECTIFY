@@ -672,12 +672,9 @@ def clip_origin(read, strand: str, genome_seq: str, exon_site, exon_bits, exon_a
     'none'. The intron score anchors the clip at the read's own 5' aligned edge (as if unspliced) with the
     same E bits; the exon score is the best vetted overhang 2F judged (``exon_site``, ``exon_bits``); the
     prior (unspliced vs spliced counts at the annotated intron) is added to the intron side."""
-    ct = read.cigartuples or []
     q = read.query_sequence or ''
-    if strand == '+':
-        clip = q[:ct[0][1]] if ct and ct[0][0] == 4 else ''
-    else:
-        clip = q[len(q) - ct[-1][1]:] if ct and ct[-1][0] == 4 else ''
+    clip_len = _get_5prime_softclip_len(read, strand)
+    clip = (q[:clip_len] if strand == '+' else q[-clip_len:]) if clip_len else ''
     if len(clip) < min_informative_clip_bp():
         return 'none', None, 0.0, None, None
     if strand == '+':
@@ -707,8 +704,23 @@ JUNCTION_INDEL_REFUSAL = 'junction_adjacent_indel'
 
 
 def _junction_adjacent_indel_refusal(cigar_ops, strand: str, genome_seq: str,
-                                     intron_start: int, intron_end: int) -> str:
-    """ISSUE-038. Kevin's rule, applied to the 2F exon block: never leave an I/D touching the N.
+                                     intron_start: int, intron_end: int,
+                                     annotated: bool = False) -> str:
+    """ISSUE-038, as narrowed by ISSUE-083 (Kevin 2026-09-21).
+
+    ``annotated=True`` — the landing is an annotated junction — never refuses. Kevin: a D beside an
+    N is the aligner saying "an annotated/canonical junction is here, and the best alignment of
+    this read involves a shift"; D and N are both reference skips and the D can always be absorbed,
+    so the shape is a statement about the read, not a defect in the placement. An I beside the N is
+    first slid away from it through any homopolymer or repeat (``_slide_junction_insertion_inward``,
+    applied to every 2F block in ``_place_and_measure``); what is still adjacent afterwards is "not
+    a deal breaker". The 12 reviewed annotated rescues this gate had turned into clips (22f609c6
+    ruled RIGHT 2026-09-06; T1-pinned 5d30f4ea ``9M3D13M1I``) draw again, and so do cards 10/11.
+
+    For a NOVEL landing the original rule still binds, because there the indel cannot be told
+    apart from a different junction and no annotation says which one is meant:
+
+    ISSUE-038. Kevin's rule, applied to the 2F exon block: never leave an I/D touching the N.
 
     Strict for a DELETION — a missing length glued to an N cannot be told apart from a junction shift.
     An INSERTION is allowed only when every inserted base continues a homopolymer (run >= 3) or a
@@ -717,6 +729,8 @@ def _junction_adjacent_indel_refusal(cigar_ops, strand: str, genome_seq: str,
     strand, because the record is written in reference order either way — reading a minus-strand block
     as if it were plus is what let 74 of these through to the BAM as `N 1D`, `N 3I`, `N 6I`.
     """
+    if annotated:
+        return ''
     ops = [(o, n) for o, n in (cigar_ops or []) if n]
     if not ops:
         return ''
@@ -870,6 +884,50 @@ def _gap_refusal(cigar_ops, align_seq: str = None, genome_seq: str = None,
     return ''
 
 
+def _slide_junction_insertion_inward(ops, align_seq: str, strand: str):
+    """Move an insertion that touches the N to the FAR side of the repeat it sits in.
+
+    Kevin, 2026-09-21 (ISSUE-083): insertions are usually homopolymer or repeat expansions, and
+    best practice is to place them away from the N, on the other side of the repeat block in the
+    exon. This is the exact-equivalence slide and nothing more: the insertion moves one base into
+    the exon only while the base it releases onto the reference is IDENTICAL to the base it takes
+    up, so every reference position keeps the same read base and the same =/X status — no score,
+    identity or evidence figure can change, and nothing subjective is decided (R024's objection to
+    a dinucleotide EXEMPTION does not arise: nothing is exempted, the same alignment is rewritten).
+    A length-n insertion therefore crosses a homopolymer for n = 1 and any tandem repeat whose
+    period divides n, and stops at the repeat's far edge. An insertion that is not in a repeat
+    does not move and stays beside the N. The slide stays inside the one match op next to the
+    insertion and leaves at least one of its bases in place. ``ops`` are reference-order
+    ``(op, length)`` pairs; the junction-proximal end is the LAST op on the plus strand and the
+    FIRST on the minus strand.
+    """
+    ops = [(o, n) for o, n in (ops or []) if n]
+    if len(ops) < 2 or not align_seq:
+        return ops
+    if sum(n for o, n in ops if o in (0, 1, 4, 7, 8)) != len(align_seq):
+        return ops
+    seq = align_seq.upper()
+    if strand == '+':
+        (m_op, m_len), (i_op, i_len) = ops[-2], ops[-1]
+        if i_op != 1 or m_op not in (0, 7, 8):
+            return ops
+        k = 0
+        while k < m_len - 1 and seq[-(k + 1)] == seq[-(i_len + k + 1)]:
+            k += 1
+        if not k:
+            return ops
+        return ops[:-2] + [(m_op, m_len - k), (1, i_len), (m_op, k)]
+    (i_op, i_len), (m_op, m_len) = ops[0], ops[1]
+    if i_op != 1 or m_op not in (0, 7, 8):
+        return ops
+    k = 0
+    while k < m_len - 1 and seq[k] == seq[i_len + k]:
+        k += 1
+    if not k:
+        return ops
+    return [(m_op, k), (1, i_len), (m_op, m_len - k)] + ops[2:]
+
+
 def _place_and_measure(cigar_ops, align_seq: str, genome_seq: str,
                        intron_start: int, intron_end: int, strand: str):
     """Invariant E's two steps on an ``align_clip_to_exon`` result: strip the
@@ -881,6 +939,7 @@ def _place_and_measure(cigar_ops, align_seq: str, genome_seq: str,
     ops, _unplaced = strip_leading_indel(cigar_ops, strand)
     if not ops:
         return [], '', None
+    ops = _slide_junction_insertion_inward(ops, align_seq, strand)
     shape = evidence_shape(ops, align_seq, genome_seq, intron_start, intron_end, strand)
     return ops, cigar_ops_to_str(ops), shape
 
@@ -900,6 +959,14 @@ NOVEL_GATE_DEFAULT = 'report'      # arbiter RULING 2 (2026-09-05): report by de
 # and the fail-closed path (a local-alignment exception on a novel site) was
 # the first to reach one of them.
 logger = _logging.getLogger(__name__)
+
+
+def resplit_enabled() -> bool:
+    """ISSUE-083 re-split switch (``RECTIFY_2F_RESPLIT=1``): a sequence rescue is aligned ACROSS the
+    junction with the production aligner (``local_aligner.resplit_across_junction``) instead of at 2F's
+    fixed split, and the writer draws the exon-2 head from ``five_prime_exon2_cigar`` instead of a flat
+    ``kM``. Default OFF until Kevin has judged the census of the reads it changes (handoff 2026-09-21b)."""
+    return os.environ.get('RECTIFY_2F_RESPLIT', '').strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 def novel_gate_mode() -> str:
@@ -1378,12 +1445,15 @@ def _get_5prime_softclip_len(read: pysam.AlignedSegment, strand: Optional[str] =
     """Return the explicit 5' soft-clip length (S op adjacent to the transcript 5' end)."""
     if not read.cigartuples:
         return 0
-    if _transcript_5prime_is_right(read, strand):
-        last_op, last_len = read.cigartuples[-1]
-        return last_len if last_op == 4 else 0
-    else:
-        first_op, first_len = read.cigartuples[0]
-        return first_len if first_op == 4 else 0
+    ops = (reversed(read.cigartuples) if _transcript_5prime_is_right(read, strand)
+           else iter(read.cigartuples))
+    # SAM permits H outside S. H bases are absent from query_sequence and
+    # must neither hide the adjacent soft clip nor count toward its length.
+    for op, length in ops:
+        if op == 5:
+            continue
+        return length if op == 4 else 0
+    return 0
 
 
 def _extract_5prime_rescue_seq(
@@ -2241,9 +2311,7 @@ def _terminal_peel_rescue(
     best_peel: Optional[Dict] = None
     best_depth: Optional[int] = None
     best_peel_norm = base_norm
-    _ct_sweep = read.cigartuples or []
-    _clip0_sweep = (_ct_sweep[0][1] if _ct_sweep and _ct_sweep[0][0] == 4 else 0) if strand == '+' \
-        else (_ct_sweep[-1][1] if _ct_sweep and _ct_sweep[-1][0] == 4 else 0)
+    _clip0_sweep = _get_5prime_softclip_len(read, strand)
     _peel_refusal = ''   # ISSUE-026: a placement refusal seen at some depth
     _peel_shape = (None, None)   # ISSUE-028: the refused block's (identity, anchor run)
     _peel_site = None            # ISSUE-034: the candidate that block was judged at
@@ -2271,7 +2339,11 @@ def _terminal_peel_rescue(
         # bases as exon-2 [0, k) and the writer fills the gap with a `kD` glued to the N —
         # Kevin's banned shape. The body's `dist` is measured on the unpeeled read, so the
         # prefix and the peel describe the same bases twice. Such a peel is not a placement.
-        if int(res.get('five_prime_exon2_prefix', 0) or 0) > 0:
+        # ISSUE-083 re-split: with an explicit exon-2 CIGAR the prefix and the head are one
+        # alignment that already accounts for the body bases it replaces, so no `kD` can be glued
+        # to the N and the conflict does not arise.
+        if (int(res.get('five_prime_exon2_prefix', 0) or 0) > 0
+                and not res.get('five_prime_exon2_cigar')):
             _OI_COUNTERS['five_prime_peel_prefix_conflict'] = (
                 _OI_COUNTERS.get('five_prime_peel_prefix_conflict', 0) + 1)
             continue
@@ -2336,9 +2408,7 @@ def _terminal_peel_rescue(
     # 5cef5ebb's `11M`, 03c312ab's `15M`, …). The writer's `upstream_trim` is the
     # mechanism for absorbing body bases into the exon block (equivalence
     # extension); the peel's extra depth rides on the same field.
-    _ct = read.cigartuples or []
-    _clip0 = (_ct[0][1] if _ct and _ct[0][0] == 4 else 0) if strand == '+' \
-        else (_ct[-1][1] if _ct and _ct[-1][0] == 4 else 0)
+    _clip0 = _get_5prime_softclip_len(read, strand)
     _extra = max(0, int(best_depth or 0) - _clip0)
     if _extra:
         # The writer absorbs the peeled body bases into the exon block by trimming them off
@@ -2496,10 +2566,8 @@ def rescue_3ss_truncation(
     _cigar = read.cigartuples
     _seq = read.query_sequence
     if _cigar and _seq:
-        if strand == '+':
-            _clip5 = _seq[:_cigar[0][1]] if _cigar[0][0] == 4 else ""
-        else:
-            _clip5 = _seq[-_cigar[-1][1]:] if _cigar[-1][0] == 4 else ""
+        _clip5_len = _get_5prime_softclip_len(read, strand)
+        _clip5 = (_seq[:_clip5_len] if strand == '+' else _seq[-_clip5_len:]) if _clip5_len else ""
         if (len(_clip5) >= _CLIP_ARTIFACT_SCOPE_BP
                 and _clip_search_refused(_clip5, strand)):
             # Observable without touching the resolver's 'assessed'/'refused'
@@ -2533,12 +2601,7 @@ def rescue_3ss_truncation(
             # matching the first ≥10 match-run — produces an identical cigartuples
             # list and must not propagate a phantom reanchor_clip_len).
             if _cigar_after != _cigar_before:
-                if strand == '+':
-                    if _cigar_after and _cigar_after[0][0] == 4:
-                        _reanchor_clip_len = _cigar_after[0][1]
-                else:
-                    if _cigar_after and _cigar_after[-1][0] == 4:
-                        _reanchor_clip_len = _cigar_after[-1][1]
+                _reanchor_clip_len = _get_5prime_softclip_len(read, strand)
         # If reanchor did not materially change the CIGAR, restore now so the
         # rest of the function (and the finally restore) is a no-op on read state.
         if _reanchor_clip_len == 0:
@@ -3936,6 +3999,8 @@ def _rescue_3ss_truncation_body(
                             break
 
             _exon_cigar_str = ''
+            _exon2_cigar_str = ''
+            _resplit_applied = False
             _cigar_ops = None
             _exon_ref_start = None
             try:
@@ -3951,6 +4016,39 @@ def _rescue_3ss_truncation_body(
             # emitted as S — and the block's shape is measured on what remains.
             _cigar_ops, _exon_cigar_str, _exon_shape = _place_and_measure(
                 _cigar_ops, _align_seq, genome_seq, _intron_start, _intron_end, strand)
+            # ISSUE-083 re-split (RECTIFY_2F_RESPLIT): the fixed split above lays the
+            # exon-2 prefix and the body head down without gaps, so a base that
+            # belongs to exon 1 lands on exon 2 and the block closes with a deletion
+            # beside the N (cards 083-2/3/4). The production aligner run ACROSS the
+            # junction, up to an anchor in the body, decides the split instead; the
+            # floor below then judges the re-split exon-1 block, and the writer draws
+            # the exon-2 head from `five_prime_exon2_cigar` instead of a flat `kM`.
+            if (_cigar_ops and resplit_enabled() and rescue_type_candidate == 'softclip'
+                    and not _align_from_intronic and five_clip > 0):
+                _rs = None
+                try:
+                    from ..align.local_aligner import resplit_across_junction
+                    _rs = resplit_across_junction(
+                        read, five_clip, len(_align_seq), genome_seq,
+                        _intron_start, _intron_end, strand)
+                except Exception as _e:
+                    logger.debug("Re-split failed for read %s: %s", read.query_name, _e)
+                if _rs:
+                    _ops1, _cig1, _shape1 = _place_and_measure(
+                        _rs['exon1_ops'], _rs['exon1_seq'], genome_seq,
+                        _intron_start, _intron_end, strand)
+                    if _ops1 and _shape1 is not None:
+                        _cigar_ops, _exon_cigar_str, _exon_shape = _ops1, _cig1, _shape1
+                        _align_seq = _rs['exon1_seq']
+                        _exon2_cigar_str = cigar_ops_to_str(_rs['exon2_ops'])
+                        # clip bases over exon 2 (the writer draws the cigar, never kM,
+                        # when the cigar is present); the body head it replaces follows
+                        # from query conservation: qspan(exon1) + qspan(exon2) - clip.
+                        _exon2_prefix = max(0, five_clip - len(_rs['exon1_seq']))
+                        _upstream_trim = 0
+                        _resplit_applied = True
+                        _OI_COUNTERS['five_prime_resplit'] = (
+                            _OI_COUNTERS.get('five_prime_resplit', 0) + 1)
             if _exon_shape is not None:
                 _last_shape = _exon_shape
                 _last_shape_site = tuple(best_junction) if best_junction else None
@@ -3960,7 +4058,10 @@ def _rescue_3ss_truncation_body(
                 _exon_ref_start = _intron_start - sum(
                     ln for op, ln in _cigar_ops if op in (0, 2, 7, 8))
             # ISSUE-020 consistency invariant, debug mode (RECTIFY_2F_CHECK_CONSISTENCY=1).
-            if _consistency_check_enabled():
+            # A re-split block (ISSUE-083) is a deliberate departure from the ranked
+            # placement — a different segment, aligned across the junction — so the
+            # ranking-deficit identity does not apply to it.
+            if _consistency_check_enabled() and not _resplit_applied:
                 _check_anchored_consistency(
                     best_rank_seg, genome_seq, best_junction, strand, best_deficit,
                     _align_seq, _cigar_ops, _exon_ref_start, read.query_name or '')
@@ -4062,7 +4163,8 @@ def _rescue_3ss_truncation_body(
                       or _gap_refusal(_cigar_ops, _align_seq, genome_seq,
                                       _intron_start, _intron_end, strand,
                                       junction=best_junction)
-                      or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end))
+                      or _junction_adjacent_indel_refusal(_cigar_ops, strand, genome_seq, _intron_start, _intron_end,
+                                                          annotated=bool(_emitted_annotated)))
             if _e_tok and not (_novel_tok and novel_gate_mode() == 'refuse'):
                 _OI_COUNTERS['five_prime_evidence_floor_refused'] = (
                     _OI_COUNTERS.get('five_prime_evidence_floor_refused', 0) + 1)
@@ -4091,6 +4193,9 @@ def _rescue_3ss_truncation_body(
                     # ISSUE-026 invariant D: junction-side clip bases the writer
                     # draws as M over exon 2, after the N-op (0 = none).
                     'five_prime_exon2_prefix': _exon2_prefix,
+                    # ISSUE-083 re-split: the exon-2 head's CIGAR ('' = the flat kM
+                    # prefix); the body head it replaces follows from query conservation.
+                    'five_prime_exon2_cigar': _exon2_cigar_str,
                     'landing_annotated': _emitted_annotated,
                     # '' on an annotated site; 'pass' or the token on a novel one
                     # (both modes — the join over the TSV is exact either way).
@@ -4356,6 +4461,7 @@ def _rescue_3ss_truncation_body(
             if (five_clip >= min_informative_clip_bp()
                     and rescue_type_candidate == 'softclip' and rescue_seq):
                 _exon_cigar_str3 = ''
+                _exon2_cigar_str3 = ''
                 _ops3 = None
                 # ISSUE-026 invariant D, as the sequence loop does it: a read that starts
                 # k bases INTO exon 2 carries exon-2 [0, k) as the junction-side k bases of
@@ -4374,6 +4480,31 @@ def _rescue_3ss_truncation_body(
                             _seg3, genome_seq, intron_start, intron_end, strand)
                         _ops3, _exon_cigar_str3, _shape3 = _place_and_measure(
                             _ops3, _seg3, genome_seq, intron_start, intron_end, strand)
+                        # ISSUE-083 re-split, as the sequence path does it: the
+                        # floor below judges the block the aligner gives ACROSS
+                        # the junction (ac5225e1, card 083-1: `4S6M2D1M`, 7.0 bits,
+                        # stays clipped; the fixed split's free deletion said 12.0).
+                        if _ops3 and resplit_enabled() and five_clip > 0:
+                            _rs3 = None
+                            try:
+                                from ..align.local_aligner import (
+                                    cigar_ops_to_str as _c2s3, resplit_across_junction as _rsj3)
+                                _rs3 = _rsj3(read, five_clip, len(_seg3), genome_seq,
+                                             intron_start, intron_end, strand)
+                            except Exception as _e3r:
+                                logger.debug("Case 3 re-split failed for read %s: %s",
+                                             read.query_name, _e3r)
+                            if _rs3:
+                                _o3, _c3, _s3 = _place_and_measure(
+                                    _rs3['exon1_ops'], _rs3['exon1_seq'], genome_seq,
+                                    intron_start, intron_end, strand)
+                                if _o3 and _s3 is not None:
+                                    _ops3, _exon_cigar_str3, _shape3 = _o3, _c3, _s3
+                                    _seg3 = _rs3['exon1_seq']
+                                    _exon2_cigar_str3 = _c2s3(_rs3['exon2_ops'])
+                                    _k3 = max(0, five_clip - len(_rs3['exon1_seq']))
+                                    _OI_COUNTERS['five_prime_resplit'] = (
+                                        _OI_COUNTERS.get('five_prime_resplit', 0) + 1)
                     else:
                         _shape3 = None
                 except Exception as _e3:
@@ -4386,13 +4517,19 @@ def _rescue_3ss_truncation_body(
                 # (novel) candidate within proximity is held to the creation floor.
                 _annot3 = (annotated_keys is None
                            or (j_chrom, intron_start, intron_end) in annotated_keys)
+                # ISSUE-054: the scored fallback draws this placed exon, so it obeys the same
+                # N-adjacent indel predicate as the sequence path — which, since ISSUE-083
+                # (Kevin 2026-09-21), binds NOVEL landings only.
                 _e_tok3 = ('' if _shape3 is None else
                            (_evidence_floor_refusal(
                                 _shape3,
                                 annotated=_attachment_tier((j_chrom, intron_start, intron_end), _annot3))
                             or _gap_refusal(_ops3, _seg3, genome_seq,
                                             intron_start, intron_end, strand,
-                                            junction=(j_chrom, intron_start, intron_end))))
+                                            junction=(j_chrom, intron_start, intron_end))
+                            or _junction_adjacent_indel_refusal(
+                                _ops3, strand, genome_seq, intron_start, intron_end,
+                                annotated=_annot3)))
                 if _shape3 is None or _e_tok3:
                     _OI_COUNTERS['five_prime_proximity_yields_to_scored_clip'] = (
                         _OI_COUNTERS.get('five_prime_proximity_yields_to_scored_clip', 0) + 1)
@@ -4434,6 +4571,7 @@ def _rescue_3ss_truncation_body(
                         'five_prime_exon_cigar': _exon_cigar_str3,
                         'five_prime_upstream_trim': 0,
                         'five_prime_exon2_prefix': _k3 if 0 < _k3 < len(rescue_seq) else 0,
+                        'five_prime_exon2_cigar': _exon2_cigar_str3,   # ISSUE-083 re-split ('' = flat kM)
                         'landing_annotated': _annot3,
                         'novel_evidence': '' if _annot3 else 'pass',
                         'anchored_deficit': None,

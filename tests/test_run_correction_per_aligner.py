@@ -64,7 +64,17 @@ def _make_per_aligner_bams(tmp_path: Path, names) -> Dict[str, Path]:
     return out
 
 
-def _write_manifest(aligner_output_dir: Path) -> Path:
+def _vouch(canonical: Path, origin_bam, pool_bams) -> None:
+    """Publish the writer-input receipt ``correct --retain-writer-input`` leaves (ISSUE-079).
+
+    ``kind='source'``: these dummy arms have no 2H intermediate, so the arm BAM is the pair.
+    """
+    from rectify.core.bam import writer_input
+    writer_input.publish(canonical, Path(str(origin_bam)), owned=False,
+                         origin_bam=origin_bam, pool_bams=pool_bams)
+
+
+def _write_manifest(aligner_output_dir: Path, origin_bam=None, pool_bams=None) -> Path:
     """Materialize the Commit-B default layout for one aligner."""
     aligner_output_dir.mkdir(parents=True, exist_ok=True)
     region_tsv = aligner_output_dir / 'corrected_reads.region_000.tsv'
@@ -74,14 +84,18 @@ def _write_manifest(aligner_output_dir: Path) -> Path:
         MANIFEST_HEADER
         + f"region_000\t*\t0\t0\t{region_tsv.name}\t0\tdeadbeef\n"
     )
+    if origin_bam is not None:
+        _vouch(manifest, origin_bam, pool_bams)
     return manifest
 
 
-def _write_legacy_tsv(aligner_output_dir: Path) -> Path:
+def _write_legacy_tsv(aligner_output_dir: Path, origin_bam=None, pool_bams=None) -> Path:
     """Materialize the ``--emit-merged-tsv`` legacy layout for one aligner."""
     aligner_output_dir.mkdir(parents=True, exist_ok=True)
     tsv = aligner_output_dir / 'corrected_reads.tsv'
     tsv.write_text(SINGLE_TSV_HEADER)
+    if origin_bam is not None:
+        _vouch(tsv, origin_bam, pool_bams)
     return tsv
 
 
@@ -131,7 +145,8 @@ def test_per_aligner_runner_skips_when_manifest_already_exists(
     per_aligner_bams = _make_per_aligner_bams(tmp_path, ['minimap2'])
     output_dir = tmp_path / 'out'
     # Pre-seed the manifest as if a prior run completed.
-    _write_manifest(output_dir / 'per_aligner_corrected' / 'minimap2')
+    _write_manifest(output_dir / 'per_aligner_corrected' / 'minimap2',
+                    per_aligner_bams['minimap2'], list(per_aligner_bams.values()))
 
     called = {'count': 0}
 
@@ -153,6 +168,35 @@ def test_per_aligner_runner_skips_when_manifest_already_exists(
     assert tsvs['minimap2'].name == 'corrected_reads.manifest.tsv'
 
 
+def test_per_aligner_runner_rebuilds_output_with_no_receipt(tmp_path: Path, monkeypatch):
+    """ISSUE-079: a parseable TSV is not enough. With no writer-input receipt the deferred
+    consumers would replay it onto raw (pre-2H) geometry, so the arm is corrected again; and a
+    correction that leaves no receipt is a failure, not the previous run's success."""
+    from rectify.core.commands.run import stages
+
+    per_aligner_bams = _make_per_aligner_bams(tmp_path, ['minimap2'])
+    output_dir = tmp_path / 'out'
+    _write_manifest(output_dir / 'per_aligner_corrected' / 'minimap2')  # legacy: no receipt
+
+    called = {'count': 0}
+
+    def _fake_run_correction(**kwargs):
+        called['count'] += 1
+        assert kwargs['retain_writer_input'] is True
+        assert kwargs['writer_input_origin'] == per_aligner_bams['minimap2']
+
+    monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
+    tsvs, _ = stages._run_correction_per_aligner(
+        per_aligner_bams=per_aligner_bams,
+        output_dir=output_dir,
+        genome_path=tmp_path / 'genome.fa',
+        annotation_path=None,
+        args=_make_args(aligner_concurrency='1'),
+    )
+    assert called['count'] == 1
+    assert tsvs == {}, 'the stale TSV must not be accepted as this run\'s output'
+
+
 def test_per_aligner_runner_accepts_manifest_after_correction(
     tmp_path: Path, monkeypatch
 ):
@@ -167,7 +211,7 @@ def test_per_aligner_runner_accepts_manifest_after_correction(
     output_dir = tmp_path / 'out'
 
     def _fake_run_correction(*, output_dir, **_kwargs):
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -194,7 +238,7 @@ def test_per_aligner_runner_accepts_legacy_tsv(tmp_path: Path, monkeypatch):
     output_dir = tmp_path / 'out'
 
     def _fake_run_correction(*, output_dir, **_kwargs):
-        _write_legacy_tsv(output_dir)
+        _write_legacy_tsv(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -229,7 +273,7 @@ def test_per_aligner_runner_serial_loop_under_concurrency_one(
 
     def _fake_run_correction(*, output_dir, **_kwargs):
         call_order.append(output_dir.name)
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -260,7 +304,7 @@ def test_per_aligner_runner_invalid_concurrency_falls_back_to_one(
     output_dir = tmp_path / 'out'
 
     def _fake_run_correction(*, output_dir, **_kwargs):
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -319,7 +363,7 @@ def test_shared_pool_container_passed_when_ac_gt_1(
 
     def _fake_run_correction(*, output_dir, reuse_pool_container=None, **_kwargs):
         seen_containers.append(id(reuse_pool_container))
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -354,7 +398,7 @@ def test_shared_pool_falls_back_when_has_md_inconsistent(
 
     def _fake_run_correction(*, output_dir, reuse_pool_container=None, **_kwargs):
         seen_containers.append(reuse_pool_container)
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)
@@ -387,7 +431,7 @@ def test_shared_pool_label_in_output(tmp_path: Path, monkeypatch, capsys):
     output_dir = tmp_path / 'out'
 
     def _fake_run_correction(*, output_dir, **_kwargs):
-        _write_manifest(output_dir)
+        _write_manifest(output_dir, _kwargs['writer_input_origin'], _kwargs['aligner_bams'])
         return output_dir / 'corrected_reads.manifest.tsv'
 
     monkeypatch.setattr(stages, '_run_correction', _fake_run_correction)

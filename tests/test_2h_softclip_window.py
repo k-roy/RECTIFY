@@ -233,7 +233,15 @@ def test_leading_clip_does_not_change_the_decision(clip):
     def decide(read):
         repl = jr.refine_read_junctions(read, idx, annotated, genome, "+",
                                         boundary_error_window=0)
-        return [(s, e, ns, ne) for (_, s, e, ns, ne) in repl]
+        # ISSUE-047: a move that needs the whole block shifted arrives as one AtomicReadPlan
+        # (its junction_map lists every N) instead of per-N boundary tuples.
+        out = []
+        for item in repl:
+            if hasattr(item, 'junction_map'):
+                out.extend(j for j in item.junction_map if j[:2] != j[2:])
+            else:
+                out.append(tuple(item[1:5]))
+        return out
 
     unclipped = decide(_decision_read(genome, 0))
     # The read's bases pick the alternative (200, 303). ISSUE-031 refuses to WRITE it (the

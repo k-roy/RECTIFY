@@ -235,11 +235,15 @@ def test_the_columns_are_emitted_on_a_REFUSED_read_too(monkeypatch):
 
 
 def test_the_two_columns_are_last_and_blank_without_a_rescue():
-    assert CORRECTION_TSV_HEADER[-8:-6] == ['five_prime_site_support', 'five_prime_landing_established']
+    # By NAME: the header is append-only, so a negative index goes stale with every new column
+    # (c2b7c0b appended tail_correction_enabled and this test pointed at station B instead).
+    i = CORRECTION_TSV_HEADER.index('five_prime_site_support')
+    assert CORRECTION_TSV_HEADER[i:i + 3] == [
+        'five_prime_site_support', 'five_prime_landing_established', 'station_b_microexons']
     row = _row(_make_read([(0, 60)], 'C' * 60, name='no_clip'))
     cells = correction_result_to_tsv_row(row)
     assert len(cells) == len(CORRECTION_TSV_HEADER)
-    assert cells[-8] == '' and cells[-7] == ''
+    assert cells[i] == '' and cells[i + 1] == ''
 
 
 def test_a_refused_read_reports_whether_its_JUDGED_site_is_annotated(monkeypatch):

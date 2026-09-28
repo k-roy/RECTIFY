@@ -431,6 +431,7 @@ def _five_prime_clip_leg(
         exon_cigar_str=res.get('five_prime_exon_cigar', '') or '',
         upstream_trim=int(res.get('five_prime_upstream_trim', 0) or 0),
         exon2_prefix=int(res.get('five_prime_exon2_prefix', 0) or 0),
+        exon2_cigar_str=res.get('five_prime_exon2_cigar', '') or '',
     )
     return changed, False
 

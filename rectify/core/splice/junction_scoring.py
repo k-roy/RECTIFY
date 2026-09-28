@@ -966,8 +966,15 @@ def build_junction_pool(
     aligner_families: Optional[List[str]] = None,
     return_signal: bool = False,
     fasta_path: Optional[str] = None,
+    n_workers: Optional[int] = None,
 ) -> Tuple[Set[Junction], Set[Junction]]:
     """Build union of annotated + per-aligner junctions.
+
+    ``n_workers`` caps the per-arm scan processes (ISSUE-080). ``None`` takes the scheduler
+    allocation (:func:`rectify.slurm.get_available_cpus`), never the node's ``os.cpu_count()``:
+    a five-arm scan inside a 1-CPU SLURM task used to start five children, which is the
+    over-subscription that gets an account banned. One worker scans in-process; the pool is
+    identical either way (per-arm results are combined in arm order).
 
     ``return_signal=True`` (ISSUE-034) appends a third element: ``{'unspliced':
     Counter, 'spliced': Counter, 'site_support': dict}``. ``unspliced`` /
@@ -1037,19 +1044,22 @@ def build_junction_pool(
     _unspliced: Counter = Counter()
     _strict_anchor = SITE_SUPPORT_ANCHOR if return_signal else 0
     _fa = fasta_path if return_signal else None
+    if n_workers is None:
+        from ...slurm import get_available_cpus
+        n_workers = get_available_cpus()
+    _scan_workers = max(1, min(len(aligner_bams or ()), int(n_workers)))
     if not aligner_bams:
         pass
-    elif len(aligner_bams) == 1:
-        per_bam.append(_collect_junction_counts_core(
-            aligner_bams[0], chrom_filter, max_junction_size, min_anchor_overhang,
+    elif len(aligner_bams) == 1 or _scan_workers == 1:
+        per_bam.extend(_collect_junction_counts_core(
+            bp, chrom_filter, max_junction_size, min_anchor_overhang,
             annotated_index=_sig_index,
             unspliced_out=Counter() if return_signal else None,
-            strict_anchor=_strict_anchor, fasta_path=_fa))
+            strict_anchor=_strict_anchor, fasta_path=_fa) for bp in aligner_bams)
     else:
         try:
             from concurrent.futures import ProcessPoolExecutor
-            n_workers = min(len(aligner_bams), os.cpu_count() or 4)
-            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+            with ProcessPoolExecutor(max_workers=_scan_workers) as ex:
                 futures = [
                     ex.submit(_collect_junction_counts_core, bp, chrom_filter,
                               max_junction_size, min_anchor_overhang,

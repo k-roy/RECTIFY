@@ -93,7 +93,10 @@ class TestFinder:
         SSP_FWD[:3] + 'G' + SSP_FWD[4:-2] + 'AC',  # two substitutions
     ])
     def test_error_bearing_ssp_still_yields_type1_and_a_full_umi(self, mutant):
-        umi = 'ACGTTGCAACGTTGCAACGTTGCAACG'[:UMI_LEN]
+        # A non-G final UMI base makes the GGG bridge identify one boundary.
+        # The old G-ending fixture is retained as a refusal regression in
+        # test_ultracode_ssp_joint_boundary: its four Gs cannot resolve the tie.
+        umi = 'ACGTTGCAACGTTGCAACGTTGCAACC'[:UMI_LEN]
         seq = _fwd_molecule(mutant, umi, _body())
         info = extract_read_info(_read(seq, len(mutant) + UMI_LEN + BRIDGE_LEN, 52))
         assert info.read_type == 1 and info.orient == 'fwd'
@@ -102,7 +105,7 @@ class TestFinder:
         assert umi[:UMI_LEN - 1] in info.umi or umi[1:] in info.umi or info.umi == umi
 
     def test_rev_frame_with_an_error_is_type1(self):
-        umi = 'ACGTTGCAACGTTGCAACGTTGCAACG'[:UMI_LEN]
+        umi = 'ACGTTGCAACGTTGCAACGTTGCAACC'[:UMI_LEN]
         mutant = SSP_FWD[:-1] + 'C'
         seq = revcomp(_fwd_molecule(mutant, umi, _body()))
         info = extract_read_info(_read(seq, 52, len(mutant) + UMI_LEN + BRIDGE_LEN))

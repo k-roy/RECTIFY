@@ -14,6 +14,7 @@ Author: Kevin R. Roy
 """
 
 from dataclasses import dataclass
+import copy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Generator
 import re
@@ -21,7 +22,7 @@ import re
 import pysam
 
 from ...config import NCBI_TO_CHROM
-from ...utils.alignment import extract_soft_clips, parse_cigar
+from ...utils.alignment import parse_cigar
 from ..unified_record import UnifiedReadRecord
 from ..exclusion_regions import ExclusionRegionDetector
 
@@ -353,17 +354,9 @@ def detect_oligo_a_in_softclip(
             - three_prime_soft_clip_length: Total soft-clip length
             - has_oligo_a: Boolean indicating if clip is A-rich
     """
-    clips = extract_soft_clips(read)
-
-    # Find the soft-clip at the biological 3' end
-    if strand == '+':
-        clip_side = 'right'  # 3' is right for plus strand
-    else:
-        clip_side = 'left'   # 3' is left for minus strand
-
-    three_prime_clip = next((c for c in clips if c['side'] == clip_side), None)
-
-    if three_prime_clip is None or not three_prime_clip['seq']:
+    from ..netseq.netseq_rescue import terminal_softclip
+    seq = terminal_softclip(read, 'right' if strand == '+' else 'left')
+    if not seq:
         return {
             'soft_clip_a_length': 0,
             'three_prime_soft_clip_seq': '',
@@ -371,7 +364,6 @@ def detect_oligo_a_in_softclip(
             'has_oligo_a': False,
         }
 
-    seq = three_prime_clip['seq']
     clip_length = len(seq)
 
     # Count A's in RNA orientation
@@ -406,25 +398,11 @@ def get_5prime_softclip_info(
     Returns:
         Dict with 5' soft-clip length and sequence
     """
-    clips = extract_soft_clips(read)
-
-    # 5' end is opposite of 3' end
-    if strand == '+':
-        clip_side = 'left'   # 5' is left for plus strand
-    else:
-        clip_side = 'right'  # 5' is right for minus strand
-
-    five_prime_clip = next((c for c in clips if c['side'] == clip_side), None)
-
-    if five_prime_clip is None:
-        return {
-            'five_prime_soft_clip_length': 0,
-            'five_prime_soft_clip_seq': '',
-        }
-
+    from ..netseq.netseq_rescue import terminal_softclip
+    seq = terminal_softclip(read, 'left' if strand == '+' else 'right')
     return {
-        'five_prime_soft_clip_length': five_prime_clip['length'],
-        'five_prime_soft_clip_seq': five_prime_clip['seq'] or '',
+        'five_prime_soft_clip_length': len(seq),
+        'five_prime_soft_clip_seq': seq,
     }
 
 
@@ -479,6 +457,17 @@ def process_netseq_read(
         NetseqReadRecord, RescueCall, TailCall, _ref_to_query, call_tail, rescue_read, rna_clip,
     )
 
+    # Resolve placement-relative SEQ before mismatch, tail, or rescue consumers.
+    # Work on a copy so this analysis-only entry point preserves the caller's BAM
+    # record, including its original sequence encoding and qualities.
+    genome_seq = None
+    if genome is not None:
+        genome_seq = genome.get(chrom_std) or genome.get(read.reference_name)
+    if genome_seq is not None and '=' in (read.query_sequence or ''):
+        from .bam_writer import _decode_eq_seq_inplace
+        read = copy.deepcopy(read)
+        _decode_eq_seq_inplace(read, {read.reference_name: genome_seq})
+
     # Get 3' position and strand (with optional trimming)
     three_prime_corrected, strand, n_trimmed = get_netseq_3prime_position(
         read, trim_terminal_oligo_a=trim_terminal_oligo_a, rna3p_at=rna3p_at
@@ -504,9 +493,6 @@ def process_netseq_read(
 
     # ---- 3'-end correction: walkback, then donor-side junction rescue ---------------------------
     # Both need the chromosome sequence; both are no-ops without it.
-    genome_seq = None
-    if genome is not None:
-        genome_seq = genome.get(chrom_std) or genome.get(read.reference_name)
     clip_rna = rna_clip(read, strand)
     ref_to_query = _ref_to_query(read) if (genome_seq is not None or junction_pool is not None) else None
 
@@ -586,6 +572,7 @@ def process_netseq_read(
         rescue_k=rescue.k,
         rescue_r=rescue.r,
         rescue_n_intronic=rescue.n_intronic,
+        rescue_n_candidates=rescue.n_candidates,
         rescue_decoy_k=rescue.decoy_k,
         rescue_decoy_would_rescue=rescue.decoy_would_rescue,
         rescue_intron_start=rescue.junction.intron_start if rescue.junction else -1,

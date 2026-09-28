@@ -84,7 +84,10 @@ def walkback_and_count(
     if not pairs:
         return original, original, 0, 0
     scan = list(reversed(pairs)) if side == RIGHT else pairs
-    qs = read.query_sequence
+    # SAM '=' is an aligned reference base, not a mismatch. Decode against the
+    # original placement without modifying this analysis-only input record.
+    from ..multialign.cma_schema import decode_eq_seq
+    qs = decode_eq_seq(read, {read.reference_name: chrom_seq})
     if qs is None:
         return original, original, 0, 0
     fqp, frp = scan[0]
@@ -109,17 +112,8 @@ def walkback_and_count(
 def softclip_run(read: pysam.AlignedSegment, side: str, stop_base: str) -> int:
     """Longest run of ``stop_base`` in the RNA-3' soft-clip. GENOME-BLIND
     (legacy): counts clipped genomic A-tracts as poly-A. Kept for comparison."""
-    ct = read.cigartuples
-    seq = read.query_sequence
-    if not ct or not seq:
-        return 0
-    seq = seq.upper()
-    if side == RIGHT:
-        op, ln = ct[-1]
-        clip = seq[len(seq) - ln:] if op == 4 else ""
-    else:
-        op, ln = ct[0]
-        clip = seq[:ln] if op == 4 else ""
+    from ..netseq.netseq_rescue import terminal_softclip
+    clip = terminal_softclip(read, side).upper()
     if not clip:
         return 0
     return max((len(m.group()) for m in re.finditer(stop_base + "+", clip)), default=0)
@@ -131,16 +125,11 @@ def softclip_run_nt(
     """GENOME-AWARE soft-clip poly-A: junction-adjacent ``stop_base`` run in the
     RNA-3' clip MINUS the genomic ``stop_base`` run the aligner clipped at that
     junction. Only NON-templated clipped bases count."""
-    ct = read.cigartuples
-    seq = read.query_sequence
-    if not ct or not seq:
+    from ..netseq.netseq_rescue import terminal_softclip
+    clip = terminal_softclip(read, side).upper()
+    if not clip:
         return 0
-    seq = seq.upper()
     if side == RIGHT:
-        op, ln = ct[-1]
-        if op != 4:
-            return 0
-        clip = seq[len(seq) - ln:]
         m = re.match(stop_base + "+", clip)
         clip_run = len(m.group()) if m else 0
         g = read.reference_end
@@ -149,10 +138,6 @@ def softclip_run_nt(
             gr += 1
             g += 1
     else:
-        op, ln = ct[0]
-        if op != 4:
-            return 0
-        clip = seq[:ln]
         m = re.search(stop_base + "+$", clip)
         clip_run = len(m.group()) if m else 0
         g = read.reference_start - 1

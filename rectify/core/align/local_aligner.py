@@ -64,7 +64,7 @@ Date: 2026-04-11
 """
 
 import re
-from typing import List, NamedTuple, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -982,7 +982,19 @@ def evidence_shape(
     def _in_hp_run(ref_pos: int) -> bool:
         return _homopolymer_run_len(genome_seq, ref_pos)[0] >= hp_forgive_run
 
-    for op, ln in ops:
+    # ISSUE-083 (Kevin 2026-09-21): a DELETION touching the N is not charged. D and N are both
+    # reference skips — `17M2D|N` and `17M|(N+2)` place every read base identically — so the D is
+    # the aligner naming the annotated junction while the read's best alignment is shifted, not
+    # a second error event. An INSERTION beside the N is read sequence the reference lacks and
+    # keeps its full gap cost. The junction-proximal op is the LAST on '+' and the FIRST on '-'.
+    _live = [i for i, (_o, _n) in enumerate(ops) if _n]
+    _junction_d = None
+    if _live:
+        _j = _live[-1] if strand == '+' else _live[0]
+        if ops[_j][0] == _OP_D:
+            _junction_d = _j
+
+    for _idx, (op, ln) in enumerate(ops):
         if op in (_OP_M, 7, 8):
             for k in range(ln):
                 qb = q_u[qi + k] if qi + k < len(q_u) else ''
@@ -1013,6 +1025,8 @@ def evidence_shape(
             hp_pos = ref_off + ri if op == _OP_I else ref_off + ri
             if _in_hp_run(hp_pos) or (op == _OP_D and _in_hp_run(ref_off + ri + ln - 1)):
                 gap_cost /= 2.0
+            if _idx == _junction_d:
+                gap_cost = 0.0
             bits += gap_cost
             if op == _OP_I:
                 qi += ln
@@ -1021,11 +1035,12 @@ def evidence_shape(
     # Junction side: the RIGHT end for '+', the LEFT end for '-'.
     junction_first = cols[::-1] if strand == '+' else cols
     run = 0
-    for c in junction_first:
+    _absorbed = ops[_junction_d][1] if _junction_d is not None else 0
+    for _pos, c in enumerate(junction_first):
         if c == '=':
             run += 1
-        elif c == 'I':
-            continue
+        elif c == 'I' or (c == 'D' and _pos < _absorbed):
+            continue                    # the N-adjacent D is part of the skip, not a break
         else:
             break
     lead = 0
@@ -1119,3 +1134,183 @@ def align_clip_to_exon(
 
         cigar_ops, _ref_consumed = _align_left_anchored(clip_seq, ref_region)
         return cigar_ops, intron_end
+
+
+# ---------------------------------------------------------------------------
+# ISSUE-083 re-split (Kevin's verdicts on cards 083-2/3/4, 2026-09-21)
+# ---------------------------------------------------------------------------
+
+def _cut_at_ref(ops: List[Tuple[int, int]], jpos: int, ref_start: int = 0):
+    """Split reference-order *ops* at reference index *jpos* -> ``(left, right)``.
+    An M or a D that spans the junction is cut; an I sitting exactly on the
+    junction stays on the LEFT (so it is reported as junction-adjacent there)."""
+    left: List[Tuple[int, int]] = []
+    right: List[Tuple[int, int]] = []
+    r = ref_start
+    for o, n in ops:
+        if o in (_OP_M, _OP_D, 7, 8):
+            if r + n <= jpos:
+                left.append((o, n))
+            elif r >= jpos:
+                right.append((o, n))
+            else:
+                left.append((o, jpos - r))
+                right.append((o, r + n - jpos))
+            r += n
+        else:                                   # I / S consume no reference
+            (left if r <= jpos and not right else right).append((o, n))
+    return _compress(left), _compress(right)
+
+
+def _qspan(ops) -> int:
+    return sum(n for o, n in ops if o in (_OP_M, _OP_I, _OP_S, 7, 8))
+
+
+def _rspan(ops) -> int:
+    return sum(n for o, n in ops if o in (_OP_M, _OP_D, 7, 8))
+
+
+def resplit_across_junction(
+    read,
+    clip_len: int,
+    exon1_query_len: int,
+    genome_seq: str,
+    intron_start: int,
+    intron_end: int,
+    strand: str,
+    extra: int = 12,
+    tail_pad: int = 8,
+    scan: int = 60,
+) -> Optional[Dict[str, Any]]:
+    """Align the read's 5' segment ACROSS the candidate junction with the production
+    anchored aligner, instead of at 2F's fixed split.
+
+    2F aligns the clip to exon 1 with the junction-side end fixed and lays the bases
+    that follow the junction (the exon-2 prefix, plus any body head) down without
+    gaps at a fixed split. When a base that belongs to exon 1 is assigned to exon 2
+    the block can only close with a deletion beside the N, followed by mismatches
+    on exon 2 (ISSUE-083 cards 083-2/3/4; 20 of 63 rescued Sumner reads, 202 vs 19
+    exon-2 mismatches on the chr5 cohort). Here the read's 5' segment up to an
+    ANCHOR — an aligned body base at least *extra* bases past the clip whose
+    reference position lies in exon 2, before the body's first N — is aligned to
+    the spliced reference ``exon-1 tail (exon1_query_len + tail_pad) + exon-2 head
+    up to the anchor``. The junction is an interior point of that reference, so the
+    aligner is free to put every base on either side of it; the result is cut at
+    the junction.
+
+    *read* is the ORIGINAL record (its 5' soft clip of *clip_len* still in place;
+    BAM orientation, so the minus strand's 5' end is the trailing S). Returns
+    ``None`` when the clip is not the live 5' S, no anchor exists, or the alignment
+    does not reach exon 1; otherwise a dict with ``exon1_ops`` / ``exon2_ops``
+    (reference order, M/I/D/S; a free-end I is emitted as S), ``exon1_seq`` /
+    ``exon2_seq`` (their query bases), ``body_replaced_query`` (body query bases
+    the exon-2 head replaces: ``qspan(exon1) + qspan(exon2) - clip_len``),
+    ``body_replaced_ref``, ``anchor_query`` and ``anchor_ref``. Two invariants are
+    asserted: the query is conserved, and the exon-2 head's reference span ends
+    exactly at the anchor (so the writer's N still runs intron_start..intron_end).
+    """
+    cig = list(read.cigartuples or [])
+    seq = (read.query_sequence or '').upper()
+    if not cig or not seq or clip_len <= 0 or read.reference_start is None:
+        return None
+    if strand == '+':
+        i = 0
+        while i < len(cig) and cig[i][0] == 5:
+            i += 1
+        if i >= len(cig) or cig[i][0] != _OP_S or cig[i][1] != clip_len:
+            return None
+        S = clip_len
+        q, r = S, read.reference_start
+        anchor = None
+        for o, n in cig[i + 1:]:
+            if o == 3:                                   # never align across a second junction
+                break
+            if o in (_OP_M, 7, 8):
+                for k in range(n):
+                    if q + k >= S + extra and r + k >= intron_end:
+                        anchor = (q + k, r + k)
+                        break
+                if anchor:
+                    break
+                q += n
+                r += n
+            elif o == _OP_D:
+                r += n
+            elif o in (_OP_I, _OP_S):
+                q += n
+            if q > S + extra + scan:
+                break
+        if anchor is None:
+            return None
+        a_q, a_r = anchor
+        L = min(exon1_query_len + tail_pad, intron_start)
+        if L <= 0 or a_r < intron_end:
+            return None
+        qseg = seq[:a_q]
+        ref = genome_seq[intron_start - L:intron_start].upper() + genome_seq[intron_end:a_r].upper()
+        ops, skip = _align_right_anchored(qseg, ref)
+        ops = [(_OP_S, n) if (j == 0 and o == _OP_I) else (o, n) for j, (o, n) in enumerate(ops)]
+        if not ops or skip >= L:                         # the alignment never reaches exon 1
+            return None
+        exon1, exon2 = _cut_at_ref(ops, L, ref_start=skip)
+        q1, q2 = _qspan(exon1), _qspan(exon2)
+        if q1 + q2 != a_q or _rspan(exon2) != a_r - intron_end or not exon1:
+            return None
+        return {
+            'exon1_ops': exon1, 'exon2_ops': exon2, 'exon1_seq': qseg[:q1], 'exon2_seq': qseg[q1:],
+            'body_replaced_query': a_q - S, 'body_replaced_ref': a_r - read.reference_start,
+            'anchor_query': a_q, 'anchor_ref': a_r,
+        }
+    # minus strand: the 5' end is the trailing S; the body precedes it in BAM order
+    j = len(cig) - 1
+    while j >= 0 and cig[j][0] == 5:
+        j -= 1
+    if j < 0 or cig[j][0] != _OP_S or cig[j][1] != clip_len:
+        return None
+    S = clip_len
+    qlen = len(seq)
+    s_start = qlen - S                                   # query index where the clip begins
+    if read.reference_end is None:
+        return None
+    q, r = s_start - 1, read.reference_end - 1           # last body query index / reference position
+    anchor = None
+    for o, n in reversed(cig[:j]):
+        if o == 3:
+            break
+        if o in (_OP_M, 7, 8):
+            for k in range(n):
+                if q - k <= s_start - 1 - extra and r - k < intron_start:
+                    anchor = (q - k, r - k)
+                    break
+            if anchor:
+                break
+            q -= n
+            r -= n
+        elif o == _OP_D:
+            r -= n
+        elif o in (_OP_I, _OP_S):
+            q -= n
+        if q < s_start - 1 - extra - scan:
+            break
+    if anchor is None:
+        return None
+    a_q, a_r = anchor
+    L = min(exon1_query_len + tail_pad, len(genome_seq) - intron_end)
+    if L <= 0 or a_r >= intron_start:
+        return None
+    qseg = seq[a_q + 1:]
+    exon2_ref_len = intron_start - (a_r + 1)
+    ref = genome_seq[a_r + 1:intron_start].upper() + genome_seq[intron_end:intron_end + L].upper()
+    ops, consumed = _align_left_anchored(qseg, ref)
+    ops = [(_OP_S, n) if (j2 == len(ops) - 1 and o == _OP_I) else (o, n) for j2, (o, n) in enumerate(ops)]
+    if not ops or consumed <= exon2_ref_len:             # the alignment never reaches exon 1
+        return None
+    exon2, exon1 = _cut_at_ref(ops, exon2_ref_len, ref_start=0)
+    q1, q2 = _qspan(exon1), _qspan(exon2)
+    if q1 + q2 != len(qseg) or _rspan(exon2) != exon2_ref_len or not exon1:
+        return None
+    return {
+        'exon1_ops': exon1, 'exon2_ops': exon2, 'exon1_seq': qseg[q2:], 'exon2_seq': qseg[:q2],
+        'body_replaced_query': (s_start - 1) - a_q, 'body_replaced_ref': (read.reference_end - 1) - a_r,
+        'anchor_query': a_q, 'anchor_ref': a_r,
+    }

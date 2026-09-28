@@ -67,6 +67,31 @@ from .loaders import (
 from .exclusions import _detect_exclusion_regions
 
 
+def _tss_position_counts(tsv_path, chrom_format, excluded_chroms=(), *, header=None):
+    """Stream weighted TSS positions independently of the CPA-only index."""
+    from ...utils.chromosome import normalize_chromosome
+
+    if header is None:
+        header = pd.read_csv(tsv_path, sep='\t', nrows=0)
+    if 'five_prime_position' not in header.columns:
+        return
+    columns = ['chrom', 'strand', 'five_prime_position']
+    has_fraction = 'fraction' in header.columns
+    if has_fraction:
+        columns.append('fraction')
+    for chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=columns):
+        chunk = chunk.dropna(subset=['five_prime_position']).copy()
+        if chunk.empty:
+            continue
+        chunk['chrom'] = chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
+        chunk['five_prime_position'] = chunk['five_prime_position'].astype(int)
+        if excluded_chroms:
+            chunk = chunk[~chunk['chrom'].isin(excluded_chroms)]
+        grouped = chunk.groupby(['chrom', 'strand', 'five_prime_position'], sort=False)
+        counts = grouped['fraction'].sum() if has_fraction else grouped.size()
+        yield from counts.items()
+
+
 def _build_cluster_gene_attribution_table(
     args,
     *,
@@ -264,7 +289,8 @@ def _run_analyze_manifest(
         # downstream filtering (e.g. DRS-based orthogonal voting).
         _agg = defaultdict(lambda: [0.0, 0.0])
         _n_ag_rich = 0
-        for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols):
+        for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols,
+                                  dtype={'qc_flags': 'string'} if _has_qc else None):
             _validate_corrected_position_columns(_chunk)
             if _has_qc:
                 _ag_mask = _chunk['qc_flags'].str.contains('AG_RICH', na=False)
@@ -434,25 +460,16 @@ def _run_analyze_manifest(
     for s in samples:
         sample_id = s['sample_id']
         tsv_path = s['path']
+        # Read the header outside the recoverable aggregation block: a
+        # missing source must still fail, including beside an orphan index.
         _header = pd.read_csv(tsv_path, sep='\t', nrows=0)
         if 'five_prime_position' not in _header.columns:
             continue
-        _usecols_tss = ['chrom', 'strand', 'five_prime_position']
         try:
-            for _chunk in pd.read_csv(tsv_path, sep='\t', chunksize=100_000, usecols=_usecols_tss):
-                _chunk = _chunk.dropna(subset=['five_prime_position'])
-                if _chunk.empty:
-                    continue
-                _chunk['chrom'] = _chunk['chrom'].map(lambda x: normalize_chromosome(x, chrom_format))
-                _chunk['five_prime_position'] = _chunk['five_prime_position'].astype(int)
-                # Apply mito/rDNA exclusion if available
-                if exclude_mito and mito_chroms:
-                    _chunk = _chunk[~_chunk['chrom'].isin(mito_chroms)]
-                for (chrom, strand, pos), cnt in (
-                    _chunk.groupby(['chrom', 'strand', 'five_prime_position'], sort=False)
-                    .size().items()
-                ):
-                    tss_agg_dict[(chrom, strand, pos)] += float(cnt)
+            for key, cnt in _tss_position_counts(
+                tsv_path, chrom_format, mito_chroms if exclude_mito else (), header=_header
+            ):
+                tss_agg_dict[key] += float(cnt)
         except Exception as _tss_agg_exc:
             print(f"  WARNING: TSS aggregation failed for {sample_id}: {_tss_agg_exc}")
 
@@ -576,7 +593,13 @@ def _run_analyze_manifest(
                 _bedgraph_acc[_condition][row.strand][row.chrom][int(row.corrected_position)] += float(row.count)
                 _condition_totals[_condition] += float(row.count)
             print(f"  {sample_id}: {_idx_assigned:,.0f}/{_idx_total:,.0f} reads assigned to clusters (index)")
-            # TSS: not available from index — will be handled by full-TSV path below if no index
+            # The compact index stores CPA only. Stream TSS columns from the
+            # unchanged source without counting CPA/bedgraph mass a second time.
+            if tss_lookup is not None:
+                for (chrom, strand, pos), weight in _tss_position_counts(tsv_path, chrom_format):
+                    tcid = tss_lookup(chrom, strand, int(pos))
+                    if tcid is not None:
+                        tss_count_accumulator[tcid][sample_id] += float(weight)
             continue
 
         # Stream full TSV — load all needed columns in one pass
@@ -628,12 +651,13 @@ def _run_analyze_manifest(
             # TSS cluster assignment
             if _has_tss and tss_lookup is not None:
                 _tss_chunk = _chunk.dropna(subset=['five_prime_position'])
-                for chrom, strand, pos in zip(
-                    _tss_chunk['chrom'], _tss_chunk['strand'], _tss_chunk['five_prime_position']
+                _tss_weights = _tss_chunk['fraction'] if _has_fraction else [1.0] * len(_tss_chunk)
+                for chrom, strand, pos, weight in zip(
+                    _tss_chunk['chrom'], _tss_chunk['strand'], _tss_chunk['five_prime_position'], _tss_weights
                 ):
                     tcid = tss_lookup(chrom, strand, int(pos))
                     if tcid is not None:
-                        tss_count_accumulator[tcid][sample_id] += 1.0
+                        tss_count_accumulator[tcid][sample_id] += float(weight)
 
         print(f"  {sample_id}: {n_assigned:,} reads assigned to clusters")
 
@@ -881,7 +905,6 @@ def _run_analyze_manifest(
             reference_condition = extract_condition_from_sample(sample_names[0])
 
     sample_metadata = create_sample_metadata(sample_names, control_samples if not args.reference else None)
-    sample_metadata.to_csv(output_dir / 'sample_metadata.tsv', sep='\t')
 
     # If manifest has a condition column, use it to override auto-detected conditions
     if 'condition' in manifest_df.columns:
@@ -904,6 +927,9 @@ def _run_analyze_manifest(
                 print(f"  Reference condition from manifest: {reference_condition}")
             else:
                 reference_condition = _manifest_conditions[0]
+
+    # Export the same final conditions that the downstream analysis consumes.
+    sample_metadata.to_csv(output_dir / 'sample_metadata.tsv', sep='\t')
 
     # PCA
     print(f"\n[4/9] Running PCA analysis...")

@@ -76,6 +76,9 @@ def test_the_vanished_reads_draw_again(monkeypatch):
     # fb0cdd4e by the indel-burden bound (a terminal-peel refusal, carried to the TSV). The tester's TP/FP classes
     # are the 6485226 baseline's labels, not adjudicated verdicts; the seven TP misses are the true-positive cost of
     # the operating point, reported with their bits in ISSUE-028 for Kevin's choice.
+    # The re-split is built behind RECTIFY_2F_RESPLIT (default off until Kevin has judged the census of the
+    # reads it changes); this test pins his verdicts, so it runs with the switch on. Drop this line at default-on.
+    monkeypatch.setenv('RECTIFY_2F_RESPLIT', '1')
     table = SB.load_bundle('f53d770')
     not_drawn, tokens, bits = [], {}, {}
     n_vanished = 0
@@ -98,23 +101,56 @@ def test_the_vanished_reads_draw_again(monkeypatch):
     # a ruling (his rule for 2H is "never a D next to an N"); not refused here until he rules.
     # 638af58a's 50.5-bit Case-3 block carries a single 9-base deletion: refused by the provisional
     # E_MAX_GAP bound (`exon_gap_above_max`) — a 9D inside a placed block is a misplacement, not ONT error.
-    assert not_drawn == ['166079f3', '1d178d6e', '38722d08', '3fe6a57e', '41dc7d0b', '5cef5ebb',
-                         '5cef5ebb#2', '638af58a', '9152ed9b', '923d7ffe', '923d7ffe#2', 'a0fe8afe', 'ac5225e1',
-                         'beab8d72', 'c5d1c111', 'c5d1c111#2', 'ea0a56cb', 'fb0cdd4e'], (not_drawn, tokens)
+    #
+    # ISSUE-083 (Kevin's ruling 2026-09-21, then his verdicts on review cards 083-1..083-5 the same day, all
+    # Agree): a deletion beside an ANNOTATED N is not a refusal and is not charged. At 684bbb5 that let ea0a56cb
+    # (`1M2I7M1D`, 13.0 bits) and ac5225e1 (`4S6M3D`, 12.0 bits on SIX matched bases) draw. The cards showed
+    # that ea0a56cb's deletion is made by 2F's fixed split, not by the read: the production aligner run ACROSS the
+    # junction gives `1M2I8M | N | 1M1D…` (the missing base is a T of exon 2's TTTT run) at 15.0 bits with every
+    # gap charged. Kevin: draw it that way. ac5225e1 has no such alignment (7.0 bits after the same re-split) and
+    # stays clipped (card 083-1). So ea0a56cb DRAWS and ac5225e1 does NOT; the free-deletion tip draws both, and
+    # this test is red until the re-split lands (the takeover handoff of 2026-09-21, step 6).
+    # The re-split (RECTIFY_2F_RESPLIT, built 2026-09-21 evening) also draws three reads the fixed split had
+    # refused under the floor, all at the annotated junction: 3fe6a57e (`4M1D6M`, 13.5 bits; a baseline true
+    # positive the tip refused at 10.0), 9152ed9b (`1M1I8M1D2M`, 13.0) and beab8d72 (`8M`, 12.0, exactly on the
+    # floor). They are NOT verdicts: they go on Kevin's queue with the census of every read the re-split changes
+    # (handoff 2026-09-21b); this test pins them as the switch's current behaviour so a move either way shows.
+    assert not_drawn == ['166079f3', '1d178d6e', '38722d08', '41dc7d0b', '5cef5ebb',
+                         '5cef5ebb#2', '638af58a', '923d7ffe', '923d7ffe#2', 'a0fe8afe', 'ac5225e1',
+                         'c5d1c111', 'c5d1c111#2', 'fb0cdd4e'], (not_drawn, tokens)
     assert tokens['638af58a'] == 'exon_gap_above_max', tokens
     assert tokens['c5d1c111'] in ('novel_exon_matched_below_floor', 'exon_bits_below_floor'), tokens   # the last block judged
-    assert tokens['fb0cdd4e'] == 'annotated_exon_indel_burden', tokens   # a terminal-peel refusal, carried to the TSV
+    # fb0cdd4e / 1d178d6e stay refused; under the re-split the block judged last is the re-split's, so the reason
+    # moves between the burden bound and the bits floor (both are placement refusals; neither read draws).
+    assert tokens['fb0cdd4e'] in ('annotated_exon_indel_burden', 'exon_bits_below_floor'), tokens
+    assert tokens['1d178d6e'] in ('annotated_exon_indel_burden', 'exon_bits_below_floor'), tokens
     assert tokens['923d7ffe'] == 'exon_identity_below_floor', tokens
-    assert tokens['9152ed9b'] == 'exon_bits_below_floor', tokens          # the peel discarded; Case 3's block judged last
-    for k in ('166079f3', '1d178d6e', '3fe6a57e', '41dc7d0b', 'a0fe8afe', 'ac5225e1', 'beab8d72', 'ea0a56cb'):
+    for k in ('166079f3', '41dc7d0b', 'a0fe8afe', 'ac5225e1'):
         assert tokens[k] == 'exon_bits_below_floor', (k, tokens[k])
-        # the TSV carries the LAST block judged (a discarded peel's or Case 3's), so ea0a56cb reads 12.5 here
-        # while its placeable (prefix-trimmed) block is 10.5 — below the attachment tier; all < 18
+        # the TSV carries the LAST block judged (a discarded peel's or Case 3's); all < 18
         assert bits[k] is not None and bits[k] < 18, (k, bits[k])
+    for k, cig, b in (('3fe6a57e', '4M1D6M', 13.5), ('9152ed9b', '1M1I8M1D2M', 13.0), ('beab8d72', '8M', 12.0)):
+        row_k, res_k, rec_k, stock_k = SB.replay(table[k], monkeypatch)
+        assert res_k.get('rescued') and row_k['five_prime_rescue_refused'] == '' and SB.new_nops(rec_k, stock_k), k
+        assert row_k['five_prime_exon_cigar'] == cig and row_k['five_prime_exon_bits'] == b, (k, row_k['five_prime_exon_cigar'], row_k['five_prime_exon_bits'])
+        assert row_k.get('five_prime_exon2_cigar'), (k, 'the exon-2 head must be an explicit CIGAR, never a flat kM')
+    # ea0a56cb draws at the annotated TMSB4X junction (card 083-2), and the record it draws must not carry an
+    # I/D touching that N: the re-split form `…8M | 1077N | 1M1D…`, never `…7M1D | N | 2X…`.
+    row, res, rec, stock = SB.replay(table['ea0a56cb'], monkeypatch)
+    assert res.get('rescued') and row['five_prime_rescue_refused'] == '', (row['five_prime_rescue_refused'], row)
+    new_n = SB.new_nops(rec, stock)
+    assert new_n, rec.cigarstring
+    ops = rec.cigartuples
+    k_n = [i for i, (o, n) in enumerate(ops) if o == 3 and (rec.reference_start + sum(
+        m for oo, m in ops[:i] if oo in (0, 2, 3, 7, 8)), rec.reference_start + sum(
+        m for oo, m in ops[:i] if oo in (0, 2, 3, 7, 8)) + n) == tuple(new_n[0])][0]
+    assert ops[k_n - 1][0] not in (1, 2) and ops[k_n + 1][0] not in (1, 2), (rec.cigarstring, 'I/D touching the N')
     for k in ('c5d1c111', 'ac5225e1', 'fb0cdd4e'):
         assert 'VANISHED_FP_added_nov' in table[k]['classes'], (k, table[k]['classes'])
+    # Under the re-split two more baseline true positives draw (3fe6a57e, beab8d72) and one baseline
+    # false positive (9152ed9b, 13.0 bits at the annotated site); all three are on Kevin's queue.
     tp_not_drawn = [k for k in not_drawn if 'VANISHED_TP_rescue_annot' in table[k]['classes']]
-    assert tp_not_drawn == ['166079f3', '38722d08', '3fe6a57e', 'beab8d72', 'ea0a56cb'], tp_not_drawn
+    assert tp_not_drawn == ['166079f3', '38722d08'], tp_not_drawn
     fp_drawn = [k for k, e in sorted(table.items())
                 if 'VANISHED_FP_added_nov' in e['classes'] and k not in not_drawn]
-    assert fp_drawn == ['844834e8', '890d2242', '890d2242#2'], fp_drawn
+    assert fp_drawn == ['844834e8', '890d2242', '890d2242#2', '9152ed9b'], fp_drawn

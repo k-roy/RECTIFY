@@ -227,6 +227,9 @@ def extract_alignment_info(
     """
     from ..polya.atract_detector import calculate_atract_ambiguity
     from .scoring import _get_effective_5prime_clip, _get_effective_3prime_clip, _count_junction_proximity_errors
+    from .sequence import decoded_alignment_copy
+
+    read = decoded_alignment_copy(read, genome)
 
     junctions = extract_junctions_from_cigar(read)
     five_clip, three_clip = get_softclip_lengths(read)

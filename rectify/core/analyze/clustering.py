@@ -78,7 +78,7 @@ def _cluster_chrom_strand_group(args):
             'modal_position': modal_position,
             'cluster_com': cluster_com,
             'n_positions': len(cluster_positions),
-            'n_reads': int(total_reads),
+            'n_reads': float(total_reads),
         })
         local_id += 1
 
@@ -272,7 +272,7 @@ def cluster_cpa_sites_adaptive(
                 'modal_position': int(peak_pos),
                 'cluster_com': cluster_com,
                 'n_positions': len(cluster_positions),
-                'n_reads': int(total_reads),
+                'n_reads': float(total_reads),
                 'cluster_width': int(right_bound - left_bound + 1),
             })
             cluster_id += 1
