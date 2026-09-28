@@ -20,7 +20,8 @@ Author: Kevin R. Roy
 Date: 2026-03-09
 """
 
-from typing import Dict, Optional, Tuple
+from collections import Counter
+from typing import Dict, List, Optional, Tuple
 import copy
 from contextlib import contextmanager, ExitStack
 import logging
@@ -28,6 +29,7 @@ import os
 import tempfile
 import pysam
 
+from ...utils.alignment import parse_junctions_string
 from ...utils.genome import get_chrom_sequence
 from .alignment_tags import (
     decode_original_sequence, finalize_alignment_tags, placement_state,
@@ -138,6 +140,10 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
             i_sb_app   = hdr.index('station_b_applied')           if 'station_b_applied'          in hdr else -1
             i_sb_is    = hdr.index('station_b_intron_start')      if 'station_b_intron_start'     in hdr else -1
             i_sb_ie    = hdr.index('station_b_intron_end')        if 'station_b_intron_end'       in hdr else -1
+            # Writer audit: what the TSV CLAIMS the record will show. None = column absent (older
+            # schema), which skips that half of the audit rather than inventing a claim.
+            i_5p_ref   = hdr.index('five_prime_rescue_refused')   if 'five_prime_rescue_refused'  in hdr else -1
+            i_junc     = hdr.index('junctions')                   if 'junctions'                  in hdr else -1
 
             for line in _f:
                 parts = line.rstrip('\n').split('\t')
@@ -175,6 +181,8 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                 sb_app  = 1 if (i_sb_app >= 0 and len(parts) > i_sb_app and parts[i_sb_app] == '1') else 0
                 sb_is   = parts[i_sb_is] if i_sb_is >= 0 and len(parts) > i_sb_is else ''
                 sb_ie   = parts[i_sb_ie] if i_sb_ie >= 0 and len(parts) > i_sb_ie else ''
+                tsv_5p_ref = parts[i_5p_ref] if i_5p_ref >= 0 and len(parts) > i_5p_ref else None
+                tsv_junc   = parts[i_junc] if i_junc >= 0 and len(parts) > i_junc else None
 
                 corrections[rid] = {
                     # Old TSVs keep the legacy tail behavior. New fragmented
@@ -206,6 +214,8 @@ def _load_corrections_from_single_tsv(corrected_tsv_path: str) -> Dict[str, dict
                     'station_b_applied':          sb_app,
                     'station_b_intron_start':     sb_is,
                     'station_b_intron_end':       sb_ie,
+                    'tsv_five_prime_rescue_refused': tsv_5p_ref,
+                    'tsv_junctions':              tsv_junc,
                 }
     except OSError as exc:
         raise OSError(
@@ -755,8 +765,12 @@ def project_station_b_placement(read, correction, genome=None):
 
 
 def _apply_shared_corrected_edits(read, correction, genome):
-    """The same 5' and body edits for single/dual, hard/soft output."""
-    modified, _ = _apply_5prime_edits(read, correction, genome)
+    """The same 5' and body edits for single/dual, hard/soft output.
+
+    Returns ``(modified, five_prime_refusal)``: the refusal is what the writer
+    ACTUALLY did with the row's 5' rescue, for :func:`audit_written_record`.
+    """
+    modified, refusal = _apply_5prime_edits(read, correction, genome)
     # Search used the original aligner record. Re-derive the N/I coordinates
     # here after 2F; successful draws alone receive Xb provenance.
     modified |= apply_station_b_microexons(read, correction)
@@ -765,13 +779,91 @@ def _apply_shared_corrected_edits(read, correction, genome):
     origin = correction.get('five_prime_clip_origin') or ''
     if origin:
         read.set_tag('Xo', origin)
-    return modified
+    return modified, refusal
+
+
+# --- Writer audit: does the emitted record back its TSV row? -----------------
+# The corrected TSV is written a pipeline stage before any writer runs.
+# predict_5prime_rescue_refusal keeps the row's 5' verdict self-consistent WHEN
+# the writer replays the same read with the same row, and nothing checked that
+# it did: the first ISSUE-083 re-split census lost 63 junctions that way (the
+# writer's row lacked a column, the rescue fell to the reroute branch, the TSV
+# kept the junction and advertised no refusal). A 3' walkback that clips away a
+# terminal exon likewise leaves the TSV listing a junction the record no longer
+# carries (ISSUE-085). Every disagreement is tagged on the record, counted, and
+# summarized as a WARNING by the writer that emitted it.
+WRITER_AUDIT_TAG = 'Xh'
+_WRITER_AUDIT: Counter = Counter()
+_WRITER_AUDIT_EXAMPLES: Dict[str, List[str]] = {}
+_WRITER_AUDIT_EXAMPLES_PER_KIND = 5
+
+
+def audit_written_record(read: pysam.AlignedSegment, correction: Dict,
+                         five_prime_refusal: str, count: bool = True) -> List[str]:
+    """Tokens naming every way *read*, after all writer edits, contradicts its TSV row.
+
+    ``5p:<tsv>><bam>``  the row claims a 5' rescue whose writer verdict differs
+                        from the TSV's ``five_prime_rescue_refused`` ('-' = none)
+    ``jx-:<s>-<e>``     a TSV junction the record does not carry
+    ``jx+:<s>-<e>``     an N op on the record the TSV does not list
+
+    Tagged ``Xh:Z`` (tokens joined by ';'); a stale tag from an earlier pass is
+    removed when the record agrees. A row loaded from a TSV without the audited
+    column (older schema) is not audited for it. ``count=False`` tags without
+    counting (the second record of a dual write).
+    """
+    tokens: List[str] = []
+    tsv_ref = correction.get('tsv_five_prime_rescue_refused')
+    if (tsv_ref is not None and correction.get('five_prime_rescued')
+            and (five_prime_refusal or '') != tsv_ref):
+        tokens.append('5p:%s>%s' % (tsv_ref or '-', five_prime_refusal or '-'))
+    tsv_junctions = correction.get('tsv_junctions')
+    if tsv_junctions is not None:
+        claimed = set(parse_junctions_string(tsv_junctions))
+        carried = set(_n_op_intervals(read))
+        tokens += ['jx-:%d-%d' % j for j in sorted(claimed - carried)]
+        tokens += ['jx+:%d-%d' % j for j in sorted(carried - claimed)]
+    if tokens:
+        read.set_tag(WRITER_AUDIT_TAG, ';'.join(tokens), value_type='Z')
+        if count:
+            _WRITER_AUDIT['records'] += 1
+            for kind in sorted({t.split(':', 1)[0] for t in tokens}):
+                _WRITER_AUDIT[kind] += 1
+                examples = _WRITER_AUDIT_EXAMPLES.setdefault(kind, [])
+                if len(examples) < _WRITER_AUDIT_EXAMPLES_PER_KIND:
+                    examples.append(read.query_name)
+    elif read.has_tag(WRITER_AUDIT_TAG):
+        read.set_tag(WRITER_AUDIT_TAG, None)
+    return tokens
+
+
+def report_writer_audit(where: str, log: bool = True) -> Dict[str, int]:
+    """WARN about, then reset, the disagreements counted since the last report.
+
+    Returns the counts (``records`` plus one entry per token kind) so a writer
+    can put them in its stats. ``log=False`` only resets (a parallel region
+    worker, whose parent reports the total once).
+    """
+    counts = dict(_WRITER_AUDIT)
+    if log and counts.get('records'):
+        logger.warning(
+            "%s: %d written record(s) do NOT match their corrected-TSV row "
+            "(tagged %s): %s. Examples: %s",
+            where, counts['records'], WRITER_AUDIT_TAG,
+            ', '.join('%s %d' % (k, v) for k, v in sorted(counts.items()) if k != 'records'),
+            '; '.join('%s %s' % (k, ','.join(v))
+                      for k, v in sorted(_WRITER_AUDIT_EXAMPLES.items())),
+        )
+    _WRITER_AUDIT.clear()
+    _WRITER_AUDIT_EXAMPLES.clear()
+    return counts
 
 
 def apply_corrected_edits_to_read(
     read: pysam.AlignedSegment,
     correction: Optional[Dict],
     genome: Optional[Dict[str, str]] = None,
+    audit: bool = False,
 ) -> bool:
     """Apply the canonical hard-clipped corrected-BAM edits to one read.
 
@@ -782,6 +874,9 @@ def apply_corrected_edits_to_read(
     Returns True when correction surgery changed the alignment/CIGAR.  Decoding
     SAM-spec ``=`` shorthand in SEQ is intentionally not counted as "modified",
     preserving the legacy writer's clipped/unchanged statistics.
+
+    ``audit=True`` (writers, never scoring copies) runs :func:`audit_written_record`
+    on the final record.
     """
     if read.is_unmapped or read.is_secondary or read.is_supplementary:
         return False
@@ -793,7 +888,7 @@ def apply_corrected_edits_to_read(
 
     _decode_eq_seq_inplace(read, genome)
     before = placement_state(read)
-    modified = _apply_shared_corrected_edits(read, correction, genome)
+    modified, five_prime_refusal = _apply_shared_corrected_edits(read, correction, genome)
 
     # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
     if correction.get('sc_rescued_seq'):
@@ -827,6 +922,8 @@ def apply_corrected_edits_to_read(
 
     # Tag the final corrected 3' end so it is visible in IGV / samtools view.
     read.set_tag('cp', correction['corrected_3prime'])
+    if audit:
+        audit_written_record(read, correction, five_prime_refusal)
     finalize_alignment_tags(read, before, genome)
     return modified
 
@@ -882,13 +979,14 @@ def write_corrected_bam(
             correction = None
             if not (read.is_unmapped or read.is_secondary or read.is_supplementary):
                 correction = corrections.get(read.query_name)
-            modified = apply_corrected_edits_to_read(read, correction, genome)
+            modified = apply_corrected_edits_to_read(read, correction, genome, audit=True)
             bam_out.write(read)
             if modified:
                 stats['clipped'] += 1
             else:
                 stats['unchanged'] += 1
 
+    stats['tsv_bam_disagree'] = report_writer_audit('write_corrected_bam').get('records', 0)
     return stats
 
 
@@ -938,7 +1036,7 @@ def write_softclipped_bam(
 
             _decode_eq_seq_inplace(read, genome)
             before = placement_state(read)
-            modified = _apply_shared_corrected_edits(read, correction, genome)
+            modified, five_prime_refusal = _apply_shared_corrected_edits(read, correction, genome)
 
             # Cat2 soft-clip rescue: extend 3' alignment outward into homopolymer.
             if correction.get('sc_rescued_seq'):
@@ -970,6 +1068,7 @@ def write_softclipped_bam(
             )
 
             read.set_tag('cp', correction['corrected_3prime'])
+            audit_written_record(read, correction, five_prime_refusal)
             finalize_alignment_tags(read, before, genome)
 
             bam_out.write(read)
@@ -978,6 +1077,7 @@ def write_softclipped_bam(
             else:
                 stats['unchanged'] += 1
 
+    stats['tsv_bam_disagree'] = report_writer_audit('write_softclipped_bam').get('records', 0)
     return stats
 
 
@@ -1057,7 +1157,7 @@ def write_dual_bam(
 
             _decode_eq_seq_inplace(read, genome)
             before = placement_state(read)
-            shared_modified = _apply_shared_corrected_edits(read, correction, genome)
+            shared_modified, five_prime_refusal = _apply_shared_corrected_edits(read, correction, genome)
 
             # Snapshot every SAM field, including typed array tags, before the
             # 3' modes diverge. Restoring tags through explicit B type tuples is
@@ -1093,6 +1193,7 @@ def write_dual_bam(
             if correction.get('tail_correction_enabled', True):
                 hc_modified |= _hardclip_trailing_a_run(read, correction['strand'])
             read.set_tag('cp', correction['corrected_3prime'])
+            audit_written_record(read, correction, five_prime_refusal)
             finalize_alignment_tags(read, before, genome)
             bam_hc.write(read)
             if hc_modified:
@@ -1127,6 +1228,8 @@ def write_dual_bam(
                 read, correction['corrected_3prime'], correction['strand']
             )
             read.set_tag('cp', correction['corrected_3prime'])
+            # Tagged, not counted again: the hardclip record above already was.
+            audit_written_record(read, correction, five_prime_refusal, count=False)
             finalize_alignment_tags(read, before, genome)
             bam_sc.write(read)
             if sc_modified:
@@ -1134,6 +1237,7 @@ def write_dual_bam(
             else:
                 sc_stats['unchanged'] += 1
 
+    hc_stats['tsv_bam_disagree'] = report_writer_audit('write_dual_bam').get('records', 0)
     return hc_stats, sc_stats
 
 

@@ -1444,12 +1444,14 @@ Support modules called by `bam_processor`:
 | `core/splice/junction_refiner.py` | Module 2H: N-op refinement, HP-aware scoring |
 | `core/correct/indel_corrector.py` | Module 2C/2E: walk-back, A-tract, poly(A) boundary |
 | `core/splice/false_junction_filter.py` | Module FJF: poly(A) artifact junction detection |
-| `core/bam/bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue |
+| `core/bam/bam_writer.py` | CIGAR surgery for Cat3 extension, intronic tail clipping, 3' soft-clip rescue; the writer audit (`Xh`, below) |
 | `core/align/local_aligner.py` | Semi-global NW (Gotoh affine gap) for Cat3 exon CIGAR |
 | `core/polya/atract_detector.py` | A-tract ambiguity calculation (genome-only, used pre-consensus) |
 | `core/correct/walkback.py` | Read-vs-reference 3' walkback core + DRS wrapper (`walkback_drs`) |
 | `core/correct/protocols/quantseq_rev.py` | QuantSeq REV walkback wrapper (3'=left, inverted strand) |
 | `core/commands/cdna_correct_command.py` | ONT cDNA pipeline: UMI → clustering → consensus → isoform typing |
+
+**Writer audit (`Xh:Z`).** The corrected TSV is written a stage before any BAM writer runs, so every writer (hard, soft, dual, parallel, and run-all's final `corrected_consensus` BAM) checks each record it emits against the row it replayed. A record whose N ops or 5′ rescue verdict contradict the row is tagged `Xh` with `;`-joined tokens: `5p:<tsv>><bam>` (the row's `five_prime_rescue_refused` vs the writer's actual verdict, `-` = none), `jx-:<start>-<end>` (a junction the TSV lists that the record lacks) and `jx+:<start>-<end>` (an N op the TSV does not list), 0-based half-open. Each writer counts them (`tsv_bam_disagree` in its stats) and logs one WARNING with examples. A known source of `jx-` is a 3′ walkback that clips away a terminal exon: the TSV's `junctions` column is not yet recomputed after the 3′ clip. Rows from a TSV without the audited columns are not audited.
 
 ---
 

@@ -92,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     statistics keep the requested CPU budget; `sample_metadata.tsv` is written after the manifest's
     explicit conditions are applied.
 
+- **Every BAM writer now audits what it emits against the corrected-TSV row it replayed.** A record whose N ops or 5′ rescue verdict contradict the row gets an `Xh:Z` tag (`5p:<tsv>><bam>`, `jx-:<s>-<e>`, `jx+:<s>-<e>`), a count in the writer's stats (`tsv_bam_disagree`) and a WARNING summary, in the hard, soft, dual and parallel writers and in run-all's final corrected-consensus BAM. Before, the TSV could advertise a junction the BAM did not carry with nothing said: the first ISSUE-083 re-split census lost 63 junctions that way. On the 1,000-read human DRS smoke it tags exactly one record, a 3′ walkback that clipped away a terminal exon while the TSV still lists its junction (`tests/test_writer_tsv_bam_audit.py`).
+
 ### Changed
 
 - **Two conservative placement repairs are ON by default.** Neither has had the read-level review

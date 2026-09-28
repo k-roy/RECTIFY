@@ -505,7 +505,7 @@ def write_corrected_consensus_bam(
                                 f"from aligner {aligner}"
                             )
                         continue
-                    apply_corrected_edits_to_read(read, correction, genome)
+                    apply_corrected_edits_to_read(read, correction, genome, audit=True)
                     out_bam.write(read)
                     written_ids.add(read_id)
                     stats['written'] += 1
@@ -526,6 +526,9 @@ def write_corrected_consensus_bam(
                 f"examples: {sample}"
             )
 
+    from rectify.core.bam.bam_writer import report_writer_audit
+    stats['tsv_bam_disagree'] = report_writer_audit(
+        'write_corrected_consensus_bam').get('records', 0)
     logger.info(
         "write_corrected_consensus_bam: requested=%d written=%d -> %s",
         stats['requested'],

@@ -39,7 +39,9 @@ from typing import Dict, List, Optional, Tuple
 import pysam
 
 from .bam_writer import (
+    WRITER_AUDIT_TAG,
     apply_corrected_edits_to_read,
+    report_writer_audit,
     _load_corrections_from_tsv,
 )
 from .regions import RegionPlan, plan_regions
@@ -98,8 +100,8 @@ def _apply_corrections_to_read(
     correction: Optional[Dict],
     genome: Optional[Dict[str, str]],
 ) -> bool:
-    """Backward-compatible wrapper around the shared corrected-read helper."""
-    return apply_corrected_edits_to_read(read, correction, genome)
+    """Backward-compatible wrapper around the shared corrected-read helper (audited: a writer)."""
+    return apply_corrected_edits_to_read(read, correction, genome, audit=True)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +152,9 @@ def _process_region_for_bam_write(
     n_reads_in = 0
     n_reads_out = 0
     n_reads_skipped_dedup = 0
+    n_tsv_bam_disagree = 0
+    disagree_examples: List[str] = []
+    report_writer_audit('', log=False)   # this region's count only; the parent reports the total
 
     try:
         bam_in = pysam.AlignmentFile(input_bam_path, 'rb')
@@ -177,6 +182,10 @@ def _process_region_for_bam_write(
                     ) else None
 
                     _apply_corrections_to_read(read, correction, genome)
+                    if correction is not None and read.has_tag(WRITER_AUDIT_TAG):
+                        n_tsv_bam_disagree += 1
+                        if len(disagree_examples) < 5:
+                            disagree_examples.append(read.query_name)
                     bam_out.write(read)
                     n_reads_out += 1
             finally:
@@ -219,6 +228,8 @@ def _process_region_for_bam_write(
         "n_reads_in": n_reads_in,
         "n_reads_out": n_reads_out,
         "n_reads_skipped_dedup": n_reads_skipped_dedup,
+        "n_tsv_bam_disagree": n_tsv_bam_disagree,
+        "tsv_bam_disagree_examples": disagree_examples,
         "wall_seconds": wall_seconds,
         "resumed": False,
     }
@@ -431,10 +442,20 @@ def write_corrected_bam_parallel(
     n_reads_out_total = sum(s.get("n_reads_out", 0) for s in stats_per_region)
     n_reads_out_total += unmapped_stats["n_reads_out"]
 
+    # Writer audit (bam_writer.audit_written_record): records that contradict their TSV row are
+    # tagged in the region workers; report the total here, once. A resumed region reports 0.
+    n_disagree = sum(s.get("n_tsv_bam_disagree", 0) for s in stats_per_region)
+    if n_disagree:
+        examples = [n for s in stats_per_region for n in s.get("tsv_bam_disagree_examples", [])][:5]
+        logger.warning(
+            "write_corrected_bam_parallel: %d written record(s) do NOT match their corrected-TSV "
+            "row (tagged %s). Examples: %s", n_disagree, WRITER_AUDIT_TAG, ', '.join(examples))
+
     result = {
         "n_regions": len(plans),
         "n_reads_in_total": n_reads_in_total,
         "n_reads_out_total": n_reads_out_total,
+        "tsv_bam_disagree": n_disagree,
         "wall_seconds_total": wall_total,
         "stats_per_region": stats_per_region,
     }
