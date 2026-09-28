@@ -275,7 +275,7 @@ pip install rectify-rna[visualize]                                 # +plots (mat
 conda install -c kevinrjroy -c conda-forge -c bioconda rectify-rna # +MEME for motif discovery
 ```
 
-The `[visualize]` extra adds `matplotlib` and `seaborn` for metagene plots, genome-browser figures, and heatmaps. They are an extra rather than a hard dependency so that the core install stays light on HPC nodes and containers, where the pipeline runs headless and the figures are made elsewhere; a workstation install should take the extra. The cDNA UMI-consensus extras (`pip install rectify-rna[cdna-correct]`) add `edlib` + `pyabpoa`.
+The `[visualize]` extra adds `matplotlib` and `seaborn` for metagene plots, genome-browser figures, and heatmaps. They are an extra rather than a hard dependency so that the core install stays light on HPC nodes and containers, where the pipeline runs headless and the figures are made elsewhere; a workstation install should take the extra. The cDNA UMI-consensus extra (`pip install rectify-rna[cdna-correct]`) adds `pyabpoa` for POA consensus; `edlib` (fuzzy SSP and adapter anchoring) is part of the core install.
 
 ---
 

@@ -409,7 +409,9 @@ def build_overhang_table(
     )
 
     # Fill missing bins via forward/backward fill then fallback
-    table['min_overhang'] = table['min_overhang'].fillna(method='ffill').fillna(method='bfill')
+    # to_numeric first: empty bins hold None, so the column is object dtype. fillna(method=) is
+    # gone in pandas 3 (a TypeError), and ffill on an object column is a deprecated downcast.
+    table['min_overhang'] = pd.to_numeric(table['min_overhang'], errors='coerce').ffill().bfill()
     table['min_overhang'] = table['min_overhang'].fillna(fallback_large_intron)
 
     # Enforce minimum of 1 nt (never require 0 overhang)

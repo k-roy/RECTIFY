@@ -34,6 +34,8 @@ import rectify
 
 _DATA = Path(rectify.__file__).parent / 'data' / 'genomes' / 'saccharomyces_cerevisiae'
 _FSA = _DATA / 'S288C_reference_sequence_R64-5-1_20240529.fsa'
+if not _FSA.exists():  # the plain .fsa is gitignored; a clone or a wheel ships only the bgzipped copy
+    _FSA = _FSA.with_name(_FSA.name + '.gz')
 
 # RPL22B / YFL034C-A, chrVI, minus strand. GFF 1-based intron 64600-64920
 # => 0-based half-open (64599, 64920), length 321.
@@ -91,9 +93,11 @@ def test_silent_when_stats_missing():
 # ---------------------------------------------------------------------------
 
 def _load_chrom(path, want='chrVI'):
+    import gzip
     import re
     seqs, name, buf = {}, None, []
-    for line in open(path):
+    opener = gzip.open if str(path).endswith('.gz') else open
+    for line in opener(path, 'rt'):
         if line.startswith('>'):
             if name:
                 seqs[name] = ''.join(buf)
