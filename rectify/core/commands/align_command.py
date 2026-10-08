@@ -1397,6 +1397,21 @@ def run_align(args: argparse.Namespace) -> int:
         except Exception as _e:
             logger.warning(f"--emit-cma failed (non-fatal): {_e}")
 
+    # Literal read bases (#6). Every arm is `calmd -e` encoded relative to its own
+    # alignment, uLTRA can store SEQ opposite to its flag, and CIGAR edits can leave
+    # '=' inside clips, so decoding '=' from a consensus record is not exact. Rewrite
+    # each record's SEQ/QUAL from the input reads, oriented by its own flag; the
+    # alignments and tags are unchanged. Single-end long-read input only (a mate-2
+    # FASTQ is not in args.reads); on any failure the BAM is left as it was.
+    if not getattr(args, 'short_read', False) and not getattr(args, 'read2', None):
+        try:
+            from ..align.literal_seq import restore_literal_sequences
+            _t_lit = _time.perf_counter()
+            _lit = restore_literal_sequences(str(multialigned_bam), str(args.reads), threads=args.threads)
+            logger.info(f"Literal read bases restored: {_lit} [{_time.perf_counter() - _t_lit:.1f}s]")
+        except Exception as e:
+            logger.warning(f"Literal read-base restore skipped, BAM keeps calmd '=' bases: {e}")
+
     # Add MD tags via samtools calmd (required for indel correction and
     # alignment identity calculation downstream).
     logger.info("Adding MD tags with samtools calmd...")

@@ -9,6 +9,7 @@ Author: Kevin R. Roy
 Date: 2026-03-17
 """
 
+import bisect
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 from collections import defaultdict
@@ -293,19 +294,24 @@ def _identify_peaks(
     if len(positions) == 0:
         return []
 
-    # Sort indices by count (descending)
+    # Sort indices by count (descending). Keep this exact expression: it fixes
+    # the tie order, and with it which of two equal-count positions wins.
     sorted_indices = np.argsort(counts)[::-1]
 
-    peaks = []
+    # `peaks` stays sorted, so a candidate only needs checking against its two
+    # neighbors (bisect). The former all-peaks scan was O(positions x peaks):
+    # at the default 5-bp separation nearly every position becomes a peak, and
+    # deep, high-diversity libraries took hours (issue #5). Same output.
+    peaks: List[int] = []
     for idx in sorted_indices:
-        pos = positions[idx]
+        pos = int(positions[idx])
+        i = bisect.bisect_left(peaks, pos)
+        if i < len(peaks) and peaks[i] - pos < min_separation:
+            continue
+        if i > 0 and pos - peaks[i - 1] < min_separation:
+            continue
+        peaks.insert(i, pos)
 
-        # Check distance to existing peaks
-        if all(abs(pos - p) >= min_separation for p in peaks):
-            peaks.append(int(pos))
-
-    # Sort peaks by position
-    peaks.sort()
     return peaks
 
 
@@ -318,23 +324,25 @@ def _find_valleys_between_peaks(
     Find valleys (local minima) between adjacent peaks.
     """
     valleys = []
+    positions = np.asarray(positions)
+    counts = np.asarray(counts)
+    # The window between two peaks is a slice of the sorted positions; a boolean
+    # mask over the whole array per peak pair was O(positions x peaks) (issue #5).
+    sorted_positions = positions.size < 2 or bool(np.all(positions[1:] >= positions[:-1]))
+    if not sorted_positions:
+        order = np.argsort(positions, kind='stable')
+        positions, counts = positions[order], counts[order]
 
-    for i in range(len(peaks) - 1):
-        left_peak = peaks[i]
-        right_peak = peaks[i + 1]
+    for left_peak, right_peak in zip(peaks[:-1], peaks[1:]):
+        lo = int(np.searchsorted(positions, left_peak, side='right'))
+        hi = int(np.searchsorted(positions, right_peak, side='left'))
 
-        # Get positions between peaks
-        mask = (positions > left_peak) & (positions < right_peak)
-        between_positions = positions[mask]
-        between_counts = counts[mask]
-
-        if len(between_positions) == 0:
+        if hi <= lo:
             # No positions between peaks - use midpoint
             valleys.append((left_peak + right_peak) // 2)
         else:
-            # Find minimum count position
-            min_idx = np.argmin(between_counts)
-            valleys.append(int(between_positions[min_idx]))
+            # Minimum-count position; argmin keeps the first (leftmost) on ties, as before
+            valleys.append(int(positions[lo + int(np.argmin(counts[lo:hi]))]))
 
     return valleys
 
