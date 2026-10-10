@@ -23,6 +23,7 @@ except ImportError:
 
 # Try to import matplotlib
 try:
+    import matplotlib
     import matplotlib.pyplot as plt
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
@@ -201,7 +202,7 @@ def plot_pca(
 
         # Create color mapping
         unique_values = colors_series.unique()
-        color_map = plt.cm.get_cmap('tab10')
+        color_map = matplotlib.colormaps['tab10']   # cm.get_cmap is gone in matplotlib 3.11
         value_to_color = {v: color_map(i % 10) for i, v in enumerate(unique_values)}
 
         colors = [value_to_color.get(colors_series.get(s, None), 'gray')

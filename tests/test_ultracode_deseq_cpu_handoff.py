@@ -42,6 +42,7 @@ def observed_fit(counts,metadata):
                                      stats_n_cpus=obj.inference.n_cpus,
                                      same_inference=obj.inference is obj.dds.inference,
                                      contrast=list(obj.contrast),
+                                     levels=set(obj.dds.obs['condition']),
                                      fitted_features=len(obj.dds.var_names)))
             if obj.inference.n_cpus!=1:
                 raise StopBeforeExcessWorkers('Blocked excess-CPU stats before summary')
@@ -60,7 +61,9 @@ def test_actual_fit_and_every_contrast_use_one_inference_cpu():
     assert set(results)=={'drug_exposed','rescue_arm'}
     assert len(constructors)==2
     assert all(row['same_inference'] and row['dataset_n_cpus']==row['stats_n_cpus']==1 for row in constructors)
-    assert [row['contrast'] for row in constructors]==[['condition','drug-exposed','base-line'],['condition','rescue-arm','base-line']]
+    # pydeseq2 < 0.5 stores the levels with '-' for '_' and 0.5+ keeps '_': the contrast must name the levels it stored.
+    assert all(set(row['contrast'][1:])<=row['levels'] for row in constructors)
+    assert [[c.replace('-','_') for c in row['contrast']] for row in constructors]==[['condition','drug_exposed','base_line'],['condition','rescue_arm','base_line']]
     assert dispatches and set(dispatches)=={1}
     pd.testing.assert_frame_equal(counts,before)
     for table in results.values():
