@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
+from rectify.core.bam.bam_writer import _decode_eq_seq_inplace
 from rectify.core.cdna.gff import (
     classify_sense_antisense,
     load_gff_genes,
@@ -108,6 +109,14 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     chrom = rec.reference_name
     aln_start = rec.reference_start
     aln_end = rec.reference_end or aln_start
+
+    # Decode calmd `=` before anything below reads SEQ (the walkback, its tail count and
+    # the 5' bridge search). Every `rectify align` arm is `calmd -e` encoded, and so was
+    # the multialigned BAM before #6 (83af3d1): `'=' != 'A'`, so the walkback never
+    # anchored and corrected_3prime stayed the raw alignment end (Chanfreau planning/578;
+    # 25.6 % of molecules on the 2026-10-09 route smoke). `correct` decodes at intake for
+    # the same reason (bam_processor.correct_read_3prime). Idempotent on literal SEQ.
+    _decode_eq_seq_inplace(rec, {chrom: chrom_seq})
 
     # Which end of the BAM SEQ carries the poly(A)?  `XO` was decided on the
     # PRE-alignment record and describes the molecule in THAT record's BAM-SEQ
