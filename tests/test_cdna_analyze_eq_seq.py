@@ -117,3 +117,30 @@ def test_equals_left_inside_a_clip_does_not_stop_the_run():
     info, _ = _read_info_from_bam_record(rec, GENOME, stats)
     assert info.anchor == PLUS_ANCHOR
     assert stats.get("eq_unresolved") == 1
+
+
+def _clip_equals_record():
+    """A plus-strand molecule whose last soft-clipped base is `=` (no reference base defines it)."""
+    rec = _record("+", True)
+    rec.query_sequence = rec.query_sequence[:-1] + "="
+    rec.query_qualities = pysam.qualitystring_to_array("I" * len(rec.query_sequence))
+    return rec
+
+
+def test_decoder_refuses_by_default_and_writes_n_on_request():
+    import pytest
+    from rectify.core.bam.alignment_tags import decode_original_sequence
+    with pytest.raises(ValueError, match="soft clip"):
+        decode_original_sequence(_clip_equals_record(), {CHROM: GENOME})
+    rec = _clip_equals_record()
+    assert decode_original_sequence(rec, {CHROM: GENOME}, unresolved="N")
+    assert rec.query_sequence == CLIP + PLUS_BODY + "A" * (TAIL - 1) + "N"
+
+
+def test_correct_intake_survives_equals_in_a_clip():
+    # master's `correct` aborted the whole run on such a record from a pre-#6 multialigned BAM (2026-10-10:
+    # read f2ee18b7 on the c287748 DRS route-smoke BAM); it now corrects it with the clip base written N.
+    from rectify.core.bam import bam_processor as bp
+    rec = _clip_equals_record()
+    bp.correct_read_3prime(rec, {CHROM: GENOME})
+    assert "=" not in rec.query_sequence and rec.query_sequence.endswith("N")

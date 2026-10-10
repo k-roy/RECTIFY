@@ -17,11 +17,14 @@ def placement_state(read):
             bytes(read.query_qualities) if read.query_qualities is not None else None)
 
 
-def decode_original_sequence(read, genome):
+def decode_original_sequence(read, genome, unresolved='refuse'):
     """Decode SEQ '=' before surgery, or refuse without changing the record.
 
     Compressed bases only have meaning in aligned M/=/X cells of the original
     placement. H and N never allocate query/reference-sized pair arrays.
+    ``unresolved='N'`` writes N for a '=' inside a clip or insertion (no reference
+    placement: an unknown base, never match or mismatch evidence) instead of refusing;
+    pre-#6 multialigned BAMs carry a few, left there by later CIGAR edits.
     """
     sequence = read.query_sequence
     if not sequence or '=' not in sequence:
@@ -57,7 +60,11 @@ def decode_original_sequence(read, genome):
             if query_pos + length > len(chars):
                 refuse('CIGAR exceeds stored query')
             if '=' in chars[query_pos:query_pos + length]:
-                refuse('equals in insertion or soft clip has no reference placement')
+                if unresolved != 'N':
+                    refuse('equals in insertion or soft clip has no reference placement')
+                for k in range(query_pos, query_pos + length):
+                    if chars[k] == '=':
+                        chars[k] = 'N'
             query_pos += length
         elif op in (2, 3):
             ref_pos += length

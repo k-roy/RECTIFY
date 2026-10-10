@@ -83,6 +83,7 @@ from ..splice.overhang_informativeness import COUNTERS as _OI_COUNTERS
 
 # Backwards-compat re-exports for callers that still reach in via this module.
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
+from .alignment_tags import decode_original_sequence
 from .bam_writer import (  # noqa: F401  (re-exported)
     _load_corrections_from_tsv,
     _decode_eq_seq_inplace,
@@ -322,7 +323,14 @@ def correct_read_3prime(
     # a literal mismatch and short-circuit. Decoding once at intake makes
     # every consumer ``=``-safe without per-module patches.
     if genome is not None and not read.is_unmapped:
-        _decode_eq_seq_inplace(read, genome)
+        try:
+            _decode_eq_seq_inplace(read, genome)
+        except ValueError as exc:
+            # A '=' a later CIGAR edit left inside a clip or insertion (pre-#6 multialigned BAMs)
+            # has no reference base: decode the aligned cells, mark those bases N, and correct the
+            # read rather than abort the whole run. Any other refusal still raises.
+            logger.warning(f"{exc}; those bases are written N")
+            decode_original_sequence(read, genome, unresolved='N')
 
     # Multi-aligner consensus tags (Xa/Xc/Xn/Xt) carried through to the
     # per-read TSV as four separate columns.  Read once, here, ABOVE the

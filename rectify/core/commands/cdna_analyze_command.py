@@ -38,6 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
+from rectify.core.bam.alignment_tags import decode_original_sequence
 from rectify.core.bam.bam_writer import _decode_eq_seq_inplace
 from rectify.core.cdna.gff import (
     classify_sense_antisense,
@@ -133,8 +134,9 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
         _decode_eq_seq_inplace(rec, {chrom: chrom_seq})
     except ValueError:
         # A `=` that a later CIGAR edit left inside a clip or insertion has no reference base,
-        # so the decoder refuses the record. The walkback resolves `=` at aligned positions
-        # itself; analyse the record as stored and count it.
+        # so the strict decoder refuses the record: decode the aligned cells, write those bases N
+        # (unknown, never evidence) and count it, as `correct` does at intake.
+        decode_original_sequence(rec, {chrom: chrom_seq}, unresolved='N')
         if tail_stats is not None:
             tail_stats["eq_unresolved"] = tail_stats.get("eq_unresolved", 0) + 1
 
@@ -301,7 +303,7 @@ def run(args) -> int:
     n_frame_fixed = tail_stats.get("xo_frame_corrected", 0)
     if tail_stats.get("eq_unresolved", 0):
         log.warning("  %d records carry calmd '=' inside a clip or insertion (no reference base); "
-                    "analysed as stored", tail_stats["eq_unresolved"])
+                    "those bases were written N", tail_stats["eq_unresolved"])
     if n_frame_fixed:
         log.info("  XO frame taken from the alignment flag on %d oriented molecules "
                  "(%.1f%%) whose carried XO described the pre-alignment frame "
