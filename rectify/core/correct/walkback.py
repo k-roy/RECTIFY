@@ -177,6 +177,8 @@ def walkback_3prime(
     # --- Terminal-position gate: skip walkback in the obvious-correct cases. ---
     first_qp, first_rp = scan_pairs[0]
     first_rb = qs[first_qp].upper()
+    if first_rb == '=' and 0 <= first_rp < len(chrom_seq):
+        first_rb = chrom_seq[first_rp].upper()   # calmd '=' means "equals the reference" (planning/578)
 
     # Gate: non-stop read base matching genome → already anchored. Bound-guard first_rp (a multi-aligner
     # BAM can report a ref position at/past the chromosome end → chrom_seq[first_rp] IndexError).
@@ -196,6 +198,8 @@ def walkback_3prime(
             continue
         read_base = qs[qp].upper()
         ref_base = chrom_seq[rp].upper()
+        if read_base == '=':
+            read_base = ref_base   # calmd '=': a stored match must compare equal, or the scan never anchors
         if read_base == ref_base and read_base != stop_base:
             corrected = rp
             changed = corrected != original_3prime
@@ -255,6 +259,8 @@ def walkback_3prime_with_qpos(
 
     first_qp, first_rp = scan_pairs[0]
     first_rb = qs[first_qp].upper()
+    if first_rb == '=' and 0 <= first_rp < len(chrom_seq):
+        first_rb = chrom_seq[first_rp].upper()   # calmd '=' means "equals the reference" (planning/578)
     # Bound-guard: a multi-aligner BAM (deSALT/gapmm2/mapPacBio) can report a ref position at/past the
     # chromosome end; chrom_seq[rp] would IndexError. Only fire the terminal gate when in-range.
     if 0 <= first_rp < len(chrom_seq):
@@ -271,6 +277,8 @@ def walkback_3prime_with_qpos(
             continue
         read_base = qs[qp].upper()
         ref_base = chrom_seq[rp].upper()
+        if read_base == '=':
+            read_base = ref_base   # calmd '=': a stored match must compare equal, or the scan never anchors
         if read_base == ref_base and read_base != stop_base:
             corrected = rp
             anchor_qp = qp
@@ -568,7 +576,8 @@ def walkback_3prime_guarded(
                     if scan_start_ref <= ref_pos <= scan_end_ref and n < _GUARD_SCRATCH_N:
                         _g_rp[n] = read_pos
                         _g_refp[n] = ref_pos
-                        _g_rb[n] = ord(seq[read_pos].upper()) if read_pos < len(seq) else 78  # 'N'
+                        _rb = seq[read_pos].upper() if read_pos < len(seq) else 'N'
+                        _g_rb[n] = ord(chrom_seq[ref_pos].upper() if _rb == '=' else _rb)  # calmd '=' = reference
                         _g_gb[n] = ord(chrom_seq[ref_pos].upper())
                         n += 1
                 read_pos += 1
