@@ -84,10 +84,10 @@ def _run_alignment(
     """
     # Bind terminal-placement rediscovery to this invocation's references and
     # protocol settings, including resume paths that never call run_align.
-    _terminal_context = None
-    if not short_read and not dt_primed_cdna and annotation_path:
-        from ...splice.terminal_tail_placement import terminal_tail_context
-        _terminal_context = terminal_tail_context(genome_path, annotation_path)
+    # Same predicate as run_align (None unless RECTIFY_TERMINAL_TAIL=1).
+    from ...splice.terminal_tail_placement import terminal_tail_run_context
+    _terminal_context = terminal_tail_run_context(
+        genome_path, annotation_path, short_read=short_read, dt_primed_cdna=dt_primed_cdna)
 
     multialigned_bam = _multialigned_bam_path(sample_id, sample_output_dir)
 

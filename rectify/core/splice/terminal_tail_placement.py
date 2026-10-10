@@ -12,6 +12,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 import json
 import math
+import os
 from typing import Callable, Iterable, Optional
 
 from rectify.config import MIN_POLYA_LENGTH
@@ -380,6 +381,26 @@ def terminal_tail_context(genome_path=None, annotation_path=None):
                 alpha=DEFAULT_ALPHA,
                 genome=_file_identity(genome_path) if genome_path else None,
                 annotation=_file_identity(annotation_path) if annotation_path else None)
+
+
+def terminal_tail_enabled() -> bool:
+    """A17 switch (``RECTIFY_TERMINAL_TAIL=1``): ``rectify align`` runs the post-pass on every
+    long-read arm and run-all takes its receipted outputs. Default OFF until the reads it changes
+    have had a read-level review (Kevin, queue card D1, 2026-10-07)."""
+    return os.environ.get('RECTIFY_TERMINAL_TAIL', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def terminal_tail_run_context(genome_path, annotation_path, *, short_read=False, dt_primed_cdna=False):
+    """This run's post-pass context, or None when the post-pass does not run.
+
+    ``rectify align`` and run-all both derive it here: a selection receipt
+    written under one context and checked against another rebuilds the
+    selection on every resume. None is the disabled protocol everywhere (no
+    post-pass, no disk substitution, and an enabled run's receipt stands down).
+    """
+    if short_read or dt_primed_cdna or not annotation_path or not terminal_tail_enabled():
+        return None
+    return terminal_tail_context(genome_path, annotation_path)
 
 
 def write_terminal_selection_receipt(output_bam, selected_arms, context):

@@ -283,3 +283,88 @@ def test_ordinary_gzip_postpass_uses_shared_indexed_reference(tmp_path):
     with open_alignment_reference(gz, tmp_path) as reference:
         assert reference.fetch('chrT') == genome
     assert len(list(tmp_path.glob('*.reference.fa'))) == 1
+
+
+def _modern_arm(tmp_path):
+    """A one-record arm BAM the post-pass edits (modern RNA-sense cDNA), its genome and an annotation."""
+    read, genome, _ = fixture()
+    for tag, value in [('XN', 1), ('XT', 2), ('XR', 'source')]:
+        read.set_tag(tag, value)
+    fasta = tmp_path / 'g.fa'
+    fasta.write_text('>chrT\n' + genome + '\n')
+    pysam.faidx(str(fasta))
+    annotation = tmp_path / 'g.gtf'
+    annotation.write_text('')
+    arm = tmp_path / 'sample.minimap2.bam'
+    with pysam.AlignmentFile(str(arm), 'wb', header=read.header) as sink:
+        sink.write(read)
+    return arm, fasta, annotation
+
+
+@pytest.mark.parametrize('value', [None, '', '0', 'off'])
+def test_align_skips_the_postpass_unless_switched_on(tmp_path, monkeypatch, value):
+    # A17 is off by default until its reads have had a read-level review (Kevin, queue card D1,
+    # 2026-10-07): `rectify align` leaves every arm as aligned and run-all derives no context.
+    import argparse
+    from rectify.core.commands.align_command import _terminal_tail_postpass
+    from rectify.core.splice.terminal_tail_placement import terminal_tail_run_context
+    if value is None:
+        monkeypatch.delenv('RECTIFY_TERMINAL_TAIL', raising=False)
+    else:
+        monkeypatch.setenv('RECTIFY_TERMINAL_TAIL', value)
+    arm, fasta, annotation = _modern_arm(tmp_path)
+    results = {'minimap2': str(arm), 'uLTRA': None}
+    args = argparse.Namespace(genome=fasta, annotation=annotation, output_dir=tmp_path)
+    assert _terminal_tail_postpass(args, results, 'sample') is None
+    assert results == {'minimap2': str(arm), 'uLTRA': None}
+    assert not list(tmp_path.glob('*terminal_tail*'))
+    assert terminal_tail_run_context(fasta, annotation) is None
+
+
+def test_align_runs_the_postpass_when_switched_on_and_run_all_agrees(tmp_path, monkeypatch):
+    import argparse
+    from rectify.core.commands.align_command import _terminal_tail_postpass
+    from rectify.core.splice.terminal_tail_placement import terminal_tail_run_context
+    monkeypatch.setenv('RECTIFY_TERMINAL_TAIL', '1')
+    arm, fasta, annotation = _modern_arm(tmp_path)
+    results = {'minimap2': str(arm)}
+    args = argparse.Namespace(genome=fasta, annotation=annotation, output_dir=tmp_path)
+    context = _terminal_tail_postpass(args, results, 'sample')
+    assert context is not None and context == terminal_tail_run_context(fasta, annotation)
+    assert results['minimap2'] == str(tmp_path / 'sample.minimap2.terminal_tail.bam')
+    with pysam.AlignmentFile(results['minimap2'], 'rb') as bam:
+        assert next(bam).has_tag(TAG)
+    # The switch does not widen the protocol: short-read, dT-primed and unannotated runs stay out.
+    assert terminal_tail_run_context(fasta, annotation, short_read=True) is None
+    assert terminal_tail_run_context(fasta, annotation, dt_primed_cdna=True) is None
+    assert terminal_tail_run_context(fasta, None) is None
+
+
+def test_switch_state_binds_the_run_all_selection_receipt(tmp_path, monkeypatch):
+    # A run-all resume with the switch off keeps an off-run selection (no rebuild loop) and ignores
+    # post-pass files on disk; an on-run selection stands down once the switch is off.
+    from shutil import copyfile
+    from rectify.core.commands.run.helpers import _collect_per_aligner_bams
+    from rectify.core.splice.terminal_tail_placement import (
+        run_terminal_tail_postpass, terminal_selection_matches, terminal_tail_run_context,
+        write_terminal_selection_receipt,
+    )
+    arm, fasta, annotation = _modern_arm(tmp_path)
+    consensus = tmp_path / 'sample.multialigned.bam'
+    copyfile(arm, consensus)
+    monkeypatch.delenv('RECTIFY_TERMINAL_TAIL', raising=False)
+    write_terminal_selection_receipt(consensus, {'minimap2': str(arm)}, terminal_tail_run_context(fasta, annotation))
+    assert terminal_selection_matches(consensus, terminal_tail_run_context(fasta, annotation))
+    monkeypatch.setenv('RECTIFY_TERMINAL_TAIL', '1')
+    on = terminal_tail_run_context(fasta, annotation)
+    assert not terminal_selection_matches(consensus, on)
+    selected, counts = run_terminal_tail_postpass(arm, fasta, tmp_path / 'sample.minimap2.terminal_tail.bam', set(), on)
+    assert counts['applied'] == 1
+    write_terminal_selection_receipt(consensus, {'minimap2': selected}, on)
+    assert terminal_selection_matches(consensus, on)
+    assert str(_collect_per_aligner_bams('sample', tmp_path, terminal_tail_context=on)['minimap2']) == selected
+    monkeypatch.delenv('RECTIFY_TERMINAL_TAIL')
+    off = terminal_tail_run_context(fasta, annotation)
+    assert off is None
+    assert not terminal_selection_matches(consensus, off)
+    assert str(_collect_per_aligner_bams('sample', tmp_path, terminal_tail_context=off)['minimap2']) == str(arm)

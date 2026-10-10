@@ -641,6 +641,51 @@ def _refuse_calmd_placeholder_fastq(reads_path) -> int:
     return 0
 
 
+def _terminal_tail_postpass(args, results, prefix):
+    """Run the A17 terminal-tail post-pass on every arm of ``results`` (replaced in place); return its context.
+
+    Tail-supported native continuation is a placement post-pass, before the
+    per-arm junction pool/consensus is built. Modern stage-1 cDNA metadata
+    supplies an explicit RNA-sense frame; generic DRS, legacy XO-only and
+    short-read records are not implicitly assigned this protocol. It runs only
+    with ``RECTIFY_TERMINAL_TAIL=1``; otherwise every arm stays as aligned and
+    the context is None, as run-all derives it from the same predicate.
+    """
+    from ..splice.terminal_tail_placement import (
+        load_annotation_junctions, run_terminal_tail_postpass, terminal_tail_enabled,
+        terminal_tail_run_context,
+    )
+    context = terminal_tail_run_context(
+        getattr(args, 'genome', None), getattr(args, 'annotation', None),
+        short_read=getattr(args, 'short_read', False),
+        dt_primed_cdna=getattr(args, 'dT_primed_cDNA', False),
+    )
+    if context is None:
+        if not terminal_tail_enabled():
+            logger.info("terminal-tail post-pass: off (RECTIFY_TERMINAL_TAIL=1 enables it)")
+        return None
+    annotation = None
+
+    def _load_annotation():
+        nonlocal annotation
+        if annotation is None:
+            annotation = load_annotation_junctions(str(args.annotation))
+        return annotation
+
+    for arm, bam in list(results.items()):
+        if not bam:
+            continue
+        selected, stats = run_terminal_tail_postpass(
+            bam, str(args.genome),
+            args.output_dir / f"{prefix}.{arm}.terminal_tail.bam",
+            _load_annotation,
+            context=context,
+        )
+        results[arm] = selected
+        logger.info("terminal-tail %s: %s", arm, stats)
+    return context
+
+
 def run_align(args: argparse.Namespace) -> int:
     """Run align command."""
     from datetime import datetime as _dt_al, timezone as _tz_al
@@ -1238,37 +1283,8 @@ def run_align(args: argparse.Namespace) -> int:
             )
             results[aligner] = None
 
-    _terminal_run_context = None
-    # Tail-supported native continuation is a placement post-pass, before the
-    # per-arm junction pool/consensus is built. Modern stage-1 cDNA metadata
-    # supplies an explicit RNA-sense frame; generic DRS, legacy XO-only and
-    # short-read records are not implicitly assigned this protocol.
-    if (not getattr(args, 'short_read', False)
-            and not getattr(args, 'dT_primed_cDNA', False)
-            and getattr(args, 'annotation', None)):
-        from ..splice.terminal_tail_placement import (
-            load_annotation_junctions, run_terminal_tail_postpass, terminal_tail_context,
-        )
-        _terminal_annotation = None
-        _terminal_run_context = terminal_tail_context(args.genome, args.annotation)
-
-        def _load_terminal_annotation():
-            nonlocal _terminal_annotation
-            if _terminal_annotation is None:
-                _terminal_annotation = load_annotation_junctions(str(args.annotation))
-            return _terminal_annotation
-
-        for _arm, _bam in list(results.items()):
-            if not _bam:
-                continue
-            _selected, _terminal_stats = run_terminal_tail_postpass(
-                _bam, str(args.genome),
-                args.output_dir / f"{prefix}.{_arm}.terminal_tail.bam",
-                _load_terminal_annotation,
-                context=_terminal_run_context,
-            )
-            results[_arm] = _selected
-            logger.info("terminal-tail %s: %s", _arm, _terminal_stats)
+    # A17 terminal-tail post-pass: off unless RECTIFY_TERMINAL_TAIL=1.
+    _terminal_run_context = _terminal_tail_postpass(args, results, prefix)
 
     # Summary of alignment step
     logger.info(f"\nAlignment summary:")

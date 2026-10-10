@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the N; the re-split removes it and returns exon 2 to the aligner's own alignment (cards 083-2/3/4).
   Pinned by `tests/test_2f_resplit.py` and `tests/test_2f_replay_f53d770_31.py`; default-on waits on
   the census of every read it changes and Kevin's verdicts on them.
+- **The A17 terminal-tail post-pass, behind `RECTIFY_TERMINAL_TAIL=1` (default off).** `rectify align`
+  compares an unannotated terminal junction against an exact native continuation on the same non-tail
+  query bases, for modern RNA-sense cDNA records only (never DRS or legacy `XO`-only records), so a 3′
+  end plus poly(A) aligned as a junction onto a genomic A-run is returned to its native placement.
+  Decisions and receipts are recorded per arm. With the switch off no arm is touched, and `run-all`
+  ignores post-pass outputs left on disk and rebuilds a selection an enabled run made. Default-on
+  waits on a read-level review of the reads it changes (`tests/test_ultracode_terminal_placement.py`).
 
 ### Fixed
 
@@ -96,16 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Two conservative placement repairs are ON by default.** Neither has had the read-level review
-  class that precedes a default-on decision, so each is listed here for the maintainers' ruling:
-  - Module 2H realizes a supported exon block shift as one atomic whole-read placement (both
-    introns of an internal exon move together; a unique exact placement across the shift window is
-    required; annotated boundaries and micro-exon/chimeric provenance are protected). It runs after
-    the per-junction walk and changed no read in a 62,602-read human DRS cohort.
-  - `rectify align` compares an unannotated terminal junction against an exact native continuation
-    on the same non-tail query bases, for modern RNA-sense cDNA records only (never DRS or legacy
-    `XO`-only records), so a 3′ end plus poly(A) aligned as a junction onto a genomic A-run is
-    returned to its native placement. Decisions and receipts are recorded per arm.
+- **Module 2H realizes a supported exon block shift as one atomic whole-read placement, ON by
+  default (ISSUE-047).** Both introns of an internal exon move together; a unique exact placement
+  across the shift window is required; annotated boundaries and micro-exon/chimeric provenance are
+  protected. It runs after the per-junction walk and changed no read in a 62,602-read human DRS
+  cohort. It has not had the read-level review class that precedes a default-on decision, so it is
+  listed here for the maintainers' ruling.
 
 ### Added
 
