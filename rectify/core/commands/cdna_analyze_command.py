@@ -69,6 +69,19 @@ def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
         return 0
 
 
+def _pretrimmed_3prime(rec: pysam.AlignedSegment) -> bool:
+    """True when `correct-cdna` removed bases from the mRNA 3' end before alignment (``XK:i`` > 0).
+
+    Such a record's SEQ no longer holds the tail: what the walkback counts past its anchor is the
+    few A's the trim left over genomic A's (median 5 nt vs the carried ``XA`` median 33 on the
+    2026-10-09 route smoke), so the carried length is the tail.
+    """
+    try:
+        return int(rec.get_tag("XK")) > 0
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
 def _is_rna_sense(rec: pysam.AlignedSegment) -> bool:
     """True when the record is a `correct-cdna` consensus emitted RNA-sense
     (``XN:i:1``, 3457ecc+), so its flag is the molecule's frame after alignment."""
@@ -149,10 +162,15 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     # fall back to the carried XA:i instead of silently zeroing the column
     # (AGENT_FIXES 2026-08-21: 100 % tail_len==0 on a 4.63 M-molecule library).
     anchor, tail_len_walk = walk_back_anchor_and_tail(rec, chrom_seq, orient)
-    if tail_len_walk > 0:
+    carried = _carried_tail_len(rec)
+    if carried > 0 and _pretrimmed_3prime(rec):
+        # The walk found only the A's the pretrim left (it found none while SEQ was '='-encoded,
+        # which is why the carried value used to win): the measured tail is the carried XA.
+        tail_len, source = carried, "carried"
+    elif tail_len_walk > 0:
         tail_len, source = tail_len_walk, "walkback"
     else:
-        tail_len = _carried_tail_len(rec)
+        tail_len = carried
         source = "carried" if tail_len > 0 else "zero"
     if tail_stats is not None:
         tail_stats[source] = tail_stats.get(source, 0) + 1

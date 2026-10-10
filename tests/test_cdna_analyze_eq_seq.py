@@ -39,8 +39,11 @@ PLUS_ANCHOR = PLUS_START + BODY_LEN - 5      # the C before the genomic AAAA
 MINUS_ANCHOR = MINUS_START + 4               # the G after the genomic TTTT
 
 
-def _record(strand, encoded):
-    """The same molecule, with the aligned body literal or `calmd -e` encoded (all matches -> `=`)."""
+def _record(strand, encoded, pretrimmed=False):
+    """The same molecule, with the aligned body literal or `calmd -e` encoded (all matches -> `=`).
+
+    ``pretrimmed``: correct-cdna cut the 3' end before alignment (no tail in SEQ, XK:i:60) and carried
+    the measured tail as XA:i:33."""
     header = pysam.AlignmentHeader.from_dict({"HD": {"VN": "1.6"}, "SQ": [{"SN": CHROM, "LN": GLEN}]})
     r = pysam.AlignedSegment(header)
     r.query_name = f"eq_{strand}_{int(encoded)}"
@@ -49,6 +52,8 @@ def _record(strand, encoded):
     if strand == "+":
         body = "=" * BODY_LEN if encoded else PLUS_BODY
         seq, cigar, flag, start, xo = CLIP + body + "A" * TAIL, [(4, len(CLIP)), (0, BODY_LEN), (4, TAIL)], 0, PLUS_START, "fwd"
+        if pretrimmed:
+            seq, cigar = CLIP + body, [(4, len(CLIP)), (0, BODY_LEN)]
     else:
         body = "=" * BODY_LEN if encoded else MINUS_BODY
         seq, cigar, flag, start, xo = "T" * TAIL + body + CLIP, [(4, TAIL), (0, BODY_LEN), (4, len(CLIP))], 16, MINUS_START, "rev"
@@ -58,8 +63,10 @@ def _record(strand, encoded):
     r.query_sequence = seq
     r.query_qualities = pysam.qualitystring_to_array("I" * len(seq))
     for tag, val, typ in [("XU", "A" * 27, "Z"), ("XO", xo, "Z"), ("XT", 1, "i"), ("XY", f"umi_captured_{xo}", "Z"),
-                          ("XC", 3, "i"), ("XF", 2, "i"), ("XA", TAIL, "i"), ("XN", 1, "i")]:
+                          ("XC", 3, "i"), ("XF", 2, "i"), ("XA", 33 if pretrimmed else TAIL, "i"), ("XN", 1, "i")]:
         r.set_tag(tag, val, typ)
+    if pretrimmed:
+        r.set_tag("XK", 60, "i")
     return r
 
 
@@ -85,3 +92,15 @@ def test_shared_walkback_core_treats_equals_as_the_reference_base():
             assert fn(_record(strand, True), GENOME, side, stop_base=stop) == \
                 fn(_record(strand, False), GENOME, side, stop_base=stop), (strand, fn.__name__)
     assert walkback_3prime_with_qpos(_record("+", True), GENOME, THREE_PRIME_SIDE_RIGHT)[1] == PLUS_ANCHOR
+
+
+def test_pretrimmed_record_keeps_the_carried_tail_length():
+    # correct-cdna cut the tail (XK > 0) after measuring it (XA). The four A's left over the genomic AAAA are
+    # not the tail; while SEQ was '='-encoded the walk counted nothing and XA won by accident, and with
+    # literal bases (#6) the walk's residual count replaced it (smoke: median 33 -> 5 for 20,301 molecules).
+    for encoded in (False, True):
+        stats = {}
+        info, _ = _read_info_from_bam_record(_record("+", encoded, pretrimmed=True), GENOME, stats)
+        assert info.anchor == PLUS_ANCHOR
+        assert info.tail_len == 33, (encoded, info.tail_len)
+        assert stats == {"carried": 1}
