@@ -104,3 +104,16 @@ def test_pretrimmed_record_keeps_the_carried_tail_length():
         assert info.anchor == PLUS_ANCHOR
         assert info.tail_len == 33, (encoded, info.tail_len)
         assert stats == {"carried": 1}
+
+
+def test_equals_left_inside_a_clip_does_not_stop_the_run():
+    # A later CIGAR edit can leave `=` inside a clip, where no reference base defines it, and the strict decoder
+    # refuses the record (r000_24648 on the c287748 smoke BAM). cdna-analyze analyses it as stored instead of
+    # aborting the whole library; the walkback still resolves the aligned `=`.
+    rec = _record("+", True)
+    rec.query_sequence = rec.query_sequence[:-1] + "="
+    rec.query_qualities = pysam.qualitystring_to_array("I" * len(rec.query_sequence))
+    stats = {}
+    info, _ = _read_info_from_bam_record(rec, GENOME, stats)
+    assert info.anchor == PLUS_ANCHOR
+    assert stats.get("eq_unresolved") == 1

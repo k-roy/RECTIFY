@@ -129,7 +129,14 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     # anchored and corrected_3prime stayed the raw alignment end (Chanfreau planning/578;
     # 25.6 % of molecules on the 2026-10-09 route smoke). `correct` decodes at intake for
     # the same reason (bam_processor.correct_read_3prime). Idempotent on literal SEQ.
-    _decode_eq_seq_inplace(rec, {chrom: chrom_seq})
+    try:
+        _decode_eq_seq_inplace(rec, {chrom: chrom_seq})
+    except ValueError:
+        # A `=` that a later CIGAR edit left inside a clip or insertion has no reference base,
+        # so the decoder refuses the record. The walkback resolves `=` at aligned positions
+        # itself; analyse the record as stored and count it.
+        if tail_stats is not None:
+            tail_stats["eq_unresolved"] = tail_stats.get("eq_unresolved", 0) + 1
 
     # Which end of the BAM SEQ carries the poly(A)?  `XO` was decided on the
     # PRE-alignment record and describes the molecule in THAT record's BAM-SEQ
@@ -292,6 +299,9 @@ def run(args) -> int:
              "(pretrimmed), %d zero",
              tail_stats["walkback"], tail_stats["carried"], tail_stats["zero"])
     n_frame_fixed = tail_stats.get("xo_frame_corrected", 0)
+    if tail_stats.get("eq_unresolved", 0):
+        log.warning("  %d records carry calmd '=' inside a clip or insertion (no reference base); "
+                    "analysed as stored", tail_stats["eq_unresolved"])
     if n_frame_fixed:
         log.info("  XO frame taken from the alignment flag on %d oriented molecules "
                  "(%.1f%%) whose carried XO described the pre-alignment frame "
