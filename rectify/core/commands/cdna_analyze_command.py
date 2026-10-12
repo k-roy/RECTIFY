@@ -70,17 +70,25 @@ def _carried_tail_len(rec: pysam.AlignedSegment) -> int:
         return 0
 
 
-def _pretrimmed_3prime(rec: pysam.AlignedSegment) -> bool:
-    """True when `correct-cdna` removed bases from the mRNA 3' end before alignment (``XK:i`` > 0).
+def _tail_measured_by_stage1(rec: pysam.AlignedSegment) -> bool:
+    """True when the record comes from a `correct-cdna` that records its 3' pretrim (``XK:i``, any value).
 
-    Such a record's SEQ no longer holds the tail: what the walkback counts past its anchor is the
-    few A's the trim left over genomic A's (median 5 nt vs the carried ``XA`` median 33 on the
-    2026-10-09 route smoke), so the carried length is the tail.
+    Its carried ``XA`` is the member reads' median tail, counted by this same walk while the tail
+    was still in SEQ, and the consensus SEQ often no longer holds it: the pretrim cut it (``XK``
+    > 0), a pileup consensus is built from aligned pairs only (``XK`` = 0, ``XM:Z:pileup``; 29 % of
+    1076 un_60S_bc19's molecules), or the representative read lacks the cluster's tail. The walk
+    then counts only the genomic A's at the alignment end (median 5 vs ``XA`` 33 on the 2026-10-09
+    route smoke). Where SEQ does hold the tail the two agree. Dorado ``XP`` sides with ``XA``: the
+    10-nt tail gate agrees with it for 0.965 of un_60S_bc19's molecules, vs 0.721 when only ``XK``
+    > 0 kept ``XA`` (ISSUE-093; the regression was found in Chanfreau planning/1090z32). ``XA``,
+    ``XK`` and ``XM`` arrived together (aea0060), so a record without ``XK`` predates the carried
+    tail and keeps the walk.
     """
     try:
-        return int(rec.get_tag("XK")) > 0
+        int(rec.get_tag("XK"))
     except (KeyError, ValueError, TypeError):
         return False
+    return True
 
 
 def _is_rna_sense(rec: pysam.AlignedSegment) -> bool:
@@ -100,7 +108,7 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     original input reads that contributed to this consensus).
 
     ``tail_stats`` (optional) is incremented in place with the provenance of the
-    tail length: ``walkback`` (tail found in SEQ), ``carried`` (pretrimmed record,
+    tail length: ``walkback`` (tail found in SEQ), ``carried`` (stage-1 record,
     ``XA`` honoured) or ``zero`` (neither source had a tail).
     """
     if rec.is_unmapped or rec.is_secondary or rec.is_supplementary or not rec.cigartuples:
@@ -172,9 +180,10 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     # (AGENT_FIXES 2026-08-21: 100 % tail_len==0 on a 4.63 M-molecule library).
     anchor, tail_len_walk = walk_back_anchor_and_tail(rec, chrom_seq, orient)
     carried = _carried_tail_len(rec)
-    if carried > 0 and _pretrimmed_3prime(rec):
-        # The walk found only the A's the pretrim left (it found none while SEQ was '='-encoded,
-        # which is why the carried value used to win): the measured tail is the carried XA.
+    if carried > 0 and _tail_measured_by_stage1(rec):
+        # The walk counts what SEQ still holds, often only the genomic A's at the end (it found
+        # nothing while SEQ was '='-encoded, which is why the carried value used to win): the
+        # measured tail is the carried XA.
         tail_len, source = carried, "carried"
     elif tail_len_walk > 0:
         tail_len, source = tail_len_walk, "walkback"
@@ -298,7 +307,7 @@ def run(args) -> int:
              n_in, n_unmapped, n_nonprimary, n_missing_tags)
     log.info("  %d usable consensus clusters", len(clusters))
     log.info("  tail_len provenance: %d walkback (tail in SEQ), %d carried XA "
-             "(pretrimmed), %d zero",
+             "(stage-1 measurement), %d zero",
              tail_stats["walkback"], tail_stats["carried"], tail_stats["zero"])
     n_frame_fixed = tail_stats.get("xo_frame_corrected", 0)
     if tail_stats.get("eq_unresolved", 0):
