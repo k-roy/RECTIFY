@@ -41,6 +41,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **cdna-analyze never walked back cDNA 3′ ends (ISSUE-093).** `rectify align` writes every aligner
+  arm through `samtools calmd -e`, and until 83af3d1 the multialigned BAM kept that `=` SEQ.
+  cdna-analyze ran the poly(A) walkback on those records; a stored `=` never equals a genome letter,
+  so the walkback never anchored, and `corrected_3prime`, the `clusters.tsv` anchor and the T1/T2
+  pairing used the raw alignment end. On a 78,898-molecule PCR-cDNA test set that left 25.6 % of
+  molecules 1–50 nt downstream of the walked-back end (mostly 1–2 nt); gene assignment, gene counts
+  and `isoforms.tsv` (raw ends by design) were unaffected. cdna-analyze now decodes `=` at intake,
+  as `correct` does, and the shared walkback treats a stored `=` as the reference base, so no caller
+  can skip it silently. **cdna-analyze outputs written since 7e408b1 (2026-05-15) from a
+  multialigned BAM made before 83af3d1 carry unwalked 3′ ends; re-running cdna-analyze alone on the
+  same BAM corrects them.** Pinned by `tests/test_cdna_analyze_eq_seq.py`.
+- **cdna-analyze wrote the residual A count as the poly(A) tail (83af3d1).** `correct-cdna` measures
+  each molecule's tail on its member reads and carries it as `XA:i`, and the consensus SEQ often no
+  longer holds that tail: the pretrim cut it, a pileup consensus is built from aligned bases only, or
+  the representative read lacks it. Once the multialigned SEQ was literal, the walkback counted the
+  few A's at the alignment end and replaced the carried length (median 33 → 5 nt for 26 % of the
+  molecules of the test set). Every record that carries `XK:i` (all `correct-cdna` output since
+  2026-05-14) now reports the carried `XA`. Against Dorado's signal-based tail estimate on a polysome
+  library, the carried `XA` agrees with the 10-nt tail gate for 97.7 % of its pileup molecules,
+  where the walk count agrees for 2.9 %. Records without `XK` keep the tail found in SEQ.
+  **cDNA tail lengths written from 83af3d1 on are wrong for every molecule whose SEQ no longer holds
+  its tail.**
+- **`correct` stopped on a multialigned BAM made before 83af3d1** whose SEQ held a calmd `=` inside a
+  soft clip or insertion (left there by a later CIGAR edit), because the intake decode refuses a base
+  with no reference placement. The intake now writes those bases `N` (unknown, never evidence) and
+  corrects the read, with a WARNING, so a TSV-only run completes. The BAM writers still refuse such a
+  record by design (they never invent sequence), so a run that writes a corrected BAM still stops
+  there; any other refusal still stops the run.
+- **cdna-analyze and `correct` stopped on a record whose span runs past the end of its contig.** Such
+  a record is invalid SAM: deSALT aligns across the contig boundaries of its concatenated index, and
+  consensus kept those placements until d0e3a0f (875 in one July PCR-cDNA library; deSALT arms made
+  before fa63c12, which capped its intron length, carry them too). It is now skipped and counted:
+  cdna-analyze leaves it out of every table and passes it through `consensus_tagged.bam` as stored;
+  `correct` writes no row for it and its BAM writers emit it as stored. From 83af3d1 on, `correct`
+  stopped at such a record, so a `run-all` re-correcting an old deSALT arm left that arm out of the
+  consensus with only a WARNING.
+- `rectify analyze` coloured its PCA with `plt.cm.get_cmap`, which matplotlib 3.11 removed (now the
+  `matplotlib.colormaps` registry), and a DESeq2 test assumed pydeseq2 < 0.5 renamed `_` to `-` in
+  factor levels; with both fixed, CI passes on Python 3.10–3.12.
 - **A minus-strand 3′ clip that stripped a dangling D/N left the record shifted by that op
   (ISSUE-085).** `clip_read_to_corrected_3prime` / `softclip_read_to_corrected_3prime` walk the
   3′ bases off the left end of a minus-strand record and strip any D/N left at the new start, but a
