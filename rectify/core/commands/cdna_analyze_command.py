@@ -38,7 +38,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pysam
 
-from rectify.core.bam.alignment_tags import decode_original_sequence
+from rectify.core.bam.alignment_tags import decode_original_sequence, span_fits_reference
 from rectify.core.bam.bam_writer import _decode_eq_seq_inplace
 from rectify.core.cdna.gff import (
     classify_sense_antisense,
@@ -109,7 +109,8 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
 
     ``tail_stats`` (optional) is incremented in place with the provenance of the
     tail length: ``walkback`` (tail found in SEQ), ``carried`` (stage-1 record,
-    ``XA`` honoured) or ``zero`` (neither source had a tail).
+    ``XA`` honoured) or ``zero`` (neither source had a tail); a record whose span
+    runs past its contig is skipped and counted as ``past_contig_end``.
     """
     if rec.is_unmapped or rec.is_secondary or rec.is_supplementary or not rec.cigartuples:
         return None
@@ -131,6 +132,14 @@ def _read_info_from_bam_record(rec: pysam.AlignedSegment,
     chrom = rec.reference_name
     aln_start = rec.reference_start
     aln_end = rec.reference_end or aln_start
+
+    if not span_fits_reference(rec, {chrom: chrom_seq}):
+        # Invalid SAM: a deSALT placement that runs onto the next contig of its concatenated index
+        # (875 in July Path-A wtaa_rep1). Nothing past the contig can be decoded or walked; the
+        # decode below used to abort the whole library here (rc 1).
+        if tail_stats is not None:
+            tail_stats["past_contig_end"] = tail_stats.get("past_contig_end", 0) + 1
+        return None
 
     # Decode calmd `=` before anything below reads SEQ (the walkback, its tail count and
     # the 5' bridge search). Every `rectify align` arm is `calmd -e` encoded, and so was
@@ -285,9 +294,11 @@ def run(args) -> int:
                 n_nonprimary += 1
                 continue
             chrom_seq = chrom_cache.get(rec.reference_name, "")
+            n_past_end = tail_stats.get("past_contig_end", 0)
             result = _read_info_from_bam_record(rec, chrom_seq, tail_stats)
             if result is None:
-                n_missing_tags += 1
+                if tail_stats.get("past_contig_end", 0) == n_past_end:
+                    n_missing_tags += 1
                 continue
             info, xc = result
             cid = len(clusters)
@@ -310,6 +321,9 @@ def run(args) -> int:
              "(stage-1 measurement), %d zero",
              tail_stats["walkback"], tail_stats["carried"], tail_stats["zero"])
     n_frame_fixed = tail_stats.get("xo_frame_corrected", 0)
+    if tail_stats.get("past_contig_end", 0):
+        log.warning("  %d records run past the end of their contig (invalid SAM): skipped, not analysed; "
+                    "consensus_tagged.bam carries them as stored", tail_stats["past_contig_end"])
     if tail_stats.get("eq_unresolved", 0):
         log.warning("  %d records carry calmd '=' inside a clip or insertion (no reference base); "
                     "those bases were written N", tail_stats["eq_unresolved"])

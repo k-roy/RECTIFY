@@ -178,3 +178,64 @@ def test_consensus_without_its_tail_in_seq_keeps_the_carried_tail_length():
                 assert info.anchor == anchor, (method, strand, encoded, info.anchor)
                 assert info.tail_len == 33, (method, strand, encoded, info.tail_len)
                 assert stats == {"carried": 1}, (method, strand, encoded, stats)
+
+
+def _past_contig_end(encoded):
+    """A plus-strand molecule placed 50 nt before the contig end with a 100M CIGAR: invalid SAM. The July Path-A
+    wtaa_rep1 multialigned BAM holds 875 such deSALT placements (their bases continue onto the NEXT contig of
+    deSALT's concatenated index); calmd encoded the in-contig half as `=` and left the rest literal."""
+    r = _record("+", encoded)
+    start = GLEN - 50
+    r.reference_start = start
+    r.cigartuples = [(0, 100)]
+    r.query_sequence = ("=" * 50 if encoded else GENOME[start:]) + "ACGT" * 12 + "AC"
+    r.query_qualities = pysam.qualitystring_to_array("I" * 100)
+    return r
+
+
+def test_cdna_analyze_skips_a_record_past_the_contig_end():
+    # fa7f315: the strict decode refused ('CIGAR exceeds stored query or available reference'), the N fallback raised
+    # again uncaught, and cdna-analyze aborted the library (rc 1, July Path-A wtaa_rep1). The literal twin (post-#6
+    # SEQ) is just as invalid: skipped and counted either way, never analysed.
+    for encoded in (True, False):
+        stats = {}
+        assert _read_info_from_bam_record(_past_contig_end(encoded), GENOME, stats) is None, encoded
+        assert stats == {"past_contig_end": 1}, (encoded, stats)
+
+
+def test_cdna_analyze_run_completes_and_counts_records_past_the_contig_end(tmp_path, caplog):
+    import argparse
+    import logging
+    from rectify.core.commands import cdna_analyze_command
+    fa = tmp_path / "ref.fa"
+    fa.write_text(f">{CHROM}\n{GENOME}\n")
+    pysam.faidx(str(fa))
+    gff = tmp_path / "ref.gff"
+    gff.write_text("##gff-version 3\n"
+                   f"{CHROM}\tsynthetic\tgene\t{PLUS_START + 1}\t{PLUS_START + BODY_LEN}\t.\t+\t.\tID=gene_P;Name=gene_P\n")
+    recs = [_record("+", True), _past_contig_end(True), _past_contig_end(False)]
+    for i, r in enumerate(recs):
+        r.query_name = f"m{i}"
+    bam = tmp_path / "in.bam"
+    with pysam.AlignmentFile(str(bam), "wb", header=recs[0].header) as out:
+        for r in recs:
+            out.write(r)
+    stored = {r.query_name: r.to_string() for r in recs}
+
+    with caplog.at_level(logging.WARNING, logger="cdna-analyze"):
+        rc = cdna_analyze_command.run(argparse.Namespace(bam=bam, out=tmp_path / "out", gff=gff, reference=fa))
+    assert rc == 0
+    assert len((tmp_path / "out" / "corrected_reads.tsv").read_text().splitlines()) == 2   # header + the valid one
+    assert any("2 records run past the end of their contig" in m for m in caplog.messages), caplog.messages
+    with pysam.AlignmentFile(str(tmp_path / "out" / "consensus_tagged.bam")) as tagged:
+        got = {r.query_name: r.to_string() for r in tagged.fetch(until_eof=True)}
+    assert got["m1"] == stored["m1"] and got["m2"] == stored["m2"]      # passed through as stored
+
+
+def test_correct_intake_skips_a_record_past_the_contig_end(caplog):
+    import logging
+    from rectify.core.bam import bam_processor as bp
+    with caplog.at_level(logging.WARNING):
+        for encoded in (True, False):
+            assert bp.correct_read_3prime(_past_contig_end(encoded), {CHROM: GENOME}) == [], encoded
+    assert sum("runs past the end of its contig" in m for m in caplog.messages) == 2, caplog.messages
