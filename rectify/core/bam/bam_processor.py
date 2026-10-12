@@ -83,7 +83,7 @@ from ..splice.overhang_informativeness import COUNTERS as _OI_COUNTERS
 
 # Backwards-compat re-exports for callers that still reach in via this module.
 from .processing_stats import ProcessingStats, write_stats_tsv, generate_stats_report  # noqa: F401
-from .alignment_tags import decode_original_sequence
+from .alignment_tags import decode_original_sequence, span_fits_reference
 from .bam_writer import (  # noqa: F401  (re-exported)
     _load_corrections_from_tsv,
     _decode_eq_seq_inplace,
@@ -314,6 +314,15 @@ def correct_read_3prime(
     # Fragmented TruSeq ends are not cleavage/poly(A) ends. QuantSeq REV and
     # explicitly labeled cDNA retain their existing tail-bearing chemistry.
     tail_correction_enabled = not short_read or dt_primed_cDNA or ont_cDNA
+
+    # A record whose reference span runs past its contig is invalid SAM (deSALT aligns across
+    # the contig boundaries of its concatenated index; consensus kept such placements until
+    # d0e3a0f). Nothing past the contig can be decoded or corrected: skip it rather than abort
+    # the run in the decode below, and say so per read (the count survives the worker pool).
+    if not read.is_unmapped and not span_fits_reference(read, genome):
+        logger.warning(f"{read.query_name}: {read.reference_name}:{read.reference_start}-"
+                       f"{read.reference_end} runs past the end of its contig; skipped, not corrected")
+        return []
 
     # Decode SAM-spec ``=`` shorthand in SEQ before any module reads
     # query_sequence. Aligners with ``=``-CIGAR emission (minimap2, gapmm2,

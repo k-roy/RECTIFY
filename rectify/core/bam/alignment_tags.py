@@ -17,6 +17,32 @@ def placement_state(read):
             bytes(read.query_qualities) if read.query_qualities is not None else None)
 
 
+def span_fits_reference(read, genome=None):
+    """False when a mapped read's reference span leaves its contig: a negative POS, or an end past
+    the contig length in the BAM header or past its sequence in *genome*.
+
+    Such a record is invalid SAM. deSALT aligns across the contig boundaries of its concatenated
+    index, and consensus kept those placements until d0e3a0f: a July Path-A multialigned BAM holds
+    875, on every chromosome (2026-10-11). No base past the contig can be decoded, walked or
+    corrected, so intake skips such a record and the writers emit it as stored.
+    """
+    if read.is_unmapped or not read.cigartuples:
+        return True
+    if read.reference_start < 0:
+        return False
+    end = read.reference_end
+    lengths = []
+    try:
+        lengths.append(read.header.get_reference_length(read.reference_name))
+    except (AttributeError, KeyError, ValueError):
+        pass
+    if genome:
+        reference, _ = get_chrom_sequence(genome, read.reference_name)
+        if reference:
+            lengths.append(len(reference))
+    return end is None or not lengths or end <= min(lengths)
+
+
 def decode_original_sequence(read, genome, unresolved='refuse'):
     """Decode SEQ '=' before surgery, or refuse without changing the record.
 
