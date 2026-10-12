@@ -483,6 +483,11 @@ def test_cdna_analyze_honours_carried_xa_on_pretrimmed_records(tmp_path):
     corrected_reads.tsv (polya_length) and the tagged BAM (XA); a record whose
     tail IS still in SEQ must keep the walkback value (it is the post-align
     measurement, more accurate than the pre-align one).
+
+    These fixtures carry no XK, i.e. they predate the stage 1 that emits XA, XK
+    and XM together (aea0060). A record that does carry XK reports its carried XA
+    even with its tail in SEQ: there the walk and XA agree, and Dorado XP does not
+    favour the walk (ISSUE-093; test_cdna_analyze_eq_seq.py).
     """
     from rectify.core.cdna.walkback import walk_back_anchor_and_tail
     from rectify.core.commands import cdna_analyze_command

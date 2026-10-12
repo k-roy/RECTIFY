@@ -144,3 +144,37 @@ def test_correct_intake_survives_equals_in_a_clip():
     rec = _clip_equals_record()
     bp.correct_read_3prime(rec, {CHROM: GENOME})
     assert "=" not in rec.query_sequence and rec.query_sequence.endswith("N")
+
+
+# --------------------------------------------------------------------------- the two defects 1090z32 found in fa7f315
+# (2026-10-11; Chanfreau planning/1090z32_cdna_eq_fix.md, rectify dev/fixes_20261012/TAIL_RULE.md)
+
+def _clipless_consensus(strand, encoded, method):
+    """A molecule whose SEQ never held the tail: no clip at all, ``XK:i:0`` (nothing for the pretrim to cut), the
+    carried ``XA:i:33``. A pileup consensus is built from aligned pairs only, and a representative read need not
+    carry the cluster's tail (``XA`` is the member reads' median). The alignment ends on the genomic A's (T's)."""
+    r = _record(strand, encoded)
+    r.cigartuples = [(0, BODY_LEN)]
+    r.query_sequence = "=" * BODY_LEN if encoded else (PLUS_BODY if strand == "+" else MINUS_BODY)
+    r.query_qualities = pysam.qualitystring_to_array("I" * BODY_LEN)
+    r.set_tag("XA", 33, "i")
+    r.set_tag("XK", 0, "i")
+    r.set_tag("XM", method, "Z")
+    return r
+
+
+def test_consensus_without_its_tail_in_seq_keeps_the_carried_tail_length():
+    # dd9f681 protected only XK > 0, so for these molecules the walk's count of the genomic A's at the alignment end
+    # replaced the carried tail: polya_length changed for 24.7 % of 1076 un_60S_bc19's molecules (70,031 of 275,772
+    # tails >= 10 nt fell below 10). Dorado XP sides with XA there: the 10-nt gate agrees 0.977 vs 0.029 for the walk
+    # on 84,009 pileup molecules. Every stage-1 record that carries XK reports its carried XA.
+    from rectify.core.cdna.walkback import walk_back_anchor_and_tail
+    assert walk_back_anchor_and_tail(_clipless_consensus("+", False, "pileup"), GENOME, "fwd")[1] == 4  # walk alone
+    for method in ("pileup", "rep_fallback"):
+        for strand, anchor in (("+", PLUS_ANCHOR), ("-", MINUS_ANCHOR)):
+            for encoded in (False, True):
+                stats = {}
+                info, _ = _read_info_from_bam_record(_clipless_consensus(strand, encoded, method), GENOME, stats)
+                assert info.anchor == anchor, (method, strand, encoded, info.anchor)
+                assert info.tail_len == 33, (method, strand, encoded, info.tail_len)
+                assert stats == {"carried": 1}, (method, strand, encoded, stats)
