@@ -239,3 +239,41 @@ def test_correct_intake_skips_a_record_past_the_contig_end(caplog):
         for encoded in (True, False):
             assert bp.correct_read_3prime(_past_contig_end(encoded), {CHROM: GENOME}) == [], encoded
     assert sum("runs past the end of its contig" in m for m in caplog.messages) == 2, caplog.messages
+
+
+def test_correct_bam_writers_pass_through_a_record_past_the_contig_end(tmp_path):
+    # correct's intake skips such a record, so it has no row, and every BAM writer used to decode it anyway and
+    # abort the whole write ('CIGAR exceeds stored query or available reference'). A record with no row that runs
+    # past its contig is now written exactly as stored, like the secondary and supplementary records. A '=' left
+    # in a clip still refuses in the writers: cd200a9's refusal controls (test_bam_writer_parallel_smoke.py).
+    from rectify.core.bam import bam_processor as bp
+    from rectify.core.bam import bam_writer as bw
+    from rectify.core.bam.output import write_output_tsv
+    genome = {CHROM: GENOME}
+    recs = [_record("+", True), _past_contig_end(True), _past_contig_end(False)]
+    for r, name in zip(recs, ("normal", "off_eq", "off_lit")):
+        r.query_name = name
+    bam = tmp_path / "old.bam"
+    with pysam.AlignmentFile(str(bam), "wb", header=recs[0].header) as out:
+        for r in recs:
+            out.write(r)
+    stored = {r.query_name: r.to_string() for r in recs}
+    rows = []
+    with pysam.AlignmentFile(str(bam)) as b:
+        for r in b.fetch(until_eof=True):
+            rows += bp.correct_read_3prime(r, genome)
+    assert {row["read_id"] for row in rows} == {"normal"}           # the intake skipped both off-contig twins
+    tsv = tmp_path / "old.tsv"
+    write_output_tsv(rows, str(tsv))
+
+    hc, sc, d_hc, d_sc = (tmp_path / f"{n}.bam" for n in ("hc", "sc", "dual_hc", "dual_sc"))
+    bw.write_corrected_bam(str(bam), str(tsv), str(hc), genome)
+    bw.write_softclipped_bam(str(bam), str(tsv), str(sc), genome)
+    bw.write_dual_bam(str(bam), str(tsv), str(d_hc), str(d_sc), genome)
+    for path in (hc, sc, d_hc, d_sc):
+        with pysam.AlignmentFile(str(path)) as b:
+            got = {r.query_name: r for r in b.fetch(until_eof=True)}
+        assert set(got) == set(stored), path
+        assert "=" not in got["normal"].query_sequence, path
+        assert got["off_eq"].to_string() == stored["off_eq"], path
+        assert got["off_lit"].to_string() == stored["off_lit"], path
