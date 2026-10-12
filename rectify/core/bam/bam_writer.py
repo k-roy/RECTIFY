@@ -32,7 +32,7 @@ import pysam
 from ...utils.alignment import parse_junctions_string
 from ...utils.genome import get_chrom_sequence
 from .alignment_tags import (
-    decode_original_sequence, finalize_alignment_tags, placement_state,
+    decode_original_sequence, finalize_alignment_tags, placement_state, span_fits_reference,
 )
 from ..splice.overhang_informativeness import is_canonical_junction
 from .read_edits import (
@@ -58,6 +58,21 @@ def _decode_eq_seq_inplace(
 ) -> bool:
     """Decode reference-relative SEQ before editing; refuse unresolved input."""
     return decode_original_sequence(read, genome)
+
+
+def _written_as_stored(read: pysam.AlignedSegment, genome: Optional[Dict[str, str]]) -> bool:
+    """True when a read without a corrected-TSV row runs past its contig: it is written exactly as
+    stored, never decoded, like the secondary and supplementary records.
+
+    Such a record is invalid SAM and `correct`'s intake skips it, so it has no row (see
+    ``span_fits_reference``); decoding it here would abort the whole write. A record that HAS a
+    row is still decoded, and a placement past its contig still refuses there.
+    """
+    if span_fits_reference(read, genome):
+        return False
+    logger.warning(f"{read.query_name}: {read.reference_name}:{read.reference_start}-"
+                   f"{read.reference_end} runs past the end of its contig; written as stored")
+    return True
 
 
 @contextmanager
@@ -882,7 +897,7 @@ def apply_corrected_edits_to_read(
         return False
 
     if correction is None:
-        if genome is not None:
+        if genome is not None and not _written_as_stored(read, genome):
             _decode_eq_seq_inplace(read, genome)
         return False
 
@@ -1028,7 +1043,7 @@ def write_softclipped_bam(
 
             correction = corrections.get(read.query_name)
             if correction is None:
-                if genome is not None:
+                if genome is not None and not _written_as_stored(read, genome):
                     _decode_eq_seq_inplace(read, genome)
                 bam_out.write(read)
                 stats['unchanged'] += 1
@@ -1147,7 +1162,7 @@ def write_dual_bam(
 
             correction = corrections.get(read.query_name)
             if correction is None:
-                if genome is not None:
+                if genome is not None and not _written_as_stored(read, genome):
                     _decode_eq_seq_inplace(read, genome)
                 bam_hc.write(read)
                 bam_sc.write(read)
