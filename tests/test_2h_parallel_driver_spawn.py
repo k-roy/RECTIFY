@@ -36,9 +36,11 @@ from rectify.core.bam.processing_stats import ProcessingStats, write_stats_tsv  
 ALIGNERS = ['minimap2', 'gapmm2', 'mapPacBio', 'deSALT', 'uLTRA']
 ALIGNER_DIR = RECTIFY_ROOT / 'rectify' / 'data' / 'validation' / 'aligners'
 INPUT_BAM = ALIGNER_DIR / 'validation_reads_upf1d.mapPacBio.bam'
-# The sequential run on this bundle: 36 records, 20 with N-ops, 7 refined
-# (the number the ISSUE-025 repro recorded at 1 thread).
-EXPECTED_REFINED = 7
+# The sequential run on this bundle: 36 records, 20 with N-ops, 5 refined on master.
+# 7 when ISSUE-025 was written (2026-09-05, 7174c47); 5 on master since: read 9e2d47c3's move glued a 2I to
+# its N (93N -> 2I95N) and ISSUE-031 (af2f788) refuses that, and realizability-before-ranking (ae5cd5b) skips 3
+# unwritable winners (sequential probe at 2d0f00b, dev/audit_20261012/refine_probe.py, 2026-10-13).
+EXPECTED_REFINED = 5
 
 
 def _bundle_or_skip():

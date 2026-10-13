@@ -19,7 +19,7 @@ what that leaves open:
   ``RECTIFY_2H_FAILURE_FATAL=1`` turns it into the CLI's ``SystemExit(1)``, and
   a clean run writes no such row.
 
-Refined count on this input: 7 at 1 thread, with or without the tables.
+Refined count on this input: 5 at 1 thread on master, with or without the tables (7 before ISSUE-031).
 """
 from __future__ import annotations
 
@@ -44,7 +44,10 @@ INPUT_BAM = VAL_DIR / 'validation_reads_upf1d.mapPacBio.bam'
 ALIGNER_BAMS = [VAL_DIR / f'validation_reads_upf1d.{a}.bam' for a in ALIGNERS]
 
 EXPECTED_N_OP_READS = 20
-EXPECTED_REFINED = 7
+# 7 when ISSUE-025 was written (2026-09-05, 7174c47); 5 on master since: read 9e2d47c3's move glued a 2I to
+# its N (93N -> 2I95N) and ISSUE-031 (af2f788) refuses that, and realizability-before-ranking (ae5cd5b) skips 3
+# unwritable winners (sequential probe at 2d0f00b, dev/audit_20261012/refine_probe.py, 2026-10-13).
+EXPECTED_REFINED = 5
 
 # 20 N-op reads -> 5 batches, so both workers really receive work (the default
 # batch_size=200 would hand everything to one worker).
