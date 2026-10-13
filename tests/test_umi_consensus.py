@@ -216,7 +216,9 @@ def test_consensus_corrects_minority_keeps_molecule_change_masks_primer(tmp_path
     for x in range(r2_end - 8, r2_end + 1):                    # the primer span is masked on R2
         assert r2.query_sequence[x - r2_start] == "N"
     assert r2.get_tag("pK") == 9 and r1.get_tag("pK") == 0     # R1 does not reach the primer here
-    ev = st.as_dict()["mismatch_events"]
+    d = st.as_dict()
+    ev = d["mismatch_events"]
+    assert d["end_distance_hist"]["primer_template"]["pass"]["primer_end"]["3"] >= 1
     assert ev["minority"]["3"]["pass"] >= 1
     assert ev["molecule"]["3"]["pass"] >= 1
     assert ev["primer_template"]["3"]["pass"] >= 1
@@ -315,3 +317,23 @@ def test_array_tags_are_copied(tmp_path, ref_fasta):
     consensus_bam(inp, out, reference=fa)
     for r in _reads(out):
         assert list(r.get_tag("zA")) == [-1, 2]
+
+
+def test_mate_overlap_disagreement_is_counted_and_outvoted(tmp_path, ref_fasta):
+    """Family of 3 on a short insert; one member's R1 carries a sequencing error inside the region its R2 also reads.
+    The mates disagree there (counted in mate_overlap), the fragment base becomes N for the family classes, and the R1
+    consensus keeps the reference base."""
+    fa, ref = ref_fasta
+    h = _hdr()
+    R1S, TLEN = 700, 60
+    x = R1S + 20
+    pairs = [_pair(h, ref, f"o{i}", "TGCATGCATGCA", R1S, TLEN, rlen=50,
+                   r1_err={x: _alt(ref[x])} if i == 0 else None) for i in range(3)]
+    inp = _write(tmp_path / "in.bam", pairs, h)
+    out = str(tmp_path / "out.bam")
+    st = consensus_bam(inp, out, reference=fa)
+    d = st.as_dict()
+    assert d["mate_overlap"]["disagree"] == 1 and d["mate_overlap"]["positions"] >= 3 * 40
+    r1 = next(r for r in _reads(out) if r.is_read1)
+    assert r1.query_sequence[x - R1S] == ref[x]
+    assert sum(v for qc in d["minority_by_overlap"].get("3", {}).values() for v in qc.values()) == 0

@@ -41,8 +41,12 @@ useful three ways:
      * a minority base in a family of >= 3 that the consensus outvotes -> ``minority``
        (sequencing or late PCR error, corrected). A family of 2 cannot have a minority base.
    Each class is binned by distance from both fragment ends: the primer end (primer mate's 5′)
-   and the ligation end (the other mate's 5′), which is the direct test of whether the
-   mismatches crowding COMPASS's low-quality pairs are end artifacts.
+   and the other end (the other mate's 5′; the linker-ligation end in CORALL), split by QC
+   status, which is the direct test of whether the mismatches crowding COMPASS's low-quality
+   pairs are end artifacts. Where a fragment's two mates overlap, their disagreements are
+   counted separately: that is the direct per-base sequencing-error estimate (such positions
+   become N for the family-level classes, so ``minority`` is also reported for non-overlapped
+   positions alone).
 
 The molecule key can be the dedup key (``span_key='tlen'``: R1 5′ + |TLEN|) or both
 soft-clip-corrected 5′ ends (``span_key='unclipped'``, default here): primer bases left in the
@@ -340,13 +344,22 @@ class ConsensusStats:
     # class -> size bin -> qc ("pass"/"qcfail") -> count of mismatch events
     events: Dict[str, Dict[str, Dict[str, int]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
-    # class -> "primer_end"/"ligation_end" -> distance bin -> count
-    end_hist: Dict[str, Dict[str, Dict[str, int]]] = field(
+    # class -> qc -> "primer_end"/"other_end" -> distance bin -> count
+    end_hist: Dict[str, Dict[str, Dict[str, Dict[str, int]]]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int)))))
+    # positions examined (denominators): size bin -> qc -> "ov"/"single" -> count
+    positions: Dict[str, Dict[str, Dict[str, int]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
-    # positions examined (denominators): size bin -> qc -> count
-    positions: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
-    # position denominators by end distance (for rates): end -> bin -> count, families >= 2 only
-    end_positions: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
+    # minority events by overlap status: size bin -> qc -> "ov"/"single" -> count
+    minority_by_overlap: Dict[str, Dict[str, Dict[str, int]]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+    # position denominators by end distance (for rates), families >= 2 only: qc -> end -> bin -> count
+    end_positions: Dict[str, Dict[str, Dict[str, int]]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(int))))
+    # within-fragment mate overlap: positions read by both mates and their disagreements (sequencing-error estimate)
+    mate_overlap: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # molecule-level alternate bases within 0..2 nt of the other end: distance -> "ref>alt" -> count
+    other_end_alts: Dict[str, Dict[str, int]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(int)))
     mismatches_before_after: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     recurrence: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
 
@@ -371,7 +384,10 @@ class ConsensusStats:
             "mismatch_events": plain(self.events),
             "end_distance_hist": plain(self.end_hist),
             "positions_examined": plain(self.positions),
+            "minority_by_overlap": plain(self.minority_by_overlap),
             "end_positions_examined": plain(self.end_positions),
+            "mate_overlap": plain(dict(self.mate_overlap)),
+            "other_end_alternate_bases": plain(self.other_end_alts),
             "mismatches_representative_vs_consensus": plain(dict(self.mismatches_before_after)),
             "recurrence": plain(dict(self.recurrence)),
         }
@@ -496,7 +512,8 @@ def _mate_consensus(reads: List, ref: Optional[str], min_posterior: float) -> Tu
     return template, cseq, cq, len(reads) - len(ok)
 
 
-def _fragment_bases(frag_reads: Dict[str, object], ref: Optional[str], contig: str) -> Dict[int, Tuple[str, int]]:
+def _fragment_bases(frag_reads: Dict[str, object], ref: Optional[str], contig: str,
+                    overlap: Optional[Dict[str, int]] = None, overlapped: Optional[set] = None) -> Dict[int, Tuple[str, int]]:
     """Per reference coordinate on ``contig``, the fragment's base (its mates agreeing where they
     overlap; 'N' where they disagree) and the better quality. A mate on another contig (a chimeric
     pair) is left out."""
@@ -513,6 +530,16 @@ def _fragment_bases(frag_reads: Dict[str, object], ref: Optional[str], contig: s
                 continue
             if x in out:
                 b0, q0 = out[x]
+                if overlapped is not None:
+                    overlapped.add(x)
+                if overlap is not None and b0 in _BASES and b in _BASES:
+                    overlap["positions"] += 1
+                    if b0 != b:
+                        overlap["disagree"] += 1
+                    if min(q0, qq) >= 30:
+                        overlap["positions_q30"] += 1
+                        if b0 != b:
+                            overlap["disagree_q30"] += 1
                 out[x] = (b0, max(q0, qq)) if b0 == b else ("N", 0)
             else:
                 out[x] = (b, qq)
@@ -647,7 +674,9 @@ def consensus_bam(
         span = primer_span(p_end, pm.is_reverse, primer_length, primer_source) if (p_end is not None and primer_length > 0) else None
 
         # ---- classification over fragment-level bases
-        fb = [_fragment_bases(m, ref, contig) for m in members]
+        ov_sets = [set() for _ in members]
+        fb = [_fragment_bases(m, ref, contig, stats.mate_overlap, ov) for m, ov in zip(members, ov_sets)]
+        ov_any = set().union(*ov_sets) if ov_sets else set()
         sb = _size_bin(n)
         if ref is not None:
             xs = set()
@@ -660,12 +689,13 @@ def consensus_bam(
                 obs = [d[x][0] for d in fb if x in d and d[x][0] in _BASES]
                 if not obs:
                     continue
-                stats.positions[sb][qc] += 1
+                ovk = "ov" if x in ov_any else "single"
+                stats.positions[sb][qc][ovk] += 1
                 dp = abs(x - p_end) if p_end is not None else None
                 dl = abs(x - l_end) if l_end is not None else None
                 if n >= 2:
-                    stats.end_positions["primer_end"][_dist_bin(dp)] += 1
-                    stats.end_positions["ligation_end"][_dist_bin(dl)] += 1
+                    stats.end_positions[qc]["primer_end"][_dist_bin(dp)] += 1
+                    stats.end_positions[qc]["other_end"][_dist_bin(dl)] += 1
                 alts = [b for b in obs if b != rb]
                 if not alts:
                     continue
@@ -682,8 +712,12 @@ def consensus_bam(
                     cls = "mixed"
                 k = len(alts) if cls == "minority" else 1
                 stats.events[cls][sb][qc] += k
-                stats.end_hist[cls]["primer_end"][_dist_bin(dp)] += k
-                stats.end_hist[cls]["ligation_end"][_dist_bin(dl)] += k
+                stats.end_hist[cls][qc]["primer_end"][_dist_bin(dp)] += k
+                stats.end_hist[cls][qc]["other_end"][_dist_bin(dl)] += k
+                if cls == "minority":
+                    stats.minority_by_overlap[sb][qc][ovk] += k
+                if cls == "molecule" and dl is not None and dl <= 2:
+                    stats.other_end_alts[str(dl)][f"{rb}>{alts[0]}"] += 1
 
         # ---- consensus records, one per mate
         for mate in ("r1", "r2"):
