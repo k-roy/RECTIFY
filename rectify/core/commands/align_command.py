@@ -1308,6 +1308,17 @@ def run_align(args: argparse.Namespace) -> int:
         if len(successful_aligners) == 1:
             single_bam = list(successful_aligners.values())[0]
             multialigned_bam = args.output_dir / f"{prefix}.multialigned.bam"
+            run_aligners = set(results) | ({'overhang_resolver'} if 'minimap2' in results else set())
+            conflict = _fanout_conflict(args.output_dir, prefix, run_aligners)
+            if conflict:
+                logger.error(
+                    "Refusing to write %s: it belongs to another run with the same --prefix and -o (%s). "
+                    "One align job per aligner sharing a prefix makes every job overwrite this file, so it would "
+                    "hold whichever aligner finished last. This job's own BAM is %s. Give each job its own "
+                    "--prefix or -o, then build the consensus with `rectify consensus`.",
+                    multialigned_bam, conflict, single_bam,
+                )
+                return 1
             import shutil
             import subprocess as _sp
             threads = getattr(args, 'threads', 1)
@@ -1320,7 +1331,8 @@ def run_align(args: argparse.Namespace) -> int:
             logger.info(f"Single-aligner output (sorted+indexed): {multialigned_bam}")
         from ..splice.terminal_tail_placement import write_terminal_selection_receipt
         write_terminal_selection_receipt(multialigned_bam, successful_aligners, _terminal_run_context)
-        _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
+        _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align,
+                             aligners=sorted(successful_aligners))
         return 0
 
     # Run consensus selection
@@ -1467,8 +1479,47 @@ def run_align(args: argparse.Namespace) -> int:
 
     from ..splice.terminal_tail_placement import write_terminal_selection_receipt
     write_terminal_selection_receipt(multialigned_bam, successful_aligners, _terminal_run_context)
-    _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align)
+    _write_align_sidecar(args, prefix, multialigned_bam, _align_started_at, _t_align,
+                         aligners=sorted(successful_aligners))
     return 0
+
+
+# Every name `align` writes a per-aligner BAM under (<prefix>.<name>.bam): the --aligners and
+# --junction-aligners choices.
+_ALIGNER_OUTPUT_NAMES = (
+    'minimap2', 'mapPacBio', 'gapmm2', 'bbmap', 'bwa', 'winnowmap2', 'minisplice_mm2',
+    'STAR_default', 'STAR_noncanonical', 'HISAT2_default', 'HISAT2_noncanonical', 'magicblast', 'gsnap',
+    'uLTRA', 'deSALT', 'gmap', 'overhang_resolver',
+)
+
+
+def _fanout_conflict(output_dir, prefix, run_aligners):
+    """Describe another run's output under this --prefix and -o, or return None.
+
+    The single-aligner copy is written to ``<prefix>.multialigned.bam`` whatever the aligner, so one
+    align job per aligner with a shared prefix and output directory (the per-aligner fan-out,
+    KNOWN_ISSUES) made each job overwrite the same file and nothing errored. A per-aligner BAM of an
+    aligner this run did not attempt, or an align sidecar recording a different aligner set, means
+    the destination belongs to another run. A sidecar without an aligner list (written before
+    2026-10-13) cannot be judged and is not.
+    """
+    output_dir = Path(output_dir)
+    # A finished consensus run may have deleted its per-aligner BAMs and kept their .prov.json.
+    others = sorted(a for a in _ALIGNER_OUTPUT_NAMES
+                    if a not in run_aligners and ((output_dir / f"{prefix}.{a}.bam").exists()
+                                                  or (output_dir / f"{prefix}.{a}.bam.prov.json").exists()))
+    if others:
+        return 'per-aligner BAMs of ' + ', '.join(others)
+    sidecar = output_dir / f"{prefix}.align.provenance.json"
+    if sidecar.exists():
+        import json
+        try:
+            recorded = (json.loads(sidecar.read_text()).get('stats') or {}).get('aligners')
+        except (OSError, ValueError, AttributeError):
+            recorded = None
+        if recorded and not set(recorded) <= set(run_aligners):
+            return 'its sidecar records ' + ', '.join(sorted(recorded))
+    return None
 
 
 def run(args: argparse.Namespace):
