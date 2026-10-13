@@ -6,7 +6,6 @@ SSP positions 9-22; direct RNA has no pile there (Chanfreau planning/1036, card 
 """
 
 import argparse
-import json
 import random
 
 import pysam
@@ -76,7 +75,7 @@ def _mol(name, start, length, reverse, genome):
     return r
 
 
-def test_cdna_analyze_tags_and_counts_ssp_starts(tmp_path):
+def test_cdna_analyze_tags_and_counts_ssp_starts(tmp_path, caplog):
     from rectify.core.commands import cdna_analyze_command
     genome = _genome()
     fa = tmp_path / "ref.fa"
@@ -87,19 +86,21 @@ def test_cdna_analyze_tags_and_counts_ssp_starts(tmp_path):
                    f"{CHROM}\ts\tgene\t901\t1400\t.\t+\t.\tID=g1;Name=g1\n"
                    f"{CHROM}\ts\tgene\t1800\t2200\t.\t-\t.\tID=g2;Name=g2\n"
                    f"{CHROM}\ts\tgene\t301\t700\t.\t+\t.\tID=g3;Name=g3\n")
-    recs = [_mol("plus_ssp", 1000, 200, False, genome),
-            _mol("minus_ssp", 1900, 200, True, genome),       # aligned 1900..2099, 5' end = 2099
-            _mol("plain", 400, 200, False, genome)]
+    recs = [_mol("plain", 400, 200, False, genome),
+            _mol("plus_ssp", 1000, 200, False, genome),
+            _mol("minus_ssp", 1900, 200, True, genome)]       # aligned 1900..2099, 5' end = 2099; coordinate order
     bam = tmp_path / "in.bam"
     with pysam.AlignmentFile(str(bam), "wb", header=recs[0].header) as out:
         for r in recs:
             out.write(r)
-    rc = cdna_analyze_command.run(argparse.Namespace(bam=bam, out=tmp_path / "out", gff=gff, reference=fa))
+    import logging
+    with caplog.at_level(logging.INFO, logger="cdna-analyze"):
+        rc = cdna_analyze_command.run(argparse.Namespace(bam=bam, out=tmp_path / "out", gff=gff, reference=fa))
     assert rc == 0
     with pysam.AlignmentFile(str(tmp_path / "out" / "consensus_tagged.bam")) as tagged:
         xs = {r.query_name: (r.get_tag("Xs") if r.has_tag("Xs") else None) for r in tagged.fetch(until_eof=True)}
     assert xs["plus_ssp"] == 14 and xs["minus_ssp"] == 14
     assert xs["plain"] is None
-    side = json.loads((tmp_path / "out" / "out.cdna_analyze.provenance.json").read_text())
-    assert side["stats"]["ssp_invasion"]["flagged"] == 2
-    assert side["stats"]["ssp_invasion"]["flag_min_nt"] == SSP_FLAG_MIN_NT
+    # The count also goes to the stage sidecar, which refuses paths under $TMPDIR, so the test reads the log line.
+    assert any(f"2 of 3 molecules start on a genomic match of >= {SSP_FLAG_MIN_NT} nt" in m for m in caplog.messages), \
+        caplog.messages

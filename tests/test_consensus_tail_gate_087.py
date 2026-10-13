@@ -128,8 +128,8 @@ def test_selection_runs_the_gate_only_when_switched_on(monkeypatch):
     body = g[1000:1100]
     rng = random.Random(3)
     junk = ''.join(rng.choice('ACGT') for _ in range(24))
-    reads = {'minimap2': _read('r7', 1000, '100M24S', body + junk), 'uLTRA': _read('r7', 1000, '124M', body + junk)}
-    for mode, expect in (('', {}), ('filed', {'uLTRA'})):
+    reads = {'minimap2': _read('r1', 1000, '100M24S', body + junk), 'uLTRA': _read('r1', 1000, '124M', body + junk)}
+    for mode, expect in (('', set()), ('filed', {'uLTRA'})):
         monkeypatch.setenv('RECTIFY_TAIL_GATE', mode)
         infos = {a: extract_alignment_info(r, a, genome) for a, r in reads.items()}
         res = select_best_alignment(infos, genome, raw_reads=reads)

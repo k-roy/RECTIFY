@@ -40,8 +40,9 @@ def _key(rows):
         j = r.get('junctions')
         if isinstance(j, (list, tuple)):
             j = ';'.join(f'{a}-{b}' for a, b in j)
-        out.setdefault(r['read_id'], (str(r['corrected_3prime']), j or '', str(r.get('five_prime_rescued')),
-                                      str(r.get('five_prime_position'))))
+        rescued = str(r.get('five_prime_rescued'))
+        rescued = '1' if rescued in ('True', '1') else '0'      # a dict holds bools; a TSV holds 0/1
+        out.setdefault(r['read_id'], (str(r['corrected_3prime']), j or '', rescued, str(r.get('five_prime_position'))))
     return out
 
 

@@ -7,7 +7,6 @@ the May cDNA tables, 1 of 4,423 in a current library. Xp:i carries the donor-sid
 """
 
 import argparse
-import json
 import random
 
 import pysam
@@ -80,7 +79,7 @@ def _mol(name, start, cigar, reverse, seq):
     return r
 
 
-def test_cdna_analyze_tags_and_counts_the_spliced_tail(tmp_path):
+def test_cdna_analyze_tags_and_counts_the_spliced_tail(tmp_path, caplog):
     from rectify.core.commands import cdna_analyze_command
     genome = _genome_with(1709, RPS26B_BLOCK)
     fa = tmp_path / "ref.fa"
@@ -96,10 +95,12 @@ def test_cdna_analyze_tags_and_counts_the_spliced_tail(tmp_path):
     with pysam.AlignmentFile(str(bam), "wb", header=spliced.header) as out:
         for r in (spliced, plain):
             out.write(r)
-    rc = cdna_analyze_command.run(argparse.Namespace(bam=bam, out=tmp_path / "out", gff=gff, reference=fa))
+    import logging
+    with caplog.at_level(logging.INFO, logger="cdna-analyze"):
+        rc = cdna_analyze_command.run(argparse.Namespace(bam=bam, out=tmp_path / "out", gff=gff, reference=fa))
     assert rc == 0
     with pysam.AlignmentFile(str(tmp_path / "out" / "consensus_tagged.bam")) as tagged:
         xp = {r.query_name: (r.get_tag("Xp") if r.has_tag("Xp") else None) for r in tagged.fetch(until_eof=True)}
     assert xp == {"spliced": 1099, "plain": None}
-    side = json.loads((tmp_path / "out" / "out.cdna_analyze.provenance.json").read_text())
-    assert side["stats"]["spliced_polya_tail"] == 1
+    assert any("1 of 2 molecules end in a block of <= 30 nt on a genomic A-run" in m for m in caplog.messages), \
+        caplog.messages
