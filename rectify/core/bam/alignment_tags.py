@@ -19,28 +19,30 @@ def placement_state(read):
 
 def span_fits_reference(read, genome=None):
     """False when a mapped read's reference span leaves its contig: a negative POS, or an end past
-    the contig length in the BAM header or past its sequence in *genome*.
+    the contig length its own BAM header declares (the sequence in *genome* only when the header
+    gives none, as ``bam_writer._placement_within_contig`` does).
 
     Such a record is invalid SAM. deSALT aligns across the contig boundaries of its concatenated
     index, and consensus kept those placements until d0e3a0f: a July Path-A multialigned BAM holds
     875, on every chromosome (2026-10-11). No base past the contig can be decoded, walked or
-    corrected, so intake skips such a record and the writers emit it as stored.
+    corrected, so intake skips such a record and the writers emit it as stored. The header decides
+    because a reference stand-in may be shorter than the contig it stands for; a read with no
+    integer placement or length is not judged.
     """
-    if read.is_unmapped or not read.cigartuples:
+    start, end = read.reference_start, read.reference_end
+    if read.is_unmapped or not read.cigartuples or not isinstance(start, int) or not isinstance(end, int):
         return True
-    if read.reference_start < 0:
+    if start < 0:
         return False
-    end = read.reference_end
-    lengths = []
+    length = None
     try:
-        lengths.append(read.header.get_reference_length(read.reference_name))
+        length = read.header.get_reference_length(read.reference_name)
     except (AttributeError, KeyError, ValueError):
         pass
-    if genome:
+    if not isinstance(length, int) and genome:
         reference, _ = get_chrom_sequence(genome, read.reference_name)
-        if reference:
-            lengths.append(len(reference))
-    return end is None or not lengths or end <= min(lengths)
+        length = len(reference) if reference else None
+    return not isinstance(length, int) or end <= length
 
 
 def decode_original_sequence(read, genome, unresolved='refuse'):

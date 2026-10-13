@@ -277,3 +277,19 @@ def test_correct_bam_writers_pass_through_a_record_past_the_contig_end(tmp_path)
         assert "=" not in got["normal"].query_sequence, path
         assert got["off_eq"].to_string() == stored["off_eq"], path
         assert got["off_lit"].to_string() == stored["off_lit"], path
+
+
+def test_the_bam_header_decides_the_contig_length():
+    # a86fd0f took the SHORTER of the header length and the reference string, so a unit fixture whose reference
+    # stand-in is shorter than its declared contig (test_2f_novel_site_evidence_gate: 240 nt against LN 3,000,000)
+    # lost a valid read, and a MagicMock read (test_bam_processor_chimeric) raised TypeError. The header declares
+    # what the record claims; the reference is consulted only when the header gives no length.
+    from unittest.mock import MagicMock
+    from rectify.core.bam.alignment_tags import span_fits_reference
+    assert span_fits_reference(_record("+", False), {CHROM: GENOME[:PLUS_START + 10]})   # header LN = GLEN wins
+    assert not span_fits_reference(_past_contig_end(False), {CHROM: GENOME})
+    assert not span_fits_reference(_past_contig_end(True))                                # header alone suffices
+    headerless = MagicMock(is_unmapped=False, cigartuples=[(0, 10)], reference_start=5, reference_end=15,
+                           reference_name=CHROM)
+    assert span_fits_reference(headerless, {})                     # nothing to judge against: not judged
+    assert not span_fits_reference(headerless, {CHROM: "A" * 12})  # no header length: the reference decides
