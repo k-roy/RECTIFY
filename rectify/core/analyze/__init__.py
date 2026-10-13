@@ -43,6 +43,7 @@ from .motif_discovery import (
     extract_sequences_around_clusters,
     run_differential_motif_analysis,
     summarize_motif_results,
+    plot_motif_logos,
 )
 
 from .shift_analysis import (
@@ -173,6 +174,7 @@ __all__ = [
     'extract_sequences_around_clusters',
     'run_differential_motif_analysis',
     'summarize_motif_results',
+    'plot_motif_logos',
     # Shift analysis
     'analyze_cluster_shifts',
     'get_top_shifted_genes',

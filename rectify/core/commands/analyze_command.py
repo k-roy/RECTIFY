@@ -33,6 +33,7 @@ from ..analyze import (
     plot_go_enrichment,
     run_differential_motif_analysis,
     summarize_motif_results,
+    plot_motif_logos,
     analyze_cluster_shifts,
     get_top_shifted_genes,
     plot_gene_browser,
@@ -717,6 +718,7 @@ def run_analyze(args: argparse.Namespace) -> int:
                 summary = summarize_motif_results(motif_results)
                 summary.to_csv(tables_dir / f'motif_summary_{condition}.tsv', sep='\t', index=False)
                 print(f"  {condition}: {summary['motifs_found'].sum()} motifs found")
+                plot_motif_logos(motif_results, str(plots_dir / f'motif_logos_{condition}.png'), condition)
     else:
         print(f"\n[8/9] Skipping motif discovery (provide --genome and --run-motif)")
 

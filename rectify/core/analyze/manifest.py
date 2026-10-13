@@ -45,6 +45,7 @@ from .go_enrichment import run_go_enrichment, plot_go_enrichment
 from .motif_discovery import (
     run_differential_motif_analysis,
     summarize_motif_results,
+    plot_motif_logos,
 )
 from .shift_analysis import (
     analyze_cluster_shifts,
@@ -1075,6 +1076,7 @@ def _run_analyze_manifest(
                 summary = summarize_motif_results(motif_results)
                 summary.to_csv(tables_dir / f'motif_summary_{condition}.tsv', sep='\t', index=False)
                 print(f"  {condition}: {summary['motifs_found'].sum()} motifs found")
+                plot_motif_logos(motif_results, str(plots_dir / f'motif_logos_{condition}.png'), condition)
     else:
         print(f"\n[8/9] Skipping motif discovery (provide --genome and --run-motif)")
 

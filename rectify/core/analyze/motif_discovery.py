@@ -950,3 +950,134 @@ def run_motif_discovery_with_annotation(
         result['top_matches'] = top_matches
 
     return result
+
+
+# =============================================================================
+# Motif logos (2026-10-13: the deliverable spec asks for plots of the discovered motifs; until now only the
+# STREME/MEME HTML reports existed)
+# =============================================================================
+
+LOGO_COLORS = {'A': '#2a9d3f', 'C': '#1f5fa8', 'G': '#e08a00', 'T': '#c1272d'}
+
+
+def parse_meme_minimal(path: str) -> List[Dict]:
+    """Motifs from a MEME-format text file (streme.txt / meme.txt), in file order.
+
+    Each: ``{'name', 'alt', 'evalue', 'nsites', 'pwm'}`` with ``pwm`` a list of ``[pA, pC, pG, pT]`` rows.
+    """
+    motifs: List[Dict] = []
+    lines = Path(path).read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith('MOTIF '):
+            parts = line.split()
+            cur = {'name': parts[1], 'alt': parts[2] if len(parts) > 2 else '', 'evalue': None,
+                   'nsites': None, 'pwm': []}
+            j = i + 1
+            while j < len(lines) and not lines[j].strip().startswith('letter-probability matrix'):
+                if lines[j].strip().startswith('MOTIF '):
+                    break
+                j += 1
+            if j < len(lines) and lines[j].strip().startswith('letter-probability matrix'):
+                header = lines[j]
+                w = None
+                for key, val in (kv.split('=') for kv in
+                                 header.split(':', 1)[1].replace('= ', '=').split() if '=' in kv):
+                    if key == 'w':
+                        w = int(float(val))
+                    elif key == 'nsites':
+                        cur['nsites'] = int(float(val))
+                    elif key in ('E', 'S') and cur['evalue'] is None:   # MEME writes E=, STREME S= or E=
+                        cur['evalue'] = float(val)
+                k = j + 1
+                while k < len(lines) and (w is None or len(cur['pwm']) < w):
+                    row = lines[k].split()
+                    if len(row) != 4:
+                        break
+                    try:
+                        cur['pwm'].append([float(x) for x in row])
+                    except ValueError:
+                        break
+                    k += 1
+                i = k
+            else:
+                i = j
+            if cur['pwm']:
+                motifs.append(cur)
+            continue
+        i += 1
+    return motifs
+
+
+def _draw_logo(ax, pwm: List[List[float]]) -> None:
+    """Information-content logo of one PWM (bits; letters stacked smallest first)."""
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.patches import PathPatch
+    from matplotlib.textpath import TextPath
+    from matplotlib.transforms import Affine2D
+
+    font = FontProperties(family='DejaVu Sans', weight='bold')
+    for x, row in enumerate(pwm):
+        total = sum(row) or 1.0
+        probs = [p / total for p in row]
+        ic = 2.0 + sum(p * np.log2(p) for p in probs if p > 0)
+        y = 0.0
+        for letter, p in sorted(zip('ACGT', probs), key=lambda t: t[1]):
+            h = p * ic
+            if h <= 0:
+                continue
+            tp = TextPath((0, 0), letter, size=1, prop=font)
+            ext = tp.get_extents()
+            sx = 0.9 / max(ext.width, 1e-6)
+            sy = h / max(ext.height, 1e-6)
+            tf = (Affine2D().translate(-ext.x0, -ext.y0).scale(sx, sy).translate(x + 0.05, y))
+            ax.add_patch(PathPatch(tf.transform_path(tp), facecolor=LOGO_COLORS[letter], edgecolor='none'))
+            y += h
+    ax.set_xlim(0, max(len(pwm), 1))
+    ax.set_ylim(0, 2)
+    ax.set_xticks([i + 0.5 for i in range(len(pwm))])
+    ax.set_xticklabels([str(i + 1) for i in range(len(pwm))], fontsize=7)
+    ax.set_ylabel('bits')
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+
+
+def plot_motif_logos(results: Dict[str, Dict], output_path: str, condition: str = '') -> Optional[str]:
+    """One logo per analysis: the top motif STREME (or MEME) reported, in a row of panels.
+
+    Returns the PNG path, or None when no analysis produced a motif (nothing is written).
+    """
+    tops = []
+    for name in ('enriched_upstream', 'enriched_downstream', 'depleted_upstream', 'depleted_downstream'):
+        res = results.get(name) or {}
+        out = res.get('output_dir')
+        if not res.get('success') or not out:
+            continue
+        for fname in ('streme.txt', 'meme.txt'):
+            p = Path(out) / fname
+            if p.exists():
+                motifs = parse_meme_minimal(str(p))
+                if motifs:
+                    tops.append((name, motifs[0], p))
+                break
+    if not tops:
+        return None
+    import datetime
+    import matplotlib
+    matplotlib.use('Agg', force=False)
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(1, len(tops), figsize=(3.2 * len(tops), 2.4), squeeze=False)
+    for ax, (name, motif, src) in zip(axes[0], tops):
+        _draw_logo(ax, motif['pwm'])
+        e = motif.get('evalue')
+        ax.set_xlabel(f"{name.replace('_', ' ')}: {motif.get('alt') or motif['name']}"
+                      + (f" (E = {e:.1e})" if e is not None else ''), fontsize=8)
+    fig.text(0.01, 0.01, f"rectify analyze motif discovery {condition} · top motif per scan from STREME/MEME output "
+             f"· {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", fontsize=5.5, color='0.45')
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+    return output_path
