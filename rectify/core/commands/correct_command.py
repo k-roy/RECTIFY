@@ -1502,6 +1502,7 @@ def run(args):
                     short_read=config.get('short_read', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
+                    exclusion_detector=_exclusion_detector,
                 )
             else:
                 # Single-threaded streaming for single-core or debugging
@@ -1528,6 +1529,7 @@ def run(args):
                     short_read=config.get('short_read', False),
                     min_mapq=config.get('min_mapq', 0),
                     min_aligned_length=config.get('min_aligned_length', 0),
+                    exclusion_detector=_exclusion_detector,
                 )
             report = generate_stats_report(stats, protocol=_protocol)
         else:

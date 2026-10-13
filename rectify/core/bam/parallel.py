@@ -843,6 +843,7 @@ def process_bam_file_parallel(
                 short_read=short_read,
                 min_mapq=min_mapq,
                 min_aligned_length=min_aligned_length,
+                exclusion_detector=exclusion_detector,
             )
             all_results.extend(results)
 
@@ -1004,6 +1005,7 @@ def process_bam_streaming(
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     short_read: bool = False,
+    exclusion_detector: Optional['ExclusionRegionDetector'] = None,
 ) -> ProcessingStats:
     """
     Process BAM file with streaming output to minimize memory usage.
@@ -1101,6 +1103,7 @@ def process_bam_streaming(
                     ont_cDNA=ont_cDNA,
                     use_dorado_polya=use_dorado_polya,
                     short_read=short_read,
+                    exclusion_detector=exclusion_detector,
                 )
                 chunk.extend(read_results)
 
@@ -1199,6 +1202,7 @@ def process_bam_streaming_parallel(
     min_mapq: int = 0,
     min_aligned_length: int = 0,
     short_read: bool = False,
+    exclusion_detector: Optional['ExclusionRegionDetector'] = None,
 ) -> ProcessingStats:
     """
     Process BAM file with parallel region workers and streaming output.
@@ -1348,6 +1352,7 @@ def process_bam_streaming_parallel(
         short_read=short_read,
         min_mapq=min_mapq,
         min_aligned_length=min_aligned_length,
+        exclusion_detector=exclusion_detector,
     )
 
     # Do not keep parent-loaded genome/model objects alive across worker
