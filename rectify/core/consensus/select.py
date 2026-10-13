@@ -79,6 +79,7 @@ def select_best_alignment(
     tiebreak: str = 'rectify',
     pool_min_anchor_bp: int = 0,
     pool_max_intron_len: int = 0,
+    raw_reads: Optional[Dict] = None,
 ) -> ConsensusResult:
     """
     Select the best alignment from multiple aligners for a single read.
@@ -169,6 +170,14 @@ def select_best_alignment(
     # Score all alignments
     for aligner, alignment in alignments.items():
         alignment.junction_score = score_alignment(alignment, genome, candidate_junctions)
+
+    # ISSUE-087 (opt-in, RECTIFY_TAIL_GATE=filed|written): a forced 3' tail that fits the genome no better than
+    # chance gets the clip arm's 3' charge, so it no longer beats the soft clip. Long-read mode only.
+    tail_gated = {}
+    if raw_reads and tiebreak == 'rectify':
+        from .tail_gate import apply_tail_gate, gate_mode
+        if gate_mode():
+            tail_gated = apply_tail_gate(alignments, raw_reads, genome)
 
     # Select best by score, using annotation and canonical motifs as tiebreakers
     max_score = max(a.junction_score for a in alignments.values())
@@ -272,4 +281,5 @@ def select_best_alignment(
         was_5prime_rescued=was_rescued,
         false_junction_removed=False,  # Not tracked; walk back correction handles this
         all_alignments=alignments,
+        tail_gated=tail_gated,
     )

@@ -129,6 +129,8 @@ class ConsensusResult:
 
     # All alignments for this read (for debugging)
     all_alignments: Dict[str, AlignmentInfo] = field(default_factory=dict)
+    # ISSUE-087 tail gate (opt-in): aligner -> reason for each arm whose forced 3' tail was charged as a clip.
+    tail_gated: Dict[str, str] = field(default_factory=dict)
 
 
 def extract_junctions_from_cigar(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:

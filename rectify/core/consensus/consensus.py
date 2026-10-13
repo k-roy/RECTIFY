@@ -1099,7 +1099,10 @@ def _process_and_write_batch(read_batch, raw_read_batch, genome, annotated_junct
                 alignments, genome, annotated_junctions, tiebreak=tiebreak,
                 pool_min_anchor_bp=pool_min_anchor_bp,
                 pool_max_intron_len=pool_max_intron_len,
+                raw_reads=aligner_reads,
             )
+            if result.tail_gated:
+                stats['tail_gated_reads'] += 1
             if result.confidence == 'high':
                 stats['consensus_high'] += 1
             elif result.confidence == 'medium':
@@ -1292,6 +1295,7 @@ def run_consensus_selection(
         # left with no valid arm (not written).
         'arm_records_past_contig_dropped': 0,
         'reads_all_arms_past_contig': 0,
+        'tail_gated_reads': 0,     # ISSUE-087 gate (opt-in): reads with an arm charged for a forced 3' tail
         'consensus_high': 0,
         'consensus_medium': 0,
         'consensus_low': 0,
@@ -1699,6 +1703,8 @@ def run_consensus_selection(
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
     logger.info(f"  Tied score (tiebreaker used): {stats['tied_score']}")
+    if stats['tail_gated_reads']:
+        logger.info(f"  Reads whose forced 3' tail was charged as a clip (ISSUE-087 gate): {stats['tail_gated_reads']}")
     if stats['arm_records_past_contig_dropped']:
         logger.warning(f"  Arm records past their contig's end, dropped before scoring (ISSUE-094): "
                        f"{stats['arm_records_past_contig_dropped']}; reads with no valid arm, not written: "
