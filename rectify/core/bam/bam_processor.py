@@ -273,6 +273,33 @@ def get_read_5prime_position(read: pysam.AlignedSegment, strand: Optional[str] =
         return ref_end - 1  # Rightmost = 5' for minus strand
 
 
+def _drop_junctions_past_3prime(row: Dict) -> None:
+    """Keep only the junctions the written record still carries once its 3' end is corrected (ISSUE-088).
+
+    When the 3' walkback moves the end upstream across an N (a terminal "exon" that is all tail), the
+    writer's clip removes that N, but the row kept the aligner's junction list, so the TSV claimed a
+    junction the BAM does not have (CF-1, 5cac4ae6; read-review §5: TSV junctions equal the written N
+    ops). Junctions are half-open (first intron base, first base after the intron). On + the record
+    keeps an intron only if its 3' end reaches the next exon (end <= corrected_3prime); on - (3' end
+    leftmost) only if it starts left of the intron (corrected_3prime < start).
+    """
+    junctions = row.get('junctions') or []
+    try:
+        c3 = int(row.get('corrected_3prime'))
+    except (TypeError, ValueError):
+        return
+    if not junctions or c3 < 0:
+        return
+    if row.get('strand') == '-':
+        kept = [j for j in junctions if c3 < j[0]]
+    else:
+        kept = [j for j in junctions if j[1] <= c3]
+    if len(kept) != len(junctions):
+        row['junctions'] = kept
+        row['junctions_str'] = format_junctions_string(kept)
+        row['n_junctions'] = len(kept)
+
+
 def correct_read_3prime(
     read: pysam.AlignedSegment,
     genome: Dict[str, str],
@@ -1506,6 +1533,7 @@ def correct_read_3prime(
                 row['confidence'] = 'medium'
             if not row['qc_flags']:
                 row['qc_flags'].append('PASS')
+            _drop_junctions_past_3prime(row)
             output_rows.append(row)
 
         return output_rows
@@ -1515,6 +1543,7 @@ def correct_read_3prime(
     result['is_primary_result'] = True
     if not result['qc_flags']:
         result['qc_flags'].append('PASS')
+    _drop_junctions_past_3prime(result)
     return [result]
 
 
