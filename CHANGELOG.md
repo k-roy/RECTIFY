@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Report-only cDNA flags in `cdna-analyze`.** `Xs:i` marks a molecule whose aligned 5′ end sits on a genomic
+  match of 8 nt or more to the strand-switching primer (ISSUE-086: strand invasion during RT, the CDC48 pile; a
+  random genome reaches 12 nt about once per 1.4 million molecules). `Xp:i` marks a molecule whose 3′ end is a
+  block of at most 30 nt on a genomic A-run after an intron (the A17 / spliced poly(A)-tail class: 6.2 % of records
+  aligned with their tails in one July library, 0.007 % of those whose tail was cut first) and carries the donor-side
+  end. Both are counted in the log and the stage sidecar; nothing is dropped or moved.
+- **Module 2H decision counters in the stats TSV** (`module_2h_<key>` rows: refined, unchanged, errors,
+  unrealizable_winner_skipped, whole_block_shifts, …) instead of log lines only.
+- **Motif logos in `rectify analyze`**: `plots/motif_logos_<condition>.png`, the top motif of each scan as an
+  information-content logo.
 - **`rectify cdna-length-correct`: per-library gene-length bias correction of ONT PCR-cDNA gene counts.**
   Replicate PCR-cDNA libraries count long genes differently, following each library's read length. The command
   counts UMI-deduplicated molecules per gene with one rule (`count`), fits each library's natural-spline curve in
@@ -41,6 +51,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`correct` wrote different rows at 1 thread than at several, and streaming runs never applied the Module 2F
+  exclusion (ISSUE-022).** The rDNA / Pol III exclusion (cf5ebb9) reached only the non-streaming multi-thread path;
+  the 1-thread fallback and both streaming paths (`--streaming`, the HPC profile's default) ran the 3′SS rescue in
+  those regions while the log said it was skipped. On the upf1d validation bundle one read lost its aligner-called
+  128N to a 62-nt soft clip at 1 thread only. Every path now applies the exclusion; rows change only for reads in
+  excluded regions on the paths that missed it (regions `analyze` drops). `--include-rdna` still disables it.
+- **Per-aligner `align` jobs sharing `--prefix` and `-o` overwrote each other's `<prefix>.multialigned.bam`
+  silently** (the single-aligner copy ignores the aligner name), so the "consensus" held whichever aligner
+  finished last. A single-aligner run now refuses (exit 1) when another aligner's output or an align sidecar
+  recording a different aligner set sits under the same prefix, naming the conflict and its own per-aligner BAM.
+  Align sidecars now record their aligner set.
+- **Module 2H did nothing under any start method but fork, with only a WARNING (ISSUE-025).** Its parallel driver
+  read state its workers inherit only under fork; on macOS (spawn), and on Linux from Python 3.14 (forkserver),
+  every worker failed and `correct` continued "non-fatal". The state now travels through the pool initializer
+  (`RECTIFY_2H_MP_START_METHOD` overrides the method), a driver failure is a RuntimeError, and `correct` logs it at
+  ERROR and writes a `module_2h_failed` row first in the stats TSV (`RECTIFY_2H_FAILURE_FATAL=1` aborts instead).
+- **The TSV `junctions` column kept a junction the 3′ walkback had removed (ISSUE-088).** When the corrected 3′
+  end crosses an N, the writer's clip drops that N; every row now drops the junctions past its corrected 3′ end, so
+  `junctions`, `junctions_str` and `n_junctions` match the written record.
+- **Consensus let an arm placement that runs past its contig compete (ISSUE-094).** deSALT reports a crossing of
+  its concatenated index on the earlier contig, and consensus chose 875 such records in one July PCR-cDNA
+  library. Every arm record is now checked against its contig length before scoring; one past the end is dropped
+  so a valid arm wins, and a read with no valid arm is not written (both counted and logged).
+- **`rectify analyze` motif discovery ran only when both enriched and depleted clusters numbered 20 or more**, so
+  one thin side silenced all four scans. Each side now runs on its own against the unchanged clusters (subsampled
+  to 5× the side), as the deliverable spec says; outputs change for conditions where both sides ran, because
+  their background is now the unchanged clusters rather than the other side.
 - **cdna-analyze never walked back cDNA 3′ ends (ISSUE-093).** `rectify align` writes every aligner
   arm through `samtools calmd -e`, and until 83af3d1 the multialigned BAM kept that `=` SEQ.
   cdna-analyze ran the poly(A) walkback on those records; a stored `=` never equals a genome letter,

@@ -163,28 +163,6 @@ on. The aggregation table's corresponding omission is repaired in the September
 
 ---
 
-## 🔴 A per-aligner fan-out silently clobbers its own output — OPEN
-
-- **Status:** open on `master`, verified 2026-08-29
-- **Affects:** `rectify align` run as one job per (sample × aligner) with a shared `--prefix` and `-o`
-- **Impact:** the "consensus" BAM is not a consensus — it is whichever aligner finished last
-
-The single-aligner output path is built as `<output_dir>/<prefix>.multialigned.bam` — keyed on the
-**sample prefix only, not on the aligner**. Running the panel as separate per-aligner jobs (the
-correct pattern, since uLTRA rebuilds a whole-genome index per invocation and must not be chunked)
-gives three writers and one destination. **Last writer wins, and nothing errors.**
-
-The symptom is quiet: the resulting file is byte-identical to one aligner's BAM apart from an extra
-`@PG` record, and every job log cheerfully reports `Single-aligner output (sorted+indexed): …`.
-
-- **Workaround:** give every per-aligner job its own `--prefix` (or its own `-o` directory), then
-  merge deliberately. Never let two aligner jobs share both.
-- **Detection:** compare the size of the "consensus" BAM against each single-aligner BAM. If it
-  matches one of them within a few dozen bytes, you have this bug.
-- **Fix guidance:** the aligner name belongs in the output prefix.
-
----
-
 ## 🔴 `correct` cost scales with junction-pool DENSITY, and the candidate cap does not gate it — OPEN
 
 - **Status:** open on `master`, verified 2026-08-29
@@ -327,7 +305,7 @@ anyway. Nuclear results are unaffected either way — the pool entries are organ
 
 ## 🟠 The NET-seq molecule (`--dedup`) track carries a randomer correction the read track does not
 
-- **Status:** narrowed on `feat/netseq-junction-rescue-836`, not eliminated; **worse on `master`**
+- **Status:** narrowed on `master` (the 836 branch merged 2026-09-02), not eliminated: the randomer divergence below remains
 - **Affects:** `rectify netseq --dedup --umi-length N`
 
 `netseq_umi.iter_netseq_fragments` used to key molecules on the terminal-oligo(A)-trimmed position
@@ -351,7 +329,7 @@ molecule positions do not exist in the read track.
 
 ## 🟠 Two NET-seq correction defaults are calibrated, not obvious — and the summary JSON reports both sides
 
-- **Status:** OPEN by design on `feat/netseq-junction-rescue-836`; not a bug, a calibration
+- **Status:** OPEN by design on `master` (the 836 branch merged 2026-09-02); not a bug, a calibration
 - **Affects:** `rectify netseq --junction-rescue` and the poly(A) walkback
 
 Both were calibrated on measurement and the defaults now reflect it; this entry records what the
@@ -441,18 +419,6 @@ unreadable path, a wrapper that forks for another reason) reaches it. The real
 fix is to stop using `capture_output=True` for aligner subprocesses: redirect
 stdout/stderr to files, use `start_new_session=True`, and kill the whole process
 group on timeout.
-
-## `rectify run-all --chunked-alignment` was a hard `TypeError` on every datatype
-
-**Status: FIXED on `fix/runall-truseq-861`.** `run/chunked_batch.py:221` has
-passed `write_per_aligner_corrected_bams=True` since `9d35ae1`, but the
-parameter was never added to `split_command.generate_alignment_scripts`, so the
-call raised `TypeError: generate_alignment_scripts() got an unexpected keyword
-argument 'write_per_aligner_corrected_bams'` and only `00_split.sh` was written.
-The call site is unconditional, so this affected DRS, ONT-cDNA, QuantSeq and
-TruSeq alike. `9d35ae1` is an ancestor of `429f1c9`, so the path was already
-broken when the 830–834 audits were written — planning `[[833]]` G-3's
-"generates a long-read pipeline with exit 0" was never reachable.
 
 ## `hisat2` accepts a non-existent `--known-splicesite-infile` silently
 
