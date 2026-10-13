@@ -35,6 +35,7 @@ from .alignment_tags import (
     decode_original_sequence, finalize_alignment_tags, placement_state, span_fits_reference,
 )
 from ..splice.overhang_informativeness import is_canonical_junction
+from ..consensus.extract import canonical_splice_pair
 from .read_edits import (
     clip_read_to_corrected_3prime,
     softclip_read_to_corrected_3prime,
@@ -373,12 +374,19 @@ def _repair_acceptor_overshoot(
     return False
 
 
+def _stranded_motif_guard() -> bool:
+    """ISSUE-089 (opt-in, ``RECTIFY_5P_STRANDED_MOTIF=1``): judge a writer-drawn N by the RNA strand's own motifs."""
+    import os
+    return os.environ.get('RECTIFY_5P_STRANDED_MOTIF', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def _revert_selfinflicted_noncanonical_n(
     read: pysam.AlignedSegment,
     genome: Optional[Dict[str, str]],
     pre_nops: Tuple[Tuple[int, int], ...],
     pre_cigar,
     pre_start: Optional[int],
+    rna_strand: Optional[str] = None,
 ) -> bool:
     """Undo a 5' rescue surgery that INVENTED a non-canonical intron.
 
@@ -420,8 +428,15 @@ def _revert_selfinflicted_noncanonical_n(
             read.query_name, read.reference_name,
         )
         return False
+    # ISSUE-089: is_canonical_junction accepts all six forward-genome pairs (either strand), so a writer-drawn
+    # CT-AC on a + strand RNA passed. With RECTIFY_5P_STRANDED_MOTIF=1 and a known RNA strand, only that strand's
+    # GT-AG / GC-AG / AT-AC (as CT-AC / CT-GC / GT-AT on the forward genome for -) count as canonical.
+    _stranded = rna_strand in ('+', '-') and _stranded_motif_guard()
     for start, end in new_nops:
-        if is_canonical_junction(chrom_seq, start, end, atac=True):
+        if _stranded:
+            if canonical_splice_pair(chrom_seq, start, end, rna_strand):
+                continue
+        elif is_canonical_junction(chrom_seq, start, end, atac=True):
             continue
         # A near miss is the read MISSING a base or two at the exon-2 start, not
         # an invented junction. Try to pull the acceptor back onto the canonical
@@ -625,7 +640,8 @@ def apply_5prime_rescue_surgery(
         return False, REFUSAL_OFF_CONTIG
 
     if _revert_selfinflicted_noncanonical_n(
-            read, genome, _pre_nops, _pre_cigar, _pre_start):
+            read, genome, _pre_nops, _pre_cigar, _pre_start,
+            rna_strand=correction.get('strand') if correction.get('strand_evidence') != 'unassigned' else None):
         modified = False
         refusal = REFUSAL_NONCANONICAL
 
