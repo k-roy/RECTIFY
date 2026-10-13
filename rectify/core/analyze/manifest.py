@@ -1062,12 +1062,15 @@ def _run_analyze_manifest(
         for condition, result_df in deseq2_cluster_results.items():
             enriched = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] > 1)]
             depleted = result_df[(result_df['padj'] < 0.05) & (result_df['log2FoldChange'] < -1)]
-            if len(enriched) >= 20 and len(depleted) >= 20:
+            # Each side on its own, against the unchanged clusters (see analyze_command).
+            unchanged = result_df.drop(index=enriched.index.union(depleted.index))
+            if len(enriched) >= 20 or len(depleted) >= 20:
                 motif_results = run_differential_motif_analysis(
                     enriched, depleted, args.genome,
                     str(output_dir / 'motifs' / condition),
                     upstream_window=args.motif_upstream,
                     downstream_window=args.motif_downstream,
+                    background_clusters=unchanged, min_foreground=20,
                 )
                 summary = summarize_motif_results(motif_results)
                 summary.to_csv(tables_dir / f'motif_summary_{condition}.tsv', sep='\t', index=False)

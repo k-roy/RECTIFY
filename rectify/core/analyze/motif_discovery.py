@@ -405,15 +405,22 @@ def run_differential_motif_analysis(
     upstream_window: int = DEFAULT_UPSTREAM_WINDOW,
     downstream_window: int = DEFAULT_DOWNSTREAM_WINDOW,
     n_parallel: int = 4,
+    background_clusters: Optional[pd.DataFrame] = None,
+    min_foreground: int = 0,
+    max_background_ratio: int = 5,
 ) -> Dict[str, Dict]:
     """
-    Run motif discovery for enriched vs depleted clusters.
+    Run motif discovery for enriched and depleted clusters, upstream and downstream (up to 4 analyses).
 
-    Performs 4 analyses IN PARALLEL:
-    1. Enriched upstream vs background
-    2. Enriched downstream vs background
-    3. Depleted upstream vs background
-    4. Depleted downstream vs background
+    Each side is judged on its own: a side with fewer than *min_foreground* clusters is skipped (its two
+    entries carry the reason), and the other side still runs. Before 2026-10-13 the caller required both
+    sides to reach 20, so one thin side silenced all four scans (the deliverable spec in TODO_KR_NOTES asks
+    for enriched vs background and depleted vs background).
+
+    Background for a side: *background_clusters* (e.g. the unchanged clusters), subsampled with a fixed
+    seed to at most *max_background_ratio* times the side's size, when it holds at least *min_foreground*
+    clusters; otherwise the other side when that side qualifies (the earlier enriched-vs-depleted
+    contrast); otherwise none (STREME then uses its shuffled control).
 
     Args:
         enriched_clusters: Clusters with increased signal
@@ -422,7 +429,10 @@ def run_differential_motif_analysis(
         output_dir: Output directory
         upstream_window: bp upstream (default: 100)
         downstream_window: bp downstream (default: 50)
-        n_parallel: Number of parallel workers (default: 4)
+        n_parallel: Number of parallel workers (default: 4); 1 runs in this process
+        background_clusters: Optional background set (same columns as the foreground tables)
+        min_foreground: Smallest side that is scanned (0 = scan whatever is given)
+        max_background_ratio: Background cap as a multiple of the side's size
 
     Returns:
         Dict mapping analysis_name -> motif discovery results
@@ -432,27 +442,46 @@ def run_differential_motif_analysis(
 
     results = {}
 
-    # Extract sequences
+    def _seqs(df):
+        if df is None or len(df) == 0:
+            return {}
+        return extract_sequences_around_clusters(
+            df, genome_fasta, upstream_window=upstream_window, downstream_window=downstream_window,
+        )
+
     print("Extracting sequences around clusters...")
-    enriched_seqs = extract_sequences_around_clusters(
-        enriched_clusters, genome_fasta,
-        upstream_window=upstream_window,
-        downstream_window=downstream_window,
-    )
+    sides = {'enriched': enriched_clusters, 'depleted': depleted_clusters}
+    ok = {name: df is not None and len(df) >= max(min_foreground, 1) for name, df in sides.items()}
+    seqs = {name: _seqs(df) if ok[name] else {} for name, df in sides.items()}
+    bg_ok = background_clusters is not None and len(background_clusters) >= max(min_foreground, 1)
 
-    depleted_seqs = extract_sequences_around_clusters(
-        depleted_clusters, genome_fasta,
-        upstream_window=upstream_window,
-        downstream_window=downstream_window,
-    )
+    analyses = []
+    for name, other in (('enriched', 'depleted'), ('depleted', 'enriched')):
+        if not ok[name]:
+            n = 0 if sides[name] is None else len(sides[name])
+            for region in ('upstream', 'downstream'):
+                results[f'{name}_{region}'] = {'success': False, 'n_foreground': n, 'n_background': 0,
+                                               'error': f'skipped: {n} {name} clusters < {min_foreground}'}
+            continue
+        if bg_ok:
+            cap = max_background_ratio * len(sides[name])
+            bg_df = background_clusters
+            if len(bg_df) > cap:
+                bg_df = bg_df.sample(n=cap, random_state=0)
+            bg = _seqs(bg_df)
+        elif ok[other]:
+            bg = seqs[other]
+        else:
+            bg = {}
+        for region in ('upstream', 'downstream'):
+            analyses.append((f'{name}_{region}', seqs[name].get(region, []), bg.get(region, []), str(output_dir)))
 
-    # Prepare analyses
-    analyses = [
-        ('enriched_upstream', enriched_seqs.get('upstream', []), depleted_seqs.get('upstream', []), str(output_dir)),
-        ('enriched_downstream', enriched_seqs.get('downstream', []), depleted_seqs.get('downstream', []), str(output_dir)),
-        ('depleted_upstream', depleted_seqs.get('upstream', []), enriched_seqs.get('upstream', []), str(output_dir)),
-        ('depleted_downstream', depleted_seqs.get('downstream', []), enriched_seqs.get('downstream', []), str(output_dir)),
-    ]
+    if n_parallel <= 1:
+        for args in analyses:
+            result_name, result = _run_single_motif_analysis(args)
+            results[result_name] = result
+            print(f"  {result_name}: {result.get('motifs_found', 0)} motifs found")
+        return results
 
     # Run analyses in parallel
     print(f"Running {len(analyses)} motif analyses in parallel ({n_parallel} workers)...")
