@@ -64,12 +64,14 @@ def _in_memory(inputs, n):
         exclusion_detector=inputs['det'])
 
 
+@pytest.mark.slow
 def test_one_thread_matches_two_threads_in_memory(inputs):
     one, two = _key(_in_memory(inputs, 1)), _key(_in_memory(inputs, 2))
     assert one == two
     assert '476768-476896' in one[CA7][1]          # the aligner's 128N survives at 1 thread too
 
 
+@pytest.mark.slow
 def test_streaming_paths_match_the_in_memory_path(inputs, tmp_path):
     ref = _key(_in_memory(inputs, 2))
     single = tmp_path / 'single.tsv'
@@ -82,3 +84,42 @@ def test_streaming_paths_match_the_in_memory_path(inputs, tmp_path):
                                       apply_3ss_rescue=True, exclusion_detector=inputs['det'])
     assert _key(_tsv_rows(single)) == ref
     assert _key(_tsv_rows(par)) == ref
+
+
+def _tiny_inputs(tmp_path):
+    import pysam
+    fa = tmp_path / 'g.fa'
+    fa.write_text('>chrT\n' + 'ACGTTGCA' * 125 + '\n')
+    pysam.faidx(str(fa))
+    header = {'HD': {'VN': '1.6', 'SO': 'coordinate'}, 'SQ': [{'SN': 'chrT', 'LN': 1000}]}
+    bam = tmp_path / 'in.bam'
+    with pysam.AlignmentFile(str(bam), 'wb', header=header) as out:
+        for i, pos in enumerate((100, 300)):
+            r = pysam.AlignedSegment(out.header)
+            r.query_name, r.reference_id, r.reference_start, r.flag = f'q{i}', 0, pos, 0
+            r.cigarstring = '50M'
+            r.query_sequence = ('ACGTTGCA' * 125)[pos:pos + 50]
+            r.query_qualities = pysam.qualitystring_to_array('I' * 50)
+            r.mapping_quality = 60
+            out.write(r)
+    pysam.index(str(bam))
+    return str(fa), str(bam)
+
+
+def test_every_in_process_path_hands_the_detector_to_the_per_read_correction(tmp_path, monkeypatch):
+    """Fast guard for ISSUE-022: the sequential fallback and the single-thread streaming path pass the detector."""
+    fa, bam = _tiny_inputs(tmp_path)
+    seen = []
+    real = bp.correct_read_3prime
+
+    def spy(read, genome, **kw):
+        seen.append(kw.get('exclusion_detector'))
+        return real(read, genome, **{k: v for k, v in kw.items() if k != 'exclusion_detector'})
+
+    monkeypatch.setattr(bp, 'correct_read_3prime', spy)
+    det = object()
+    bp.process_bam_file_parallel(bam_path=bam, genome_path=fa, n_threads=1, output_path=None, show_progress=False,
+                                 return_stats=False, apply_3ss_rescue=False, exclusion_detector=det)
+    bp.process_bam_streaming(bam_path=bam, genome_path=fa, output_path=str(tmp_path / 's.tsv'), show_progress=False,
+                             apply_3ss_rescue=False, exclusion_detector=det)
+    assert seen and all(d is det for d in seen), seen
