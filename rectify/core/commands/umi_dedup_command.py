@@ -44,7 +44,37 @@ def create_umi_dedup_parser(subparsers: argparse._SubParsersAction) -> argparse.
                         help='UMI clustering method (default: directional).')
     parser.add_argument('--umi-collapse', default='dedup',
                         choices=['dedup', 'consensus'],
-                        help='Collapse mode (default: dedup; consensus is a planned extension).')
+                        help='dedup (keep the best fragment per molecule) or consensus (one consensus '
+                             'fragment per UMI family; see the consensus options below).')
+    parser.add_argument('--umi-from-qname', action='store_true',
+                        help='When the UMI tag is absent, take the UMI from the QNAME suffix after the last '
+                             "'_' (umi_tools extract convention).")
+    cg = parser.add_argument_group('consensus options (--umi-collapse consensus)')
+    cg.add_argument('--reference', type=Path, default=None,
+                    help='Reference FASTA (indexed). Needed to resolve "=" bases (samtools calmd -e) and to '
+                         'classify mismatches; without it classification is skipped.')
+    cg.add_argument('--span-key', default='unclipped', choices=['unclipped', 'tlen'],
+                    help='Molecule key: both soft-clip-corrected 5\' ends (default; robust to primer bases '
+                         'soft-clipped differently copy to copy) or R1 5\' + |TLEN| (the dedup key). '
+                         'Molecule counts under the other key are reported too. Needs MC tags (samtools fixmate).')
+    cg.add_argument('--primer-mate', default='r2', choices=['r1', 'r2'],
+                    help='Mate whose first bases are the random RT primer (Lexogen CORALL V2: r2).')
+    cg.add_argument('--primer-length', type=int, default=0,
+                    help='Random-primer length; 0 disables the primer features (Lexogen CORALL V2: 9).')
+    cg.add_argument('--primer-source', default='seq', choices=['seq', 'tag'],
+                    help="seq: the primer bases are still in the reads; tag: they were trimmed before "
+                         "alignment and carried as pR:Z (sequence, read orientation) and pQ:Z (qualities).")
+    cg.add_argument('--primer-action', default='mask', choices=['mask', 'keep'],
+                    help='mask (default): set the primer positions of every consensus mate to N/Q2.')
+    cg.add_argument('--primer-min-support', type=int, default=2,
+                    help='Members per raw UMI needed before a primer difference splits a UMI cluster (default 2).')
+    cg.add_argument('--min-posterior', type=float, default=0.9,
+                    help='Consensus posterior below which a base becomes N (default 0.9).')
+    cg.add_argument('--recurrence-check', action='store_true',
+                    help='Pile up every molecule-level mismatch site in the output and report how many are '
+                         'shared by most molecules (strain variant or systematic error).')
+    cg.add_argument('--threads', type=int, default=1, help='Threads for the samtools sorts.')
+    cg.add_argument('--tmp-dir', type=Path, default=None, help='Directory for the intermediate BAMs.')
     parser.add_argument('--antisense', action='store_true',
                         help='Library is ANTISENSE (R1 opposite the mRNA), e.g. TruSeq-dUTP / '
                              'QuantSeq-REV. CORALL is SENSE, so OMIT this for CORALL.')
@@ -68,6 +98,27 @@ def run(args: argparse.Namespace) -> int:
         return 1
     args.output_bam.parent.mkdir(parents=True, exist_ok=True)
 
+    stats_path = args.stats_json or args.output_bam.with_suffix(
+        args.output_bam.suffix + '.umi_stats.json')
+    if args.umi_collapse == 'consensus':
+        from rectify.core.umi.consensus import consensus_bam, write_stats
+        cstats = consensus_bam(
+            str(args.input_bam), str(args.output_bam),
+            reference=str(args.reference) if args.reference else None,
+            umi_tag=args.umi_tag, umi_from_qname=args.umi_from_qname,
+            edit_distance=args.umi_edit_distance, clustering=args.umi_clustering,
+            r1_sense=not args.antisense, span_key=args.span_key,
+            primer_mate=args.primer_mate, primer_length=args.primer_length,
+            primer_source=args.primer_source, primer_action=args.primer_action,
+            primer_min_support=args.primer_min_support, min_posterior=args.min_posterior,
+            recurrence_check=args.recurrence_check, threads=args.threads,
+            tmp_dir=str(args.tmp_dir) if args.tmp_dir else None,
+        )
+        write_stats(cstats, str(stats_path))
+        logger.info("Consensus: %d fragments -> %d molecules (%d under the other key). Stats: %s",
+                    cstats.n_input_fragments, cstats.n_molecules, cstats.n_molecules_other_key, stats_path)
+        return 0
+
     try:
         stats = dedup_bam(
             str(args.input_bam),
@@ -77,13 +128,11 @@ def run(args: argparse.Namespace) -> int:
             clustering=args.umi_clustering,
             r1_sense=not args.antisense,
             collapse=args.umi_collapse,
+            umi_from_qname=args.umi_from_qname,
         )
     except NotImplementedError as e:
         logger.error(str(e))
         return 1
-
-    stats_path = args.stats_json or args.output_bam.with_suffix(
-        args.output_bam.suffix + '.umi_stats.json')
     with open(stats_path, 'w') as fh:
         json.dump(stats.as_dict(), fh, indent=2)
 

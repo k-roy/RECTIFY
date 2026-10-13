@@ -35,11 +35,9 @@ cluster is one molecule. The representative (dedup) is the highest-quality
 fragment; both its mates are written. The keep/drop decision is propagated to R2
 by QNAME in a second pass, so mates never separate.
 
-Consensus collapse (``collapse='consensus'``) is a documented extension point;
-it is gated on the empirically-measured family-size distribution (most Illumina
-UMI families are 1-2 reads, where consensus adds nothing) and is not implemented
-in this first cut -- dedup is the dominant win. The stats this module emits ARE
-that family-size measurement.
+Consensus collapse lives in ``consensus.py`` (``rectify umi-dedup --umi-collapse
+consensus``): one consensus fragment per family, with the random-primer bases (CORALL
+read 2) masked, used to check the UMI clustering, and used to classify mismatches.
 """
 from __future__ import annotations
 
@@ -49,6 +47,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .clustering import canonical_umi, umi_components, umi_components_directional
+from .consensus import umi_of
 from .grouping import five_prime_unclipped, is_spliced
 
 logger = logging.getLogger(__name__)
@@ -191,6 +190,7 @@ def extract_fragments(
     umi_tag: str = _DEFAULT_UMI_TAG,
     r1_sense: bool = True,
     stats: Optional[UmiDedupStats] = None,
+    umi_from_qname: bool = False,
 ) -> List[FragmentRecord]:
     """Pull one :class:`FragmentRecord` per usable R1 (or unpaired) primary read.
 
@@ -204,12 +204,7 @@ def extract_fragments(
         # One record per fragment: use R1 for pairs, the read itself if unpaired.
         if read.is_paired and not read.is_read1:
             continue
-        try:
-            umi = read.get_tag(umi_tag)
-        except KeyError:
-            if stats is not None:
-                stats.n_no_umi += 1
-            continue
+        umi = umi_of(read, umi_tag, umi_from_qname)
         if not umi:
             if stats is not None:
                 stats.n_no_umi += 1
@@ -245,6 +240,7 @@ def dedup_bam(
     clustering: str = "directional",
     r1_sense: bool = True,
     collapse: str = "dedup",
+    umi_from_qname: bool = False,
 ) -> UmiDedupStats:
     """Write a UMI-deduplicated copy of ``input_bam`` and return run statistics.
 
@@ -259,18 +255,17 @@ def dedup_bam(
         raise ValueError(f"unknown collapse mode {collapse!r}")
     if collapse == "consensus":
         raise NotImplementedError(
-            "collapse='consensus' is a planned extension (fgbio-style read-space "
-            "posterior); it is gated on the measured family-size distribution "
-            "(design doc S5.1). Use collapse='dedup' for now, and inspect the "
-            "returned UmiDedupStats.family_size_hist to decide if consensus is "
-            "worth it (most Illumina UMI families are 1-2 reads)."
+            "collapse='consensus' lives in rectify.core.umi.consensus.consensus_bam "
+            "(it needs a reference and primer options); `rectify umi-dedup "
+            "--umi-collapse consensus` calls it."
         )
 
     stats = UmiDedupStats()
 
     # Pass 1: extract fragments (R1 only), cluster into molecules, pick keepers.
     with pysam.AlignmentFile(input_bam, "rb") as bam_in:
-        fragments = extract_fragments(bam_in, umi_tag=umi_tag, r1_sense=r1_sense, stats=stats)
+        fragments = extract_fragments(bam_in, umi_tag=umi_tag, r1_sense=r1_sense, stats=stats,
+                                      umi_from_qname=umi_from_qname)
     keepers, family_size = select_molecules(
         fragments, edit_distance=edit_distance, clustering=clustering, stats=stats
     )
