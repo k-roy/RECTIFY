@@ -188,6 +188,17 @@ _ANNOTATED_CANONICAL_HOLD: float = float(
 )
 
 
+def _block_shift_mode() -> str:
+    """ISSUE-047 whole-block shifts: 'on' (the default since cd200a9), 'report' (plan and count would-be shifts,
+    write none) or 'off', from ``RECTIFY_2H_BLOCK_SHIFT``. Read per call so workers and tests see the setting."""
+    v = os.environ.get("RECTIFY_2H_BLOCK_SHIFT", "on").strip().lower()
+    if v in ("0", "off", "false", "no"):
+        return "off"
+    if v in ("report", "report-only", "count"):
+        return "report"
+    return "on"
+
+
 class JunctionRefineProfile:
     """Low-overhead aggregate profiler for Module 2H junction refinement."""
 
@@ -1211,9 +1222,10 @@ def refine_read_junctions(
     # changed there. Returning a single whole-read plan avoids interleaving
     # edits whose CIGAR indices or adjacent-boundary expectations conflict.
     # Research policies remain entirely on the existing legacy path.
-    if not (motif_blind or hold_margin or hp_drift_margin or microhom_drift_margin
-            or drift_near_tie_cap or drift_positional_gate
-            or _ANNOTATED_CANONICAL_HOLD != 1.0):
+    _shift_mode = _block_shift_mode()
+    if _shift_mode != "off" and not (motif_blind or hold_margin or hp_drift_margin or microhom_drift_margin
+                                      or drift_near_tie_cap or drift_positional_gate
+                                      or _ANNOTATED_CANONICAL_HOLD != 1.0):
         evolved, _ = _apply_replacements_to_read(
             read, replacements, genome_seq, strand, hp_pen, W,
         ) if replacements else (read, False)
@@ -1224,11 +1236,14 @@ def refine_read_junctions(
             max_candidates_per_nop=max_candidates_per_nop,
         )
         if plan is not None:
+            # ISSUE-047 (queue r1 D3): 'report' counts the shifts it would write and writes none.
+            key = 'whole_block_shifts' if _shift_mode == "on" else 'whole_block_shifts_reported_not_written'
             if profile is not None:
-                profile.inc('whole_block_shifts', len(plan.evidence))
+                profile.inc(key, len(plan.evidence))
             if counters is not None:
-                counters['whole_block_shifts'] += len(plan.evidence)
-            return [plan]
+                counters[key] += len(plan.evidence)
+            if _shift_mode == "on":
+                return [plan]
     return replacements
 
 
