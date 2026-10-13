@@ -49,6 +49,7 @@ from rectify.core.cdna.isoforms import (
     reconcile_t1_t2_pairs,
 )
 from rectify.core.cdna.read_info import ReadInfo
+from rectify.core.cdna.ssp_invasion import SSP_FLAG_MIN_NT, chance_rate, rna_5p_genome, ssp_match_length
 from rectify.core.cdna.walkback import (
     walk_back_anchor_and_tail,
     walk_forward_tss,
@@ -444,6 +445,9 @@ def run(args) -> int:
     t4 = time.time()
     tagged_bam = args.out / "consensus_tagged.bam"
     n_tagged = 0
+    # ISSUE-086 (report-only): how far the genome at each molecule's aligned 5' end matches the
+    # strand-switching primer. Tagged Xs:i when >= 8 nt; counted per length; nothing is dropped.
+    ssp_hist: Dict[int, int] = {}
     with pysam.AlignmentFile(str(args.bam), "rb") as src, \
          pysam.AlignmentFile(str(tagged_bam), "wb", template=src) as dst:
         for rec in src.fetch(until_eof=True):
@@ -451,6 +455,16 @@ def run(args) -> int:
             # Coordinate-derived annotations belong to the accepted primary
             # placement, not to other alignments sharing its QNAME.
             if cid is not None and not (rec.is_unmapped or rec.is_secondary or rec.is_supplementary):
+                if _is_rna_sense(rec):
+                    rna_reverse = rec.is_reverse
+                else:
+                    rna_reverse = (rec.get_tag("XO") if rec.has_tag("XO") else "fwd") == "rev"
+                window = rna_5p_genome(chrom_cache.get(rec.reference_name, ""), rec.reference_start,
+                                       rec.reference_end or rec.reference_start, rna_reverse)
+                ssp_len = ssp_match_length(window) if window else 0
+                if ssp_len >= 8:
+                    ssp_hist[ssp_len] = ssp_hist.get(ssp_len, 0) + 1
+                    rec.set_tag("Xs", int(ssp_len), value_type="i")
                 rec.set_tag("XA", int(cluster_tail_len[cid]), value_type="i")
                 xs = cluster_xs.get(cid, "unannotated")
                 rec.set_tag("XS", xs, value_type="Z")
@@ -468,6 +482,11 @@ def run(args) -> int:
     pysam.index(str(tagged_bam))
     log.info("Wrote tagged BAM → %s (%d records tagged, %.1fs)",
              tagged_bam, n_tagged, time.time() - t4)
+    n_ssp = sum(n for k, n in ssp_hist.items() if k >= SSP_FLAG_MIN_NT)
+    log.info("SSP strand invasion (ISSUE-086, report-only): %d of %d molecules start on a genomic match of >= %d nt "
+             "to the strand-switching primer (Xs:i; chance ~%.1e per molecule); matches of 8+ nt by length: %s",
+             n_ssp, n_tagged, SSP_FLAG_MIN_NT, chance_rate(SSP_FLAG_MIN_NT),
+             ", ".join(f"{k}:{ssp_hist[k]}" for k in sorted(ssp_hist)) or "none")
 
     log.info("Total runtime: %.1fs", time.time() - t0)
 
@@ -497,7 +516,9 @@ def run(args) -> int:
                 "t1t2_pairs_tsv": str(pairs_tsv),
                 "consensus_tagged_bam": str(tagged_bam),
             },
-            stats={"wall_seconds": time.time() - t0},
+            stats={"wall_seconds": time.time() - t0,
+                   "ssp_invasion": {"flag_min_nt": SSP_FLAG_MIN_NT, "flagged": n_ssp,
+                                    "match_length_hist": {str(k): ssp_hist[k] for k in sorted(ssp_hist)}}},
             argv=_sys.argv,
             rectify_git_sha=_get_sha(),
         )
