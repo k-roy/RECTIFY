@@ -730,7 +730,10 @@ def consensus_bam(
             for tag, val, typ in tpl.get_tags(with_value_type=True):
                 if tag in ("MD", "NM", _MOLECULE_TAG, _FAMILY_SIZE_TAG):
                     continue
-                new.set_tag(tag, val, value_type=typ)
+                if typ == "B":          # arrays: pysam infers the subtype from the array itself
+                    new.set_tag(tag, val)
+                else:
+                    new.set_tag(tag, val, value_type=typ)
             new.set_tag(_MOLECULE_TAG, mid, value_type="Z")
             new.set_tag(_FAMILY_SIZE_TAG, n, value_type="i")
             new.set_tag("cX", int(not_voting), value_type="i")

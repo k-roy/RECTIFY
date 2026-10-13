@@ -299,3 +299,19 @@ def test_primer_off_leaves_reads_unmasked(tmp_path, ref_fasta):
     out = str(tmp_path / "out.bam")
     consensus_bam(inp, out, reference=fa, primer_length=0)
     assert all("N" not in r.query_sequence for r in _reads(out))
+
+
+def test_array_tags_are_copied(tmp_path, ref_fasta):
+    """A B-array tag on the template (COMPASS writes some) must survive into the consensus record."""
+    import array
+    fa, ref = ref_fasta
+    h = _hdr()
+    pairs = [_pair(h, ref, f"m{i}", "ACGTACGTACGT", 100, 300) for i in range(2)]
+    for pr in pairs:
+        for r in pr:
+            r.set_tag("zA", array.array("b", [-1, 2]))
+    inp = _write(tmp_path / "in.bam", pairs, h)
+    out = str(tmp_path / "out.bam")
+    consensus_bam(inp, out, reference=fa)
+    for r in _reads(out):
+        assert list(r.get_tag("zA")) == [-1, 2]
