@@ -76,6 +76,7 @@ from .scoring import (  # noqa: F401  (re-exported)
     _rescue_5prime_softclip,
 )
 from .select import select_best_alignment  # noqa: F401  (re-exported)
+from ..bam.alignment_tags import span_fits_reference
 
 logger = logging.getLogger(__name__)
 
@@ -1287,6 +1288,10 @@ def run_consensus_selection(
     stats = {
         'total_reads': 0,
         'reads_skipped_slurm_filter': 0,
+        # ISSUE-094: arm records whose span leaves their contig (dropped before scoring), and reads
+        # left with no valid arm (not written).
+        'arm_records_past_contig_dropped': 0,
+        'reads_all_arms_past_contig': 0,
         'consensus_high': 0,
         'consensus_medium': 0,
         'consensus_low': 0,
@@ -1442,6 +1447,19 @@ def run_consensus_selection(
             if _n_skipped < n_reads_to_skip:
                 _n_skipped += 1
                 continue
+
+            # ISSUE-094: an arm record whose span leaves its contig is invalid SAM and must not compete.
+            # deSALT aligns across the contig ends of its concatenated index, and the July Path-A
+            # consensus chose 875 such records as lone low-confidence winners over valid minimap2 and
+            # gapmm2 placements. Every record is checked (span_fits_reference: the BAM header's contig
+            # length), before decoding, which cannot read past the contig; another arm then wins.
+            _valid = {a: r for a, r in aligner_reads.items() if span_fits_reference(r, genome)}
+            if len(_valid) != len(aligner_reads):
+                stats['arm_records_past_contig_dropped'] += len(aligner_reads) - len(_valid)
+                if not _valid:
+                    stats['reads_all_arms_past_contig'] += 1
+                    continue
+                aligner_reads = _valid
 
             # Each '=' belongs to this candidate's ORIGINAL placement. Decode
             # before standard/chimeric scoring or borrowing a stitch template;
@@ -1681,6 +1699,10 @@ def run_consensus_selection(
     logger.info(f"  Low confidence: {stats['consensus_low']}")
     logger.info(f"  5' rescued: {stats['5prime_rescued']}")
     logger.info(f"  Tied score (tiebreaker used): {stats['tied_score']}")
+    if stats['arm_records_past_contig_dropped']:
+        logger.warning(f"  Arm records past their contig's end, dropped before scoring (ISSUE-094): "
+                       f"{stats['arm_records_past_contig_dropped']}; reads with no valid arm, not written: "
+                       f"{stats['reads_all_arms_past_contig']}")
     if use_chimeric:
         logger.info(f"  Chimeric reads (multi-aligner segments): {stats['chimeric_reads']}")
     logger.info(f"  By aligner: {dict(stats['by_aligner'])}")
