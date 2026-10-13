@@ -49,6 +49,7 @@ from rectify.core.cdna.isoforms import (
     reconcile_t1_t2_pairs,
 )
 from rectify.core.cdna.read_info import ReadInfo
+from rectify.core.cdna.spliced_tail import terminal_arun_junction
 from rectify.core.cdna.ssp_invasion import SSP_FLAG_MIN_NT, chance_rate, rna_5p_genome, ssp_match_length
 from rectify.core.cdna.walkback import (
     walk_back_anchor_and_tail,
@@ -448,6 +449,7 @@ def run(args) -> int:
     # ISSUE-086 (report-only): how far the genome at each molecule's aligned 5' end matches the
     # strand-switching primer. Tagged Xs:i when >= 8 nt; counted per length; nothing is dropped.
     ssp_hist: Dict[int, int] = {}
+    n_spliced_tail = 0
     with pysam.AlignmentFile(str(args.bam), "rb") as src, \
          pysam.AlignmentFile(str(tagged_bam), "wb", template=src) as dst:
         for rec in src.fetch(until_eof=True):
@@ -465,6 +467,13 @@ def run(args) -> int:
                 if ssp_len >= 8:
                     ssp_hist[ssp_len] = ssp_hist.get(ssp_len, 0) + 1
                     rec.set_tag("Xs", int(ssp_len), value_type="i")
+                # A17 / spliced poly(A) tail (report-only): the 3' end is a short block on a genomic A-run after an
+                # N; Xp:i carries the donor-side alternative end. Re-anchoring waits for Kevin's cards.
+                spliced = terminal_arun_junction(rec.cigartuples, rec.reference_start,
+                                                 chrom_cache.get(rec.reference_name, ""), rna_reverse)
+                if spliced is not None:
+                    n_spliced_tail += 1
+                    rec.set_tag("Xp", int(spliced[0]), value_type="i")
                 rec.set_tag("XA", int(cluster_tail_len[cid]), value_type="i")
                 xs = cluster_xs.get(cid, "unannotated")
                 rec.set_tag("XS", xs, value_type="Z")
@@ -487,6 +496,9 @@ def run(args) -> int:
              "to the strand-switching primer (Xs:i; chance ~%.1e per molecule); matches of 8+ nt by length: %s",
              n_ssp, n_tagged, SSP_FLAG_MIN_NT, chance_rate(SSP_FLAG_MIN_NT),
              ", ".join(f"{k}:{ssp_hist[k]}" for k in sorted(ssp_hist)) or "none")
+    log.info("Spliced poly(A) tail (A17 class, report-only): %d of %d molecules end in a block of <= 30 nt on a genomic "
+             "A-run after an intron (Xp:i = the donor-side end); expected near 0 when the tail was cut before alignment",
+             n_spliced_tail, n_tagged)
 
     log.info("Total runtime: %.1fs", time.time() - t0)
 
@@ -518,7 +530,8 @@ def run(args) -> int:
             },
             stats={"wall_seconds": time.time() - t0,
                    "ssp_invasion": {"flag_min_nt": SSP_FLAG_MIN_NT, "flagged": n_ssp,
-                                    "match_length_hist": {str(k): ssp_hist[k] for k in sorted(ssp_hist)}}},
+                                    "match_length_hist": {str(k): ssp_hist[k] for k in sorted(ssp_hist)}},
+                   "spliced_polya_tail": n_spliced_tail},
             argv=_sys.argv,
             rectify_git_sha=_get_sha(),
         )
