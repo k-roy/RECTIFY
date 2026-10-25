@@ -473,6 +473,11 @@ def _body_resume_ref(read, depth: int, strand: str):
     return None
 
 
+def _case4_floor_all() -> bool:
+    """ISSUE-090 switch: apply the evidence floor to EVERY Case-4 intronic snap (``RECTIFY_2F_CASE4_FLOOR=1``)."""
+    return os.environ.get('RECTIFY_2F_CASE4_FLOOR', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
 def evidence_floor_annotated_bits() -> float:
     """The bits floor for an ANNOTATED landing (two-tier floor, 2026-09-07):
     ``E_BITS_ANNOTATED`` unless ``RECTIFY_2F_EVIDENCE_BITS_ANNOTATED`` overrides
@@ -4386,7 +4391,10 @@ def _rescue_3ss_truncation_body(
         _e_tok4 = ''
         _annot4_floor = (annotated_keys is None
                          or (j_chrom, intron_start, intron_end) in annotated_keys)
-        if _shape4 is not None and _placed4 >= min_informative_clip_bp():
+        # ISSUE-090 (opt-in, RECTIFY_2F_CASE4_FLOOR=1): Kevin's ruling that every landing meets the evidence floor
+        # (read-review section 5) also binds a short structural snap; without the switch a snap of fewer placed
+        # bases than the informative floor skips it (083-26..29 were written at -1.5 to 4.5 bits).
+        if _shape4 is not None and (_placed4 >= min_informative_clip_bp() or _case4_floor_all()):
             # The gap bound applies here too: a snap whose re-placed segment needs a long I/D
             # is a junction with an indel glued to the N (dab60caa's 6D, de84a10a's 5I).
             _e_tok4 = (_evidence_floor_refusal(
