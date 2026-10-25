@@ -179,20 +179,97 @@ def pileup_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optio
     return consensus_seq, cigartuples, span_start, qual_string
 
 
+#: Sequences at or above this length run abPOA in a child process instead of in-process.
+#:
+#: 🔴 This is a PERFORMANCE gate, not a correctness threshold. Both paths call the same abPOA with
+#: the same arguments and return the same consensus when it succeeds; the gate only decides whether
+#: an abort takes the worker down with it. So setting it wrong costs CPU, never data — which is the
+#: opposite of the length cap this replaced, where a wrong value silently rewrote real consensuses.
+#:
+#: 20 kb is chosen because across 31 completed libraries only a couple of molecules per library
+#: exceed it (Chanfreau ``[[1195b]]``), so the fork cost is paid a handful of times per library
+#: rather than ~200,000 times, while every cluster that has ever tripped the abort is above it.
+POA_ISOLATE_MIN_LEN = 20_000
+
+#: Clusters whose isolated abPOA call died and fell back. A list so worker code can mutate it; read
+#: and reset per region by :func:`io.write_stage1_fastq`, so the parent sums it across regions.
+_POA_ABORTED = [0]
+
+
+def poa_aborted_count(reset: bool = False) -> int:
+    """Number of POA clusters whose abPOA child aborted and fell back, this process."""
+    n = _POA_ABORTED[0]
+    if reset:
+        _POA_ABORTED[0] = 0
+    return n
+
+
+def _poa_in_process(seqs: List[str]) -> Optional[str]:
+    aligner = pyabpoa.msa_aligner()
+    res = aligner.msa(seqs, out_cons=True, out_msa=False)
+    if not res.cons_seq:
+        return None
+    return res.cons_seq[0]
+
+
+def _poa_isolated(seqs: List[str]) -> Optional[str]:
+    """Run abPOA in a child process so an abort cannot kill this worker.
+
+    Returns the consensus, or None when the child declined or died. A death increments
+    :func:`poa_aborted_count` and logs at WARNING, because a silent fallback is how this defect
+    stayed invisible: abPOA's own ``[SIMDMalloc]`` message is printed by the child and never appears
+    in the parent's traceback.
+
+    A separate interpreter rather than ``os.fork`` on purpose — forking a worker that may hold
+    threads risks a deadlock far worse than the bug being fixed, and the gate above makes these
+    calls rare enough that process startup and JSON transfer do not matter.
+    """
+    import json
+    import logging
+    import subprocess
+    import sys
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-m", "rectify.core.cdna._poa_child"],
+            input=json.dumps(seqs).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+    except Exception as exc:                                   # noqa: BLE001
+        _POA_ABORTED[0] += 1
+        logging.getLogger(__name__).warning(
+            "POA isolation could not start (%s); falling back for a cluster of %d seqs, "
+            "longest %d nt", exc, len(seqs), max(map(len, seqs)))
+        return None
+
+    if proc.returncode != 0:
+        _POA_ABORTED[0] += 1
+        logging.getLogger(__name__).warning(
+            "abPOA died (rc=%s) on a cluster of %d seqs, longest %d nt — falling back to the "
+            "plurality consensus for this cluster. Child stderr: %s",
+            proc.returncode, len(seqs), max(map(len, seqs)),
+            (proc.stderr or b"").decode("utf-8", "replace").strip()[-400:])
+        return None
+
+    return proc.stdout.decode("ascii") or None
+
+
 def poa_consensus_from_strings(seqs: List[str]) -> Optional[str]:
     """Run POA on raw sequence strings (already in matching orientation).
 
     Used both by `poa_consensus` (reads-from-BAM path) and by the v1.18
     strand-aware consensus path (which feeds two per-strand sub-consensuses
     in for a final merge).
+
+    Long clusters are routed through :func:`_poa_isolated`, because abPOA aborts the process rather
+    than raising when its DP allocation fails, which used to take the whole library down with it.
+    See ``_poa_child`` for the measurements that rule out a size cap.
     """
     if not HAS_POA or len(seqs) < 2:
         return None
-    aligner = pyabpoa.msa_aligner()
-    res = aligner.msa(seqs, out_cons=True, out_msa=False)
-    if not res.cons_seq:
-        return None
-    return res.cons_seq[0]
+    if max(map(len, seqs)) >= POA_ISOLATE_MIN_LEN:
+        return _poa_isolated(seqs)
+    return _poa_in_process(seqs)
 
 
 def poa_consensus(reads_in_cluster: List[pysam.AlignedSegment], fasta: "Optional[pysam.FastaFile]" = None) -> Optional[str]:
