@@ -340,7 +340,11 @@ def _run_cdna_correct_parallel(
             total_stats.update({"input_reads": 0, "type1_reads": 0, "type2_reads": 0,
                                 "type1_clusters": 0, "type2_clusters": 0,
                                 "buckets_dropped_polyA_pileup": 0,
-                                "reads_in_dropped_buckets": 0, "n_rdna_masked": 0})
+                                "reads_in_dropped_buckets": 0, "n_rdna_masked": 0,
+                                # must be seeded here: the merge loop below iterates over the keys
+                                # already in total_stats, so a key absent from this dict is
+                                # silently dropped however faithfully the workers report it
+                                "poa_aborted": 0})
             agg_tiers: Dict[int, int] = {0: 0, 1: 0, 2: 0}
             agg_tail: List[int] = []
             agg_sub: Dict[str, int] = {}

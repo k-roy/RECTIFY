@@ -113,6 +113,10 @@ def collect_qc(
         "workers": workers,
         "input_reads": in_reads,
         "output_molecules": written,
+        # Clusters whose isolated abPOA child died and fell back. Carried into the QC dict (and so
+        # into the JSON sidecar, not only the printed block) because this is the one number that
+        # says a library silently used a different consensus path for part of its molecules.
+        "poa_aborted": int(fastq_stats.get("poa_aborted", 0)),
         "consensus_source": {
             "singletons": int(fastq_stats.get("from_singletons", 0)),
             "multi_read_poa_or_pileup": int(fastq_stats.get("from_multi_pileup", 0)),
@@ -198,6 +202,10 @@ def render_qc(qc: Dict) -> str:
     a(f"  singletons (passed through):     {cs['singletons']:>10d}")
     a(f"  multi-read (pileup/POA):         {cs['multi_read_poa_or_pileup']:>10d}")
     a(f"  multi-read (rep fallback):       {cs['multi_read_rep_fallback']:>10d}")
+    _pa = int(qc.get("poa_aborted", 0) or 0)
+    if _pa:
+        a(f"  🔴 abPOA ABORTED, fell back:      {_pa:>10d}"
+          "   (isolated child died; see the WARNING lines for its own message)")
     a("")
     a(f"UMI duplication rate:              {qc['umi_duplication_rate']:>10.1%}"
       f"   (mean {qc['mean_reads_per_molecule']:.2f} reads/molecule)")

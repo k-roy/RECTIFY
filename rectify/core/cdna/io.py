@@ -338,7 +338,11 @@ def write_stage1_fastq(input_bam: Path, output_fastq: Path,
     if fasta is not None:
         fasta.close()
 
+    # Read-and-reset, so a region's count is this region's and the parent can sum across regions.
+    # Reported even when 0: a counter that only appears on failure cannot be relied on to be absent.
+    from .consensus import poa_aborted_count as _poa_aborted
     return dict(input_reads=n_in, written=written, from_singletons=singleton,
+                poa_aborted=_poa_aborted(reset=True),
                 from_multi_pileup=multi_pileup, from_multi_fallback=multi_fallback,
                 trim_frame_flipped=n_frame_flipped,
                 trim_frame_mismatch=n_frame_mismatch,
