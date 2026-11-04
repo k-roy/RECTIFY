@@ -512,6 +512,12 @@ def _check_read_name_compatibility(
                     break
                 names.add(_normalize_bam_read_name(read.query_name or ''))
         samples[aligner] = names
+    # An aligner that wrote an EMPTY BAM (deSALT upstream bug #49: multi_aligner emits an empty BAM on purpose so the chunk proceeds with
+    # the remaining aligners) has no names to compare; without this skip its empty set raised a 0 % "read-id format mismatch" and killed
+    # the chunk the fallback was meant to save (Chanfreau 1248, 2026-11-04: 15 of 24 ePAP align chunks).
+    samples = {a: s for a, s in samples.items() if s}
+    if len(samples) < 2:
+        return
     aligners = list(samples.keys())
     for i, a in enumerate(aligners):
         for b in aligners[i + 1:]:
