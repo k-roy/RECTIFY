@@ -423,6 +423,17 @@ def run(args) -> int:
     if not args.bam.exists():
         log.error("BAM not found: %s", args.bam)
         return 2
+    # Narnavirus house policy (planning/1248): the anchor BAM must be aligned to a yeast reference with ScNV-20S/23S.
+    from rectify.utils.genome import missing_yeast_narnavirus_contigs, NARNAVIRUS_POLICY_MESSAGE
+    import pysam as _pysam_nv
+    with _pysam_nv.AlignmentFile(str(args.bam), "rb", check_sq=False) as _bf_nv:
+        _missing_nv = missing_yeast_narnavirus_contigs(list(_bf_nv.references))
+    if _missing_nv:
+        if getattr(args, "allow_missing_narnavirus", False):
+            log.warning("--allow-missing-narnavirus: anchor BAM header lacks %s", _missing_nv)
+        else:
+            log.error(NARNAVIRUS_POLICY_MESSAGE.format(missing=", ".join(_missing_nv)))
+            return 2
     args.out.mkdir(parents=True, exist_ok=True)
 
     # --- Resume skip-check ---
@@ -735,6 +746,14 @@ def create_correct_cdna_parser(subparsers):
              'O(n²) UMI clustering blow-up on chrXII tandem repeats). Sense/antisense '
              'XS classification, XG gene-name tagging, and isoform clustering now '
              'run downstream in `rectify cdna-analyze`.',
+    )
+    correct_cdna_parser.add_argument(
+        '--allow-missing-narnavirus',
+        action='store_true',
+        dest='allow_missing_narnavirus',
+        default=False,
+        help='Accept an anchor BAM aligned to a S. cerevisiae reference without the ScNV-20S / ScNV-23S narnavirus '
+             'contigs (house policy refuses it; legacy re-runs only).',
     )
     correct_cdna_parser.add_argument(
         '--reference',

@@ -25186,3 +25186,9 @@ chrmt	SGD	mRNA	79213	80022	.	+	.	gene_id "Q0275"; transcript_id "Q0275"; Name "Q
 chrmt	SGD	gene	85554	85709	.	+	.	gene_id "Q0297"; transcript_id "Q0297"; Name "Q0297"; so_term_name "protein_coding_gene"; Alias "ORF12"; Ontology_term "GO:0003674,GO:0005575,GO:0008150,SO:0000236"; Note "Dubious%20open%20reading%20frame%3B%20unlikely%20to%20encode%20a%20functional%20protein%2C%20based%20on%20available%20experimental%20and%20comparative%20sequence%20data%3B%20partially%20overlaps%20the%20verified%20gene%20RPM1"; display "Dubious%20open%20reading%20frame"; dbxref "SGD:S000007284"; orf_classification "Dubious"; curie "SGD:S000007284";
 chrmt	SGD	CDS	85554	85709	.	+	0	gene_id "Q0297_mRNA"; transcript_id "Q0297_mRNA"; Name "Q0297_CDS"; orf_classification "Dubious"; protein_id "UniProtKB:Q9ZZV8";
 chrmt	SGD	mRNA	85554	85709	.	+	.	gene_id "Q0297"; transcript_id "Q0297"; Name "Q0297_mRNA";
+ScNV-20S	RefSeq	transcript	1	2514	.	+	.	transcript_id "ScNV-20S_mRNA"; gene_id "ScNV-20S"; gene_name "ScNV-20S"
+ScNV-20S	RefSeq	exon	1	2514	.	+	.	transcript_id "ScNV-20S_mRNA"; gene_id "ScNV-20S"; gene_name "ScNV-20S";
+ScNV-20S	RefSeq	CDS	13	2502	.	+	0	transcript_id "ScNV-20S_mRNA"; gene_name "ScNV-20S";
+ScNV-23S	RefSeq	transcript	1	2891	.	+	.	transcript_id "ScNV-23S_mRNA"; gene_id "ScNV-23S"; gene_name "ScNV-23S"
+ScNV-23S	RefSeq	exon	1	2891	.	+	.	transcript_id "ScNV-23S_mRNA"; gene_id "ScNV-23S"; gene_name "ScNV-23S";
+ScNV-23S	RefSeq	CDS	7	2832	.	+	0	transcript_id "ScNV-23S_mRNA"; gene_name "ScNV-23S";

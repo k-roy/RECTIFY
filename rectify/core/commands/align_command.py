@@ -95,6 +95,14 @@ def create_align_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
 
     parser.add_argument(
+        '--allow-missing-narnavirus',
+        action='store_true',
+        default=False,
+        help='Accept a S. cerevisiae reference that lacks the ScNV-20S / ScNV-23S narnavirus contigs (house policy '
+             'refuses it; use only to re-run legacy data on its original reference).'
+    )
+
+    parser.add_argument(
         '-o', '--output-dir',
         type=Path,
         required=True,
@@ -711,6 +719,16 @@ def run_align(args: argparse.Namespace) -> int:
     rc = _refuse_calmd_placeholder_fastq(args.reads)
     if rc:
         return rc
+    # Narnavirus house policy (planning/1248): a yeast reference must carry ScNV-20S / ScNV-23S.
+    from ...utils.genome import (missing_yeast_narnavirus_contigs, reference_contig_names,
+                                 NARNAVIRUS_POLICY_MESSAGE)
+    _missing_nv = missing_yeast_narnavirus_contigs(reference_contig_names(args.genome))
+    if _missing_nv:
+        if getattr(args, 'allow_missing_narnavirus', False):
+            logger.warning("--allow-missing-narnavirus: aligning to a yeast reference without %s", _missing_nv)
+        else:
+            logger.error(NARNAVIRUS_POLICY_MESSAGE.format(missing=', '.join(_missing_nv)))
+            return 1
 
     # Create output directory
     args.output_dir.mkdir(parents=True, exist_ok=True)

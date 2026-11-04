@@ -84,6 +84,16 @@ CHROM_SIZES: Dict[str, int] = {
     'chrMito': 85779,
 }
 
+# S. cerevisiae narnavirus RNA replicons: house policy (Chanfreau planning/1248, Kevin Roy 2026-11-03) — every yeast
+# reference carries them as extra contigs. Cytoplasmic, non-genomic, NOT polyadenylated: oligo-dT libraries miss them,
+# in-vitro-tailed (ePAP) libraries read them at 5-60 % of reads. Same names in every reference variant (bundled,
+# bare-name, chr-name). Exclude them from mRNA denominators; report their share per library as its own class.
+YEAST_NARNAVIRUS_CONTIGS: Dict[str, int] = {
+    'ScNV-20S': 2514,   # RefSeq NC_004051.1 (dsRNA form: W)
+    'ScNV-23S': 2891,   # RefSeq NC_004050.1 (dsRNA form: T)
+}
+CHROM_SIZES.update(YEAST_NARNAVIRUS_CONTIGS)
+
 # =============================================================================
 # Shift Correction Parameters (from NET-seq Analysis)
 # =============================================================================
@@ -280,7 +290,8 @@ def get_shift_from_acount(a_count: int) -> float:
 def validate_config():
     """Validate configuration parameters."""
     assert len(CHROM_TO_GENOME) == len(GENOME_TO_CHROM), "Chromosome mapping mismatch"
-    assert len(CHROM_TO_GENOME) == len(CHROM_SIZES), "Chromosome size mapping incomplete"
+    # The narnavirus contigs have sizes but no NCBI chromosome alias: they carry the same name in every reference variant.
+    assert set(CHROM_TO_GENOME) == set(CHROM_SIZES) - set(YEAST_NARNAVIRUS_CONTIGS), "Chromosome size mapping incomplete"
     assert 0.0 <= POLYA_RICHNESS_THRESHOLD <= 1.0, "Invalid poly(A) richness threshold"
     assert 0.0 <= AG_RICHNESS_THRESHOLD <= 1.0, "Invalid AG richness threshold"
     assert 0.0 <= INDEL_FLANK_A_THRESHOLD <= 1.0, "Invalid indel flank A threshold"
