@@ -84,6 +84,16 @@ CHROM_SIZES: Dict[str, int] = {
     'chrMito': 85779,
 }
 
+# S. cerevisiae narnavirus RNA replicons: house policy (Chanfreau planning/1248, Kevin Roy 2026-11-03) — every yeast
+# reference carries them as extra contigs. Cytoplasmic, non-genomic, NOT polyadenylated: oligo-dT libraries miss them,
+# in-vitro-tailed (ePAP) libraries read them at 10-57 % of reads. Same names in every reference variant (bundled,
+# bare-name, chr-name). Exclude them from mRNA denominators; report their share per library as its own class.
+YEAST_NARNAVIRUS_CONTIGS: Dict[str, int] = {
+    'ScNV-20S': 2514,   # RefSeq NC_004051.1 (dsRNA form: W)
+    'ScNV-23S': 2891,   # RefSeq NC_004050.1 (dsRNA form: T)
+}
+CHROM_SIZES.update(YEAST_NARNAVIRUS_CONTIGS)
+
 # =============================================================================
 # Shift Correction Parameters (from NET-seq Analysis)
 # =============================================================================

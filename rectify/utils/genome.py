@@ -486,3 +486,50 @@ def get_read_3prime_position(read, strand: str) -> int:
         # 3' end is at left (lower coordinate)
         # reference_start is 0-based inclusive
         return read.reference_start
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Narnavirus house policy (planning/1248): a yeast reference without ScNV-20S / ScNV-23S is refused at alignment.
+# ---------------------------------------------------------------------------------------------------------------------
+_YEAST_NUCLEAR_ROMAN = ('I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'XIII', 'XIV',
+                        'XV', 'XVI')
+_YEAST_NUCLEAR_NAMES = (set(_YEAST_NUCLEAR_ROMAN) | {'chr' + r for r in _YEAST_NUCLEAR_ROMAN}
+                        | {'ref|NC_0011%02d|' % (33 + i) for i in range(16)})
+
+
+def looks_like_yeast_reference(contig_names) -> bool:
+    """True when at least 14 of the 16 S. cerevisiae nuclear chromosomes are present, in any of the three namings
+    RECTIFY sees (chrI / I / ref|NC_001133|)."""
+    names = set(contig_names)
+    return len(names & _YEAST_NUCLEAR_NAMES) >= 14
+
+
+def missing_yeast_narnavirus_contigs(contig_names) -> list:
+    """Narnavirus contigs a YEAST reference lacks ([] for complete or non-yeast references)."""
+    from ..config import YEAST_NARNAVIRUS_CONTIGS
+    names = set(contig_names)
+    if not looks_like_yeast_reference(names):
+        return []
+    return [c for c in YEAST_NARNAVIRUS_CONTIGS if c not in names]
+
+
+def reference_contig_names(fasta_path) -> list:
+    """Contig names of a FASTA, from its .fai when present, else from the headers (plain or gzip)."""
+    from pathlib import Path as _P
+    import gzip as _gz
+    p = _P(str(fasta_path))
+    fai = _P(str(p) + '.fai')
+    if fai.exists():
+        return [l.split('\t', 1)[0] for l in fai.read_text().splitlines() if l]
+    opener = _gz.open if p.suffix == '.gz' else open
+    with opener(p, 'rt') as fh:
+        return [l[1:].split()[0] for l in fh if l.startswith('>')]
+
+
+NARNAVIRUS_POLICY_MESSAGE = (
+    "Yeast reference lacks the narnavirus contigs {missing} (house policy, Chanfreau planning/1248: every yeast "
+    "reference carries ScNV-20S and ScNV-23S, because in-vitro-tailed libraries read these non-polyadenylated RNA "
+    "replicons at 10-57 % of reads and they are otherwise silently unmapped). Use the augmented reference "
+    "(bundled --Scer data, or H2 shared/references/saccharomyces_cerevisiae/R64-5-1_20240529[_simplenames]_ScNV/), "
+    "or pass --allow-missing-narnavirus to re-run legacy data on an old reference."
+)
