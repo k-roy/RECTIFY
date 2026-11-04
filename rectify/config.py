@@ -290,7 +290,8 @@ def get_shift_from_acount(a_count: int) -> float:
 def validate_config():
     """Validate configuration parameters."""
     assert len(CHROM_TO_GENOME) == len(GENOME_TO_CHROM), "Chromosome mapping mismatch"
-    assert len(CHROM_TO_GENOME) == len(CHROM_SIZES), "Chromosome size mapping incomplete"
+    # The narnavirus contigs have sizes but no NCBI chromosome alias: they carry the same name in every reference variant.
+    assert set(CHROM_TO_GENOME) == set(CHROM_SIZES) - set(YEAST_NARNAVIRUS_CONTIGS), "Chromosome size mapping incomplete"
     assert 0.0 <= POLYA_RICHNESS_THRESHOLD <= 1.0, "Invalid poly(A) richness threshold"
     assert 0.0 <= AG_RICHNESS_THRESHOLD <= 1.0, "Invalid AG richness threshold"
     assert 0.0 <= INDEL_FLANK_A_THRESHOLD <= 1.0, "Invalid indel flank A threshold"
