@@ -67,13 +67,16 @@ def gff_features():
 
 
 def gtf_rows():
+    # Same feature types and attribute pattern as the SGD rows of the bundled GTF (gene / CDS / mRNA, NO exon lines): that file is the
+    # exon-less case COMPASS's pre-flight detects and repairs (tests/test_compass_preflight_866.py); an exon line here would flip it.
     rows = []
     for c, L, cs, ce, *_ in MODELS:
-        a = 'transcript_id "{0}_mRNA"; gene_id "{0}"; gene_name "{0}"'.format(c)
-        rows += ['\t'.join([c, 'RefSeq', 'transcript', '1', str(L), '.', '+', '.', a]),
-                 '\t'.join([c, 'RefSeq', 'exon', '1', str(L), '.', '+', '.', a + ';']),
+        rows += ['\t'.join([c, 'RefSeq', 'gene', '1', str(L), '.', '+', '.',
+                            'gene_id "{0}"; transcript_id "{0}"; Name "{0}";'.format(c)]),
                  '\t'.join([c, 'RefSeq', 'CDS', str(cs), str(ce), '.', '+', '0',
-                            'transcript_id "{0}_mRNA"; gene_name "{0}";'.format(c)])]
+                            'gene_id "{0}_mRNA"; transcript_id "{0}_mRNA"; Name "{0}_CDS";'.format(c)]),
+                 '\t'.join([c, 'RefSeq', 'mRNA', '1', str(L), '.', '+', '.',
+                            'gene_id "{0}"; transcript_id "{0}"; Name "{0}_mRNA";'.format(c)])]
     return rows
 
 
