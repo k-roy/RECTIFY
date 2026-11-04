@@ -4,7 +4,7 @@
 House policy (Kevin Roy, 2026-11-03; Chanfreau planning/1248): every yeast reference RECTIFY aligns to carries the two
 narnavirus RNA replicons as extra contigs. They are cytoplasmic, non-genomic and NOT polyadenylated, so oligo-dT libraries
 miss them, but any library that tails RNA in vitro (ePAP / E. coli PAP) reads them: in Kevin He's 2026-10-29 ePAP PCR-cDNA,
-ScNV-20S was 5-57 % of reads per library (0 % in the untailed libraries of the same RNA). Without a contig those reads are
+ScNV-20S was 5-60 % of reads per library (0 % in the untailed libraries of the same RNA). Without a contig those reads are
 unmapped and every mapped-fraction gate and per-million denominator is silently wrong.
 
 Source of truth: rectify/data/genomes/saccharomyces_cerevisiae/narnaviruses_ScNV.fa (RefSeq NC_004051.1 -> ScNV-20S,

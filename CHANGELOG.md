@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Yeast narnavirus contigs (house policy, 2026-11-03).** The bundled S. cerevisiae R64-5-1 FASTA, GFF and GTF now carry
   `ScNV-20S` (RefSeq NC_004051.1) and `ScNV-23S` (NC_004050.1), the non-polyadenylated 20S/23S RNA narnaviruses that
-  in-vitro-tailed libraries read at 5-57 % of reads. `rectify align` and `rectify correct-cdna` refuse a yeast reference
+  in-vitro-tailed libraries read at 5-60 % of reads. `rectify align` and `rectify correct-cdna` refuse a yeast reference
   (or anchor BAM) without them; `--allow-missing-narnavirus` re-runs legacy data on its original reference.
   `config.YEAST_NARNAVIRUS_CONTIGS`; regeneration script `scripts/data/add_yeast_narnavirus_contigs.py`.
 

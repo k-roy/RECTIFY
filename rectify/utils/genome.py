@@ -529,7 +529,7 @@ def reference_contig_names(fasta_path) -> list:
 NARNAVIRUS_POLICY_MESSAGE = (
     "Yeast reference lacks the narnavirus contigs {missing} (house policy, Chanfreau planning/1248: every yeast "
     "reference carries ScNV-20S and ScNV-23S, because in-vitro-tailed libraries read these non-polyadenylated RNA "
-    "replicons at 5-57 % of reads and they are otherwise silently unmapped). Use the augmented reference "
+    "replicons at 5-60 % of reads and they are otherwise silently unmapped). Use the augmented reference "
     "(bundled --Scer data, or H2 shared/references/saccharomyces_cerevisiae/R64-5-1_20240529[_simplenames]_ScNV/), "
     "or pass --allow-missing-narnavirus to re-run legacy data on an old reference."
 )
