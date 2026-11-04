@@ -22,7 +22,10 @@ class TestConfig:
         # Check all chromosomes
         assert len(config.CHROM_TO_GENOME) == 17  # 16 + mito
         assert len(config.GENOME_TO_CHROM) == 17
-        assert len(config.CHROM_SIZES) == 17
+        # 17 genomic contigs with an NCBI alias + the two narnavirus contigs (house policy, Chanfreau 1248), which have none
+        assert set(config.CHROM_SIZES) - set(config.CHROM_TO_GENOME) == {'ScNV-20S', 'ScNV-23S'}
+        assert config.CHROM_SIZES['ScNV-20S'] == 2514 and config.CHROM_SIZES['ScNV-23S'] == 2891
+        assert len(config.CHROM_SIZES) == 19
 
     def test_shift_corrections(self):
         """Test shift correction lookup."""
