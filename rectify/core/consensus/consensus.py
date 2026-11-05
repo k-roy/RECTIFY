@@ -518,14 +518,26 @@ def _check_read_name_compatibility(
     samples = {a: s for a, s in samples.items() if s}
     if len(samples) < 2:
         return
+    # Comparing two first-N SAMPLES flags a mere SUBSET as a format mismatch (uLTRA emits only the reads it aligned, so on a tRNA/virus-
+    # heavy chunk its first 100 names sat ~500 reads past minimap2's; Chanfreau 1248, 2026-11-04). Test each sample against the OTHER
+    # aligner's full name set (capped) and keep the better direction: a real QNAME-format mismatch scores ~0 both ways, a subset ~100 %.
+    full: Dict[str, set] = {}
+    for aligner in samples:
+        names = set()
+        with pysam.AlignmentFile(bam_paths[aligner], 'rb') as bam:
+            for i, read in enumerate(bam):
+                if i >= 2_000_000:
+                    break
+                names.add(_normalize_bam_read_name(read.query_name or ''))
+        full[aligner] = names
     aligners = list(samples.keys())
     for i, a in enumerate(aligners):
         for b in aligners[i + 1:]:
+            fa = len(samples[a] & full[b]) / len(samples[a])
+            fb = len(samples[b] & full[a]) / len(samples[b])
             inter = samples[a] & samples[b]
             union = samples[a] | samples[b]
-            if not union:
-                continue
-            overlap = len(inter) / len(union)
+            overlap = max(fa, fb)
             if overlap < 0.5:
                 raise RuntimeError(
                     f"Read-id format mismatch between aligners {a!r} and {b!r}: "

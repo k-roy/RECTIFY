@@ -28,3 +28,10 @@ def test_real_mismatch_still_raises(tmp_path):
             'deSALT': _bam(tmp_path / 'd.bam', ['other_%d' % i for i in range(20)])}
     with pytest.raises(RuntimeError, match='Read-id format mismatch'):
         _check_read_name_compatibility(bams)
+
+
+def test_subset_aligner_is_not_a_format_mismatch(tmp_path):
+    """uLTRA writes only the reads it aligned: its first names sit far past minimap2's, but every one of them exists in minimap2."""
+    m = ['r172_%d' % i for i in range(2000)]
+    u = ['r172_%d' % i for i in range(1150, 2000, 3)]
+    _check_read_name_compatibility({'minimap2': _bam(tmp_path / 'm.bam', m), 'uLTRA': _bam(tmp_path / 'u.bam', u)})   # must not raise
